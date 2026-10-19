@@ -180,10 +180,14 @@ impl Client {
 		let status = response.status().as_u16();
 		if status != 200 {
 			// CDN errors are never about our credentials
-			return Err(match status_error(status, retry_after(&response), self.credentials.method) {
-				FetchError::Auth(_) => FetchError::Permanent(format!("CDN refused the download ({status})")),
-				other => other,
-			});
+			return Err(
+				match status_error(status, retry_after(&response), self.credentials.method) {
+					FetchError::Auth(_) => {
+						FetchError::Permanent(format!("CDN refused the download ({status})"))
+					}
+					other => other,
+				},
+			);
 		}
 		read_body(&mut response)
 	}
@@ -218,7 +222,9 @@ impl Client {
 						location: String,
 					}
 					let location: Location = serde_json::from_slice(&body).map_err(|_| {
-						FetchError::Permanent("Unexpected reply from Roblox (no download location)".into())
+						FetchError::Permanent(
+							"Unexpected reply from Roblox (no download location)".into(),
+						)
 					})?;
 					self.cdn_get(&location.location)
 				} else {
@@ -253,7 +259,12 @@ impl Client {
 	}
 
 	/// Retries transient failures with exponential backoff.
-	pub fn fetch_with_retry(&self, asset_id: u64, want_image: bool, cancel: &AtomicBool) -> Result<Vec<u8>, FetchError> {
+	pub fn fetch_with_retry(
+		&self,
+		asset_id: u64,
+		want_image: bool,
+		cancel: &AtomicBool,
+	) -> Result<Vec<u8>, FetchError> {
 		let mut attempt = 0;
 		loop {
 			match self.fetch(asset_id, want_image) {
@@ -325,7 +336,8 @@ pub fn store(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String
 			std::fs::create_dir_all(parent)
 				.map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
 		}
-		std::fs::write(&path, bytes).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+		std::fs::write(&path, bytes)
+			.map_err(|e| format!("Could not write {}: {e}", path.display()))?;
 		written.push(Stored {
 			stem: stem.clone(),
 			kind: *kind,
@@ -451,7 +463,13 @@ impl Downloader {
 	}
 }
 
-fn worker(shared: &Shared, tx: &Sender<Event>, ctx: &eframe::egui::Context, root: &Path, client: &Client) {
+fn worker(
+	shared: &Shared,
+	tx: &Sender<Event>,
+	ctx: &eframe::egui::Context,
+	root: &Path,
+	client: &Client,
+) {
 	loop {
 		if shared.cancel.load(Ordering::SeqCst) {
 			return;
@@ -462,25 +480,29 @@ fn worker(shared: &Shared, tx: &Sender<Event>, ctx: &eframe::egui::Context, root
 		let cache = crate::workspace::cache_path(root, job.asset_id);
 		let bytes = match std::fs::read(&cache) {
 			Ok(bytes) => Ok(bytes),
-			Err(_) => match client.fetch_with_retry(job.asset_id, job.wants_image(), &shared.cancel) {
-				Ok(bytes) => {
-					if let Some(dir) = cache.parent() {
-						let _ = std::fs::create_dir_all(dir);
+			Err(_) => {
+				match client.fetch_with_retry(job.asset_id, job.wants_image(), &shared.cancel) {
+					Ok(bytes) => {
+						if let Some(dir) = cache.parent() {
+							let _ = std::fs::create_dir_all(dir);
+						}
+						let _ = std::fs::write(&cache, &bytes);
+						Ok(bytes)
 					}
-					let _ = std::fs::write(&cache, &bytes);
-					Ok(bytes)
+					Err(FetchError::Auth(message)) => {
+						shared.cancel.store(true, Ordering::SeqCst);
+						shared.queue.lock().unwrap().clear();
+						let _ = tx.send(Event::AuthFailed(message));
+						ctx.request_repaint();
+						return;
+					}
+					// cancelled mid-retry: leave the item pending
+					Err(FetchError::Transient(..)) if shared.cancel.load(Ordering::SeqCst) => {
+						return;
+					}
+					Err(e) => Err(e.to_string()),
 				}
-				Err(FetchError::Auth(message)) => {
-					shared.cancel.store(true, Ordering::SeqCst);
-					shared.queue.lock().unwrap().clear();
-					let _ = tx.send(Event::AuthFailed(message));
-					ctx.request_repaint();
-					return;
-				}
-				// cancelled mid-retry: leave the item pending
-				Err(FetchError::Transient(..)) if shared.cancel.load(Ordering::SeqCst) => return,
-				Err(e) => Err(e.to_string()),
-			},
+			}
 		};
 		let result = bytes.and_then(|bytes| store(root, &job, &bytes));
 		let _ = tx.send(Event::Finished { job, result });
@@ -524,7 +546,10 @@ mod tests {
 					.find(|(p, ..)| *p == path)
 					.map(|(_, s, h, b)| (*s, h.clone(), b.clone()))
 					.unwrap_or((404, vec![], b"not found".to_vec()));
-				let mut head = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+				let mut head = format!(
+					"HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+					body.len()
+				);
 				for (k, v) in headers {
 					head.push_str(&format!("{k}: {v}\r\n"));
 				}
@@ -552,7 +577,12 @@ mod tests {
 
 	#[test]
 	fn api_key_follows_location_without_leaking_key() {
-		let (cdn, cdn_log) = serve(vec![("/cdn/5", 200, vec![], b"version 4.00\nDATA".to_vec())]);
+		let (cdn, cdn_log) = serve(vec![(
+			"/cdn/5",
+			200,
+			vec![],
+			b"version 4.00\nDATA".to_vec(),
+		)]);
 		let (api, api_log) = serve(vec![(
 			"/oc/5",
 			200,
@@ -576,12 +606,25 @@ mod tests {
 			("/cdn/11", 200, vec![], b"\x89PNG\r\n\x1a\nIMAGE".to_vec()),
 		]);
 		let (base, log) = serve(vec![
-			("/ad?id=10", 302, vec![("Location", format!("{cdn}/cdn/10"))], vec![]),
-			("/ad?id=11", 302, vec![("Location", format!("{cdn}/cdn/11"))], vec![]),
+			(
+				"/ad?id=10",
+				302,
+				vec![("Location", format!("{cdn}/cdn/10"))],
+				vec![],
+			),
+			(
+				"/ad?id=11",
+				302,
+				vec![("Location", format!("{cdn}/cdn/11"))],
+				vec![],
+			),
 		]);
 		let c = client(&base, AuthMethod::Cookie);
 		let bytes = c.fetch(10, true).unwrap();
-		assert_eq!(sniff_extension(&bytes, AssetKind::Map(MapKind::Color)), "png");
+		assert_eq!(
+			sniff_extension(&bytes, AssetKind::Map(MapKind::Color)),
+			"png"
+		);
 		assert!(log.lock().unwrap()[0].contains(".ROBLOSECURITY=SECRET"));
 		for req in cdn_log.lock().unwrap().iter() {
 			assert!(!req.contains("SECRET"), "cookie leaked to CDN");
@@ -598,11 +641,17 @@ mod tests {
 		let c = client(&base, AuthMethod::ApiKey);
 		assert!(matches!(c.fetch(1, false), Err(FetchError::Auth(_))));
 		assert!(matches!(c.fetch(2, false), Err(FetchError::Permanent(_))));
-		assert!(matches!(c.fetch(3, false), Err(FetchError::Transient(_, Some(_)))));
+		assert!(matches!(
+			c.fetch(3, false),
+			Err(FetchError::Transient(_, Some(_)))
+		));
 		assert!(matches!(c.fetch(4, false), Err(FetchError::Permanent(_))));
 		let cancel = AtomicBool::new(false);
 		// retries a few times then gives up
-		assert!(matches!(c.fetch_with_retry(3, false, &cancel), Err(FetchError::Transient(..))));
+		assert!(matches!(
+			c.fetch_with_retry(3, false, &cancel),
+			Err(FetchError::Transient(..))
+		));
 	}
 
 	#[test]
@@ -629,7 +678,8 @@ mod tests {
 		use crate::export::Entry;
 		use crate::workspace::{AssetState, Workspace};
 
-		let mesh = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../meshes/torso.mesh")).unwrap();
+		let mesh =
+			std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../meshes/torso.mesh")).unwrap();
 		let png = b"\x89PNG\r\n\x1a\nFAKE".to_vec();
 		let (cdn, _) = serve(vec![
 			("/cdn/1", 200, vec![], mesh.clone()),
@@ -637,10 +687,25 @@ mod tests {
 			("/cdn/4", 200, vec![], png.clone()),
 		]);
 		let (api, api_log) = serve(vec![
-			("/oc/1", 200, vec![], format!(r#"{{"location":"{cdn}/cdn/1"}}"#).into_bytes()),
-			("/oc/2", 200, vec![], format!(r#"{{"location":"{cdn}/cdn/2"}}"#).into_bytes()),
+			(
+				"/oc/1",
+				200,
+				vec![],
+				format!(r#"{{"location":"{cdn}/cdn/1"}}"#).into_bytes(),
+			),
+			(
+				"/oc/2",
+				200,
+				vec![],
+				format!(r#"{{"location":"{cdn}/cdn/2"}}"#).into_bytes(),
+			),
 			("/oc/3", 403, vec![], vec![]),
-			("/oc/4", 200, vec![], format!(r#"{{"location":"{cdn}/cdn/4"}}"#).into_bytes()),
+			(
+				"/oc/4",
+				200,
+				vec![],
+				format!(r#"{{"location":"{cdn}/cdn/4"}}"#).into_bytes(),
+			),
 		]);
 
 		let dir = std::env::temp_dir().join(format!("rbx_dl_test_{}", std::process::id()));
@@ -654,7 +719,16 @@ mod tests {
 		};
 		ws.add([
 			// TextureID and ColorMap are the same image: fetched once, written twice
-			entry("Zone_10/8: Scorpion", "Body", 1, &[(MapKind::Texture, 2), (MapKind::Color, 2), (MapKind::Normal, 4)]),
+			entry(
+				"Zone_10/8: Scorpion",
+				"Body",
+				1,
+				&[
+					(MapKind::Texture, 2),
+					(MapKind::Color, 2),
+					(MapKind::Normal, 4),
+				],
+			),
 			// same mesh as above: must be downloaded only once
 			entry("Eggs", "Body copy", 1, &[]),
 			entry("Eggs", "Private", 3, &[]),
@@ -662,7 +736,13 @@ mod tests {
 
 		let ctx = eframe::egui::Context::default();
 		let mut downloader = Downloader::default();
-		downloader.start(&ctx, dir.clone(), Arc::new(client(&api, AuthMethod::ApiKey)), ws.pending_jobs(), 3);
+		downloader.start(
+			&ctx,
+			dir.clone(),
+			Arc::new(client(&api, AuthMethod::ApiKey)),
+			ws.pending_jobs(),
+			3,
+		);
 		let deadline = std::time::Instant::now() + Duration::from_secs(20);
 		let mut events = Vec::new();
 		while downloader.is_running() || events.len() < 4 {
@@ -671,7 +751,9 @@ mod tests {
 			std::thread::sleep(Duration::from_millis(20));
 		}
 		for event in events {
-			let Event::Finished { job, result } = event else { panic!("auth failure") };
+			let Event::Finished { job, result } = event else {
+				panic!("auth failure")
+			};
 			match result {
 				Ok(written) => {
 					for w in written {
@@ -680,7 +762,13 @@ mod tests {
 				}
 				Err(error) => {
 					for (stem, kind) in &job.targets {
-						ws.set_state(stem, *kind, AssetState::Failed { error: error.clone() });
+						ws.set_state(
+							stem,
+							*kind,
+							AssetState::Failed {
+								error: error.clone(),
+							},
+						);
 					}
 				}
 			}
@@ -688,20 +776,63 @@ mod tests {
 		assert_eq!((downloader.completed, downloader.failed), (4, 1));
 
 		let items = ws.items();
-		assert_eq!(items[0].mesh, AssetState::Done { path: "Models/Zone_10/8_ Scorpion/Body.mesh".into() });
+		assert_eq!(
+			items[0].mesh,
+			AssetState::Done {
+				path: "Models/Zone_10/8_ Scorpion/Body.mesh".into()
+			}
+		);
 		let map = |kind| items[0].maps[&kind].state.clone();
-		assert_eq!(map(MapKind::Texture), AssetState::Done { path: "Models/Zone_10/8_ Scorpion/Body.png".into() });
-		assert_eq!(map(MapKind::Color), AssetState::Done { path: "Models/Zone_10/8_ Scorpion/Body.color.png".into() });
-		assert_eq!(map(MapKind::Normal), AssetState::Done { path: "Models/Zone_10/8_ Scorpion/Body.normal.png".into() });
+		assert_eq!(
+			map(MapKind::Texture),
+			AssetState::Done {
+				path: "Models/Zone_10/8_ Scorpion/Body.png".into()
+			}
+		);
+		assert_eq!(
+			map(MapKind::Color),
+			AssetState::Done {
+				path: "Models/Zone_10/8_ Scorpion/Body.color.png".into()
+			}
+		);
+		assert_eq!(
+			map(MapKind::Normal),
+			AssetState::Done {
+				path: "Models/Zone_10/8_ Scorpion/Body.normal.png".into()
+			}
+		);
 		assert!(items[0].is_done());
-		assert_eq!(items[1].mesh, AssetState::Done { path: "Models/Eggs/Body copy.mesh".into() });
+		assert_eq!(
+			items[1].mesh,
+			AssetState::Done {
+				path: "Models/Eggs/Body copy.mesh".into()
+			}
+		);
 		assert!(matches!(&items[2].mesh, AssetState::Failed { error } if error.contains("403")));
-		assert_eq!(std::fs::read(dir.join("Models/Eggs/Body copy.mesh")).unwrap(), mesh);
-		assert_eq!(std::fs::read(dir.join("Models/Zone_10/8_ Scorpion/Body.png")).unwrap(), png);
+		assert_eq!(
+			std::fs::read(dir.join("Models/Eggs/Body copy.mesh")).unwrap(),
+			mesh
+		);
+		assert_eq!(
+			std::fs::read(dir.join("Models/Zone_10/8_ Scorpion/Body.png")).unwrap(),
+			png
+		);
 		// asset 1 was requested once even though two items use it
 		let requests = api_log.lock().unwrap();
-		assert_eq!(requests.iter().filter(|r| r.starts_with("GET /oc/1 ")).count(), 1);
-		assert_eq!(requests.iter().filter(|r| r.starts_with("GET /oc/2 ")).count(), 1);
+		assert_eq!(
+			requests
+				.iter()
+				.filter(|r| r.starts_with("GET /oc/1 "))
+				.count(),
+			1
+		);
+		assert_eq!(
+			requests
+				.iter()
+				.filter(|r| r.starts_with("GET /oc/2 "))
+				.count(),
+			1
+		);
 		drop(requests);
 		// the viewer can open what was downloaded
 		assert!(crate::geometry::load(&mesh).is_ok());

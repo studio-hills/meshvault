@@ -144,7 +144,10 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
 			Err(_) if !matches!(version.as_bytes().first(), Some(b'1'..=b'7')) => Err(format!(
 				"Mesh version {version} is not supported by rbx_mesh yet (supported: 1.00 – 7.00)."
 			)),
-			Err(e) => Err(format!("Mesh version {version} failed to decode:\n{}", clean(e))),
+			Err(e) => Err(format!(
+				"Mesh version {version} failed to decode:\n{}",
+				clean(e)
+			)),
 		};
 	}
 	if bytes.starts_with(b"CSGPHS") {
@@ -398,7 +401,9 @@ fn from_mesh(mesh: Mesh) -> Loaded {
 }
 
 fn chunk_name(name: &[u8; 8]) -> String {
-	String::from_utf8_lossy(name).trim_end_matches('\0').to_string()
+	String::from_utf8_lossy(name)
+		.trim_end_matches('\0')
+		.to_string()
 }
 
 /// v6.00 / v7.00 meshes: geometry comes from the COREMESH chunk, which may
@@ -424,7 +429,10 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 	let core = match m.core_mesh() {
 		Some(CoreMeshChunk::V1(core)) => Some(core.clone()),
 		Some(CoreMeshChunk::V2(draco)) => {
-			details.push(detail("Draco bitstream", format!("{} bytes", draco.bitstream.len())));
+			details.push(detail(
+				"Draco bitstream",
+				format!("{} bytes", draco.bitstream.len()),
+			));
 			match draco.decode() {
 				Ok(core) => Some(core),
 				Err(e) => {
@@ -434,7 +442,10 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 			}
 		}
 		Some(CoreMeshChunk::Unsupported(u)) => {
-			note = Some(format!("COREMESH chunk version {} is not supported.", u.version));
+			note = Some(format!(
+				"COREMESH chunk version {} is not supported.",
+				u.version
+			));
 			None
 		}
 		None => {
@@ -478,7 +489,9 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 		}
 	}
 	if let Some(hsr) = m.hsr_avis() {
-		let hidden = (0..hsr.bit_count as usize).filter(|&i| hsr.get(i) == Some(true)).count();
+		let hidden = (0..hsr.bit_count as usize)
+			.filter(|&i| hsr.get(i) == Some(true))
+			.count();
 		details.push(detail("HSR culled faces", hidden));
 	}
 
@@ -572,14 +585,20 @@ fn from_union_graphics(mesh: UnionGraphics) -> Loaded {
 fn physics_info(details: &mut Vec<(String, String)>, info: &rbx_mesh::union_physics::PhysicsInfo) {
 	let [x, y, z] = info.center_of_gravity;
 	details.push(detail("Volume", format!("{:.4}", info.volume)));
-	details.push(detail("Centre of gravity", format!("{x:.3}, {y:.3}, {z:.3}")));
+	details.push(detail(
+		"Centre of gravity",
+		format!("{x:.3}, {y:.3}, {z:.3}"),
+	));
 }
 
 fn hulls_from_meshes(meshes: &[rbx_mesh::union_physics::Mesh]) -> Geometry {
 	let mut geometry = Geometry::empty();
 	geometry.group_kind = GroupKind::Hull;
 	for m in meshes {
-		geometry.push_part(&m.positions, m.faces.iter().map(|f| [f[0].0, f[1].0, f[2].0]));
+		geometry.push_part(
+			&m.positions,
+			m.faces.iter().map(|f| [f[0].0, f[1].0, f[2].0]),
+		);
 	}
 	geometry
 }
@@ -751,7 +770,13 @@ mod uv_tests {
 	/// Formats that store texture coordinates should expose one per vertex.
 	#[test]
 	fn textured_formats_have_uvs() {
-		for name in ["torso.mesh", "sphere.mesh", "13674780763", "mesh7_127279296594138.bin", "4500696697_4.meshdata"] {
+		for name in [
+			"torso.mesh",
+			"sphere.mesh",
+			"13674780763",
+			"mesh7_127279296594138.bin",
+			"4500696697_4.meshdata",
+		] {
 			let geometry = load_sample(name).geometry;
 			let uvs = geometry.uvs.unwrap_or_else(|| panic!("{name} has no uvs"));
 			assert_eq!(uvs.len(), geometry.positions.len(), "{name}");

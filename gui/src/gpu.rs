@@ -68,11 +68,19 @@ pub struct GpuScene {
 
 fn srgb_to_linear(c: u8) -> f32 {
 	let c = c as f32 / 255.0;
-	if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+	if c <= 0.04045 {
+		c / 12.92
+	} else {
+		((c + 0.055) / 1.055).powf(2.4)
+	}
 }
 
 pub fn linear_rgb(c: eframe::egui::Color32) -> [f32; 3] {
-	[srgb_to_linear(c.r()), srgb_to_linear(c.g()), srgb_to_linear(c.b())]
+	[
+		srgb_to_linear(c.r()),
+		srgb_to_linear(c.g()),
+		srgb_to_linear(c.b()),
+	]
 }
 
 impl GpuRenderer {
@@ -231,11 +239,13 @@ impl GpuRenderer {
 		if vertices.is_empty() {
 			vertices.push(bytemuck::Zeroable::zeroed());
 		}
-		let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-			label: Some("rbx_mesh vertices"),
-			contents: bytemuck::cast_slice(&vertices),
-			usage: wgpu::BufferUsages::VERTEX,
-		});
+		let vertex_buffer = self
+			.device
+			.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+				label: Some("rbx_mesh vertices"),
+				contents: bytemuck::cast_slice(&vertices),
+				usage: wgpu::BufferUsages::VERTEX,
+			});
 		let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("rbx_mesh uniforms"),
 			size: std::mem::size_of::<Uniforms>() as u64,
@@ -254,7 +264,11 @@ impl GpuRenderer {
 		}
 	}
 
-	fn bind_group(&self, uniforms: &wgpu::Buffer, textures: &BTreeMap<Slot, (usize, wgpu::TextureView)>) -> wgpu::BindGroup {
+	fn bind_group(
+		&self,
+		uniforms: &wgpu::Buffer,
+		textures: &BTreeMap<Slot, (usize, wgpu::TextureView)>,
+	) -> wgpu::BindGroup {
 		let view = |slot: Slot| {
 			textures.get(&slot).map(|(_, v)| v).unwrap_or(match slot {
 				Slot::Normal => &self.flat_normal,
@@ -302,7 +316,9 @@ impl GpuRenderer {
 		let mut textures = BTreeMap::new();
 		let mut flags = [0u32; 4];
 		for (i, slot) in Slot::ALL.into_iter().enumerate() {
-			let Some(texture) = material.active(slot) else { continue };
+			let Some(texture) = material.active(slot) else {
+				continue;
+			};
 			let key = Arc::as_ptr(&texture.rgba) as usize;
 			let view = match scene.textures.get(&slot) {
 				Some((k, view)) if *k == key => view.clone(),
@@ -324,7 +340,13 @@ impl GpuRenderer {
 	}
 
 	/// The paint callback drawing `groups` of the scene with `uniforms`.
-	pub fn callback(&self, scene: &GpuScene, groups: &[usize], cull: bool, mut uniforms: Uniforms) -> MeshCallback {
+	pub fn callback(
+		&self,
+		scene: &GpuScene,
+		groups: &[usize],
+		cull: bool,
+		mut uniforms: Uniforms,
+	) -> MeshCallback {
 		uniforms.flags = scene.flags;
 		uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
 		MeshCallback {
@@ -333,14 +355,22 @@ impl GpuRenderer {
 			vertices: scene.vertices.clone(),
 			uniform_buffer: scene.uniforms.clone(),
 			uniforms,
-			draws: groups.iter().filter_map(|&g| scene.groups.get(g).cloned()).collect(),
+			draws: groups
+				.iter()
+				.filter_map(|&g| scene.groups.get(g).cloned())
+				.collect(),
 		}
 	}
 }
 
 /// Uploads an image with a full mip chain (generated on the CPU, since
 /// wgpu has no built-in mipmap generation).
-fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &image::RgbaImage, format: wgpu::TextureFormat) -> wgpu::TextureView {
+fn upload_texture(
+	device: &wgpu::Device,
+	queue: &wgpu::Queue,
+	image: &image::RgbaImage,
+	format: wgpu::TextureFormat,
+) -> wgpu::TextureView {
 	let (w, h) = image.dimensions();
 	let levels = 32 - w.max(h).max(1).leading_zeros();
 	let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -381,7 +411,12 @@ fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &image::Rgb
 		);
 		if level + 1 < levels {
 			let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
-			level_image = image::imageops::resize(&level_image, nw, nh, image::imageops::FilterType::Triangle);
+			level_image = image::imageops::resize(
+				&level_image,
+				nw,
+				nh,
+				image::imageops::FilterType::Triangle,
+			);
 		}
 	}
 	texture.create_view(&wgpu::TextureViewDescriptor::default())
@@ -434,9 +469,12 @@ mod tests {
 	fn shader_is_valid_wgsl() {
 		let module = naga::front::wgsl::parse_str(include_str!("mesh.wgsl"))
 			.unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("mesh.wgsl"))));
-		naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
-			.validate(&module)
-			.unwrap_or_else(|e| panic!("{e:?}"));
+		naga::valid::Validator::new(
+			naga::valid::ValidationFlags::all(),
+			naga::valid::Capabilities::default(),
+		)
+		.validate(&module)
+		.unwrap_or_else(|e| panic!("{e:?}"));
 	}
 
 	/// The Rust uniform struct must match the WGSL one byte for byte.

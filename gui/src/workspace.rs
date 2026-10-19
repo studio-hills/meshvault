@@ -29,8 +29,12 @@ const MANIFEST_VERSION: u32 = 2;
 pub enum AssetState {
 	Pending,
 	/// `path` is relative to the workspace root.
-	Done { path: String },
-	Failed { error: String },
+	Done {
+		path: String,
+	},
+	Failed {
+		error: String,
+	},
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,7 +69,8 @@ impl Item {
 		self.states().all(|s| matches!(s, AssetState::Done { .. }))
 	}
 	pub fn has_failure(&self) -> bool {
-		self.states().any(|s| matches!(s, AssetState::Failed { .. }))
+		self.states()
+			.any(|s| matches!(s, AssetState::Failed { .. }))
 	}
 	pub fn has_pending(&self) -> bool {
 		self.states().any(|s| *s == AssetState::Pending)
@@ -157,8 +162,8 @@ pub fn sanitize(name: &str) -> String {
 		return "_".into();
 	}
 	const RESERVED: [&str; 22] = [
-		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-		"COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+		"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 	];
 	let base = s.split('.').next().unwrap_or("").to_ascii_uppercase();
 	if RESERVED.contains(&base.as_str()) {
@@ -212,9 +217,7 @@ impl Workspace {
 			}
 			// downloads interrupted by closing the app, or files deleted
 			// outside the app, are downloaded again
-			let missing = |state: &AssetState| {
-				matches!(state, AssetState::Done { path } if !root.join(path).exists())
-			};
+			let missing = |state: &AssetState| matches!(state, AssetState::Done { path } if !root.join(path).exists());
 			if missing(&item.mesh) {
 				item.mesh = AssetState::Pending;
 				dirty = true;
@@ -230,7 +233,11 @@ impl Workspace {
 			manifest.version = MANIFEST_VERSION;
 			dirty = true;
 		}
-		let stems = manifest.items.iter().map(|i| i.stem.to_lowercase()).collect();
+		let stems = manifest
+			.items
+			.iter()
+			.map(|i| i.stem.to_lowercase())
+			.collect();
 		Ok(Self {
 			root: root.to_path_buf(),
 			manifest,
@@ -429,7 +436,11 @@ mod tests {
 	fn entry(folder: &str, name: &str, mesh: u64, maps: &[(MapKind, u64)]) -> Entry {
 		Entry {
 			name: name.into(),
-			folder: folder.split('/').filter(|s| !s.is_empty()).map(String::from).collect(),
+			folder: folder
+				.split('/')
+				.filter(|s| !s.is_empty())
+				.map(String::from)
+				.collect(),
 			mesh_id: mesh,
 			maps: maps.iter().copied().collect(),
 		}
@@ -460,7 +471,12 @@ mod tests {
 		let added = ws.add([
 			entry("Zone_10/8: Scorpion", "Body", 1, &[]),
 			// TextureID and ColorMap are the same image, as exporters often do
-			entry("Zone_10/8: Scorpion", "Body", 2, &[(Texture, 9), (Color, 9), (Normal, 10)]),
+			entry(
+				"Zone_10/8: Scorpion",
+				"Body",
+				2,
+				&[(Texture, 9), (Color, 9), (Normal, 10)],
+			),
 			entry("Zone_10/8: Scorpion", "body", 3, &[]),
 			entry("", "Root", 1, &[]),
 		]);
@@ -485,13 +501,22 @@ mod tests {
 		assert_eq!(
 			image9.targets,
 			[
-				("Models/Zone_10/8_ Scorpion/Body (2)".to_string(), AssetKind::Map(Texture)),
-				("Models/Zone_10/8_ Scorpion/Body (2)".to_string(), AssetKind::Map(Color)),
+				(
+					"Models/Zone_10/8_ Scorpion/Body (2)".to_string(),
+					AssetKind::Map(Texture)
+				),
+				(
+					"Models/Zone_10/8_ Scorpion/Body (2)".to_string(),
+					AssetKind::Map(Color)
+				),
 			]
 		);
 
 		// re-importing adds newly selected maps only
-		assert_eq!(ws.add([entry("Zone_10/8: Scorpion", "body", 3, &[(Roughness, 11)])]), 0);
+		assert_eq!(
+			ws.add([entry("Zone_10/8: Scorpion", "body", 3, &[(Roughness, 11)])]),
+			0
+		);
 		assert!(ws.items()[2].maps.contains_key(&Roughness));
 		assert!(ws.items()[2].has_pending());
 

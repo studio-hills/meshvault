@@ -58,7 +58,11 @@ pub fn load(ctx: &egui::Context, path: &Path, bytes: &[u8]) -> Result<Texture, S
 	// leave room for the white rows within the GPU's size limit
 	let max_side = (ctx.input(|i| i.max_texture_side).max(64) - WHITE_ROWS).min(MAX_SIDE as usize);
 	let image = if image.width() as usize > max_side || image.height() as usize > max_side {
-		image.resize(max_side as u32, max_side as u32, image::imageops::FilterType::Triangle)
+		image.resize(
+			max_side as u32,
+			max_side as u32,
+			image::imageops::FilterType::Triangle,
+		)
 	} else {
 		image
 	};
@@ -113,7 +117,9 @@ impl Material {
 		}
 	}
 	pub fn active(&self, slot: Slot) -> Option<&Texture> {
-		self.maps.get(&slot).filter(|_| !self.disabled.contains(&slot))
+		self.maps
+			.get(&slot)
+			.filter(|_| !self.disabled.contains(&slot))
 	}
 	pub fn toggle(&mut self, slot: Slot, on: bool) {
 		self.disabled.retain(|s| *s != slot);
@@ -144,7 +150,10 @@ pub fn find_siblings(mesh_path: &Path) -> BTreeMap<Slot, PathBuf> {
 		let want = format!("{stem}{}", kind.file_suffix());
 		images
 			.iter()
-			.find(|p| p.file_stem().is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case(&want)))
+			.find(|p| {
+				p.file_stem()
+					.is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case(&want))
+			})
 			.cloned()
 	};
 	for slot in Slot::ALL {

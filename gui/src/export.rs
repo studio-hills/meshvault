@@ -206,17 +206,40 @@ pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 mod tests {
 	#[test]
 	fn natural_order() {
-		let mut v = vec!["10: Wolf", "monkisrokBoss", "2: Lizard", "Zone_10", "1: Bug", "Alien"];
+		let mut v = vec![
+			"10: Wolf",
+			"monkisrokBoss",
+			"2: Lizard",
+			"Zone_10",
+			"1: Bug",
+			"Alien",
+		];
 		v.sort_by(|a, b| super::natural_cmp(a, b));
-		assert_eq!(v, ["1: Bug", "2: Lizard", "10: Wolf", "Alien", "monkisrokBoss", "Zone_10"]);
+		assert_eq!(
+			v,
+			[
+				"1: Bug",
+				"2: Lizard",
+				"10: Wolf",
+				"Alien",
+				"monkisrokBoss",
+				"Zone_10"
+			]
+		);
 	}
 
 	use super::*;
 
 	#[test]
 	fn asset_id_forms() {
-		assert_eq!(parse_asset_id("rbxassetid://136440628894302"), Some(136440628894302));
-		assert_eq!(parse_asset_id("http://www.roblox.com/asset/?id=123 "), Some(123));
+		assert_eq!(
+			parse_asset_id("rbxassetid://136440628894302"),
+			Some(136440628894302)
+		);
+		assert_eq!(
+			parse_asset_id("http://www.roblox.com/asset/?id=123 "),
+			Some(123)
+		);
 		assert_eq!(parse_asset_id("http://roblox.com/asset/?id=55"), Some(55));
 		assert_eq!(
 			parse_asset_id("https://assetdelivery.roblox.com/v1/asset/?id=77"),
@@ -240,8 +263,18 @@ mod tests {
 		assert!(export.skipped.is_empty(), "skipped: {:?}", export.skipped);
 		let tree = FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));
 		assert_eq!(tree.all_items().len(), export.entries.len());
-		assert!(export.warnings.is_empty(), "warnings: {:?}", export.warnings);
-		let count = |kind| export.entries.iter().filter(|e| e.maps.contains_key(&kind)).count();
+		assert!(
+			export.warnings.is_empty(),
+			"warnings: {:?}",
+			export.warnings
+		);
+		let count = |kind| {
+			export
+				.entries
+				.iter()
+				.filter(|e| e.maps.contains_key(&kind))
+				.count()
+		};
 		println!(
 			"{} entries in {} top-level folders; maps: {}",
 			export.entries.len(),
@@ -267,13 +300,19 @@ mod tests {
 		assert_eq!(export.skipped.len(), 1);
 		assert_eq!(export.entries[0].folder, ["Zone_10", "8: CrystalScorpion"]);
 		assert_eq!(export.entries[1].mesh_id, 2);
-		assert_eq!(export.entries[1].maps, BTreeMap::from([(MapKind::Texture, 3)]));
+		assert_eq!(
+			export.entries[1].maps,
+			BTreeMap::from([(MapKind::Texture, 3)])
+		);
 		assert!(export.entries[2].folder.is_empty());
 		assert!(export.entries[2].maps.is_empty());
 
 		let tree = FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));
 		assert_eq!(tree.items, [2]);
-		assert_eq!(tree.folders["Zone_10"].folders["8: CrystalScorpion"].items, [0]);
+		assert_eq!(
+			tree.folders["Zone_10"].folders["8: CrystalScorpion"].items,
+			[0]
+		);
 		assert_eq!(tree.all_items().len(), 3);
 	}
 
@@ -299,7 +338,10 @@ mod tests {
 				(MapKind::Roughness, 119858836123090),
 			])
 		);
-		assert_eq!(export.entries[1].maps, BTreeMap::from([(MapKind::Normal, 88205193273398)]));
+		assert_eq!(
+			export.entries[1].maps,
+			BTreeMap::from([(MapKind::Normal, 88205193273398)])
+		);
 		// a bad map id is reported but does not drop the model
 		assert!(export.entries[2].maps.is_empty());
 		assert_eq!(export.warnings.len(), 1);

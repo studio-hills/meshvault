@@ -5,6 +5,7 @@
 - Mesh v6.00 and v7.00 support (chunked format: COREMESH, LODS, SKINNING, FACS, HSRAVIS)
 - Draco decoding of v7 COREMESH chunks via `CoreMeshDraco7::decode`, behind the default `mesh-v7-draco` feature
 - Meshvault, a desktop viewer and bulk downloader, in `gui/`
+- Meshvault reads versioned (schema 1) exports and plays their animated models, with Motor6D and bone rigs, KeyframeSequence and CurveAnimation clips, and skinned meshes
 
 ### Changed
 

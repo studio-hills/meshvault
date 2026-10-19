@@ -117,7 +117,12 @@ Meshvault bundles the [Cal Sans](https://github.com/calcom/sans) typeface (SIL O
 
 ### Workspaces and bulk download
 
-A workspace is a folder of models downloaded from Roblox, organized to mirror the folders of an export file shaped like `[{"Name", "MeshId", "Folder", "TextureId"?, "ColorMap"?, "NormalMap"?, "RoughnessMap"?, "MetalnessMap"?}, ...]` (empty strings count as missing).  Content ids can be `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N` or `assetdelivery.roblox.com` URLs.
+A workspace is a folder of models downloaded from Roblox, organized to mirror the folders of an export file.  Two export layouts are read:
+
+- Schema 0, an array: `[{"Name", "MeshId", "Folder", "TextureId"?, "ColorMap"?, "NormalMap"?, "RoughnessMap"?, "MetalnessMap"?}, ...]`
+- Schema 1, an object: `{"SchemaVersion": 1, "Meshes": [{"Id", ...the fields above}], "Models": [...]}`, where each model carries its parts, Motor6D joints, bones and animation clips (KeyframeSequence or CurveAnimation) and refers to meshes by `Id`
+
+Other `SchemaVersion` values are rejected.  Empty strings count as missing.  Content ids can be `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N` or `assetdelivery.roblox.com` URLs.  Studio output split into `=== JSON CHUNK i/n ===` blocks can be imported as is.
 
 1. Open the workspace menu in the top bar and choose New workspace… (created under `Documents/Meshvault` by default)
 2. Click the key icon (Roblox access, Ctrl+,) and add a credential (see below), then press Test
@@ -126,6 +131,7 @@ A workspace is a folder of models downloaded from Roblox, organized to mirror th
 
 ```text
 <workspace>/workspace.json            items and their download state
+<workspace>/Rigs/<Path>.rig.json       an animated model, as a schema 1 export of its own
 <workspace>/Models/<Folder>/<Name>.mesh
 <workspace>/Models/<Folder>/<Name>.png  TextureID, next to its mesh
 <workspace>/Models/<Folder>/<Name>.color.png, .normal.png, .roughness.png, .metalness.png
@@ -135,6 +141,17 @@ A workspace is a folder of models downloaded from Roblox, organized to mirror th
 Roblox requires authentication to download assets.  Use an [Open Cloud API key](https://create.roblox.com/dashboard/credentials) with the `legacy-asset:manage` permission (recommended), or a `.ROBLOSECURITY` cookie.  Credentials are kept in the system credential store (Windows Credential Manager, macOS Keychain or Secret Service), never in the workspace or config files.  Downloads run in parallel, retry rate limits and server errors, resolve Decal ids to their image, and resume after the app is closed.  Each asset id is downloaded once even when it is used as several maps or by many models.  The import dialog can include or skip each map type.  Re-importing an export only adds what is new.
 
 The app also accepts a workspace folder and an export on the command line: `meshvault <workspace> <export.json>`.
+
+### Animated models
+
+Schema 1 exports list animated models in the import dialog; selecting one also selects the meshes its parts use.  In the library they appear under Animated models; click one (or open its `.rig.json`) to play it:
+
+- Parts are placed by their Motor6D joints (`Part1 = Part0 * C0 * Transform * C1⁻¹`) and bones (`Parent * CFrame * Transform`); meshes are centred and scaled to each part's size, parts without a file mesh can be shown as boxes, and fully transparent parts are hidden
+- Skinned meshes (mesh v4 and later) bend with their bones.  Each bone the mesh was bound to follows a Bone in the model, else a part of the same name (as R15 bodies do), else its bind pose from the mesh file.  Meshes Draco-compressed with edgebreaker stay rigid, since their vertices no longer line up with their weights
+- The transport bar plays, pauses, scrubs, loops and changes speed (Space plays or pauses), with clip markers on the track.  Clips the exporter could not read are listed with their status and cannot be played
+- The inspector lists clips, tracks that match nothing in the model, parts with visibility toggles, and warnings such as missing meshes or a rig captured mid-animation
+
+Facial animation (FACS) and live joint state are not part of the export, so face bones hold their bind pose unless a clip animates them by name.
 
 #### License
 

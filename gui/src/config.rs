@@ -76,6 +76,12 @@ impl Config {
 		}
 	}
 
+	/// Takes a workspace off the recent list. Its folder is not touched.
+	pub fn remove_recent(&mut self, root: &std::path::Path) {
+		self.recent_workspaces.retain(|p| p != root);
+		self.save();
+	}
+
 	pub fn add_recent(&mut self, root: PathBuf) {
 		self.recent_workspaces.retain(|p| p != &root);
 		self.recent_workspaces.insert(0, root);

@@ -337,9 +337,11 @@ impl Browser {
 							ui.close();
 						}
 						ui.separator();
-						if ui
-							.button(format!("Remove folder ({} models)", all.len()))
-							.clicked()
+						if widgets::danger_item(
+							ui,
+							format!("{}  Remove folder ({} models)", icons::TRASH, all.len()),
+						)
+						.clicked()
 						{
 							actions.push(Action::Remove(all.clone()));
 							ui.close();
@@ -402,7 +404,9 @@ impl Browser {
 						ui.close();
 					}
 					ui.separator();
-					if ui.button("Remove from workspace").clicked() {
+					if widgets::danger_item(ui, format!("{}  Remove from workspace", icons::TRASH))
+						.clicked()
+					{
 						actions.push(Action::Remove(vec![i]));
 						ui.close();
 					}

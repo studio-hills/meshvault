@@ -1,5 +1,6 @@
-//! Modal dialogs owned by the app: new workspace and keyboard shortcuts.
-//! Import and Roblox access live in their own modules.
+//! Modal dialogs owned by the app: new workspace, keyboard shortcuts and
+//! confirmation of destructive actions. Import and Roblox access live in
+//! their own modules.
 
 use eframe::egui::{self, Id, Key, RichText, Vec2};
 
@@ -7,7 +8,26 @@ use super::layout::SHORTCUTS;
 use super::theme::{dialog_frame, display, palette};
 use super::{icons, widgets};
 use crate::app::App;
+use crate::maps::Slot;
 use crate::workspace;
+
+/// A destructive action waiting for the user to confirm it.
+#[derive(Clone, Debug)]
+pub enum ConfirmAction {
+	Quit,
+	CloseWorkspace,
+	RemoveMap(Slot),
+	RemoveAllMaps,
+	/// Workspace item indices; their downloaded files are deleted.
+	RemoveItems(Vec<usize>),
+}
+
+pub struct Confirm {
+	title: String,
+	body: String,
+	button: String,
+	action: ConfirmAction,
+}
 
 impl App {
 	pub(super) fn dialogs(&mut self, ctx: &egui::Context) {
@@ -24,6 +44,126 @@ impl App {
 		}
 		self.new_workspace_dialog(ctx);
 		self.shortcuts_dialog(ctx);
+		self.confirm_dialog(ctx);
+	}
+
+	/// Asks before running a destructive action, explaining what it does.
+	pub fn ask(&mut self, action: ConfirmAction) {
+		let downloading = self.downloader.is_running();
+		let (title, body, button) = match &action {
+			ConfirmAction::Quit => (
+				"Quit Meshvault?".to_string(),
+				if downloading {
+					"Downloads in progress will stop. They pick up where they left off the next time you open the workspace."
+				} else {
+					"Your workspace is saved. The open model will close."
+				}
+				.to_string(),
+				"Quit",
+			),
+			ConfirmAction::CloseWorkspace => {
+				let name = self.workspace.as_ref().map(|ws| ws.name().to_string()).unwrap_or_default();
+				let mut body = "A model opened from it closes too. Nothing is deleted.".to_string();
+				if downloading {
+					body.push_str(" Downloads in progress will stop and resume the next time you open it.");
+				}
+				(format!("Close workspace \u{201c}{name}\u{201d}?"), body, "Close workspace")
+			}
+			ConfirmAction::RemoveMap(slot) => (
+				format!("Remove the {} map?", slot.label().to_lowercase()),
+				"It is removed from this view only. The image file is not deleted.".to_string(),
+				"Remove map",
+			),
+			ConfirmAction::RemoveAllMaps => (
+				"Remove all maps?".to_string(),
+				"They are removed from this view only. The image files are not deleted.".to_string(),
+				"Remove all",
+			),
+			ConfirmAction::RemoveItems(items) => {
+				let what = match (items.len(), items.first().and_then(|&i| self.workspace.as_ref()?.items().get(i))) {
+					(1, Some(item)) => format!("\u{201c}{}\u{201d}", item.name),
+					(n, _) => format!("{n} models"),
+				};
+				(
+					format!("Remove {what} from the workspace?"),
+					"Their downloaded files are deleted from the workspace folder. The download cache is kept, so importing them again is quick.".to_string(),
+					"Remove",
+				)
+			}
+		};
+		self.confirm = Some(Confirm {
+			title,
+			body,
+			button: button.to_string(),
+			action,
+		});
+	}
+
+	fn confirm_dialog(&mut self, ctx: &egui::Context) {
+		let Some(confirm) = &self.confirm else { return };
+		let p = palette(ctx);
+		let modal = egui::Modal::new(Id::unique("confirm"))
+			.frame(dialog_frame(ctx))
+			.backdrop_color(egui::Color32::from_black_alpha(140))
+			.show(ctx, |ui| {
+				ui.set_width(400.0);
+				ui.horizontal(|ui| {
+					ui.label(
+						RichText::new(icons::WARNING_CIRCLE)
+							.size(22.0)
+							.color(p.danger),
+					);
+					ui.label(RichText::new(&confirm.title).size(18.0).family(display()));
+				});
+				ui.add_space(4.0);
+				ui.add(
+					egui::Label::new(
+						RichText::new(&confirm.body)
+							.color(p.text_weak)
+							.line_height(Some(20.0)),
+					)
+					.wrap(),
+				);
+				ui.add_space(16.0);
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					if widgets::danger_button(ui, &confirm.button).clicked() {
+						return Some(true);
+					}
+					if widgets::text_button(ui, "Cancel").clicked() {
+						return Some(false);
+					}
+					None
+				})
+				.inner
+			});
+		let decision = match modal.inner {
+			Some(decision) => Some(decision),
+			None if modal.should_close() => Some(false),
+			None => None,
+		};
+		if let Some(confirmed) = decision {
+			let action = self.confirm.take().expect("dialog is open").action;
+			if confirmed {
+				self.run_confirmed(action, ctx);
+			}
+		}
+	}
+
+	fn run_confirmed(&mut self, action: ConfirmAction, ctx: &egui::Context) {
+		match action {
+			ConfirmAction::Quit => {
+				self.save_workspace();
+				ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+			}
+			ConfirmAction::CloseWorkspace => self.close_workspace(),
+			ConfirmAction::RemoveMap(slot) => {
+				if let Some(doc) = &mut self.doc {
+					doc.material.remove(slot);
+				}
+			}
+			ConfirmAction::RemoveAllMaps => self.remove_all_maps(),
+			ConfirmAction::RemoveItems(items) => self.remove_items(&items),
+		}
 	}
 
 	fn new_workspace_dialog(&mut self, ctx: &egui::Context) {

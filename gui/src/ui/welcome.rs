@@ -134,33 +134,18 @@ impl App {
 			);
 			ui.add_space(2.0);
 			for root in recent.into_iter().take(5) {
-				let name = root
-					.file_name()
-					.map(|n| n.to_string_lossy().into_owned())
-					.unwrap_or_default();
-				let response = ui
-					.horizontal(|ui| {
-						ui.label(RichText::new(icons::FOLDER_SIMPLE).color(p.accent));
-						let r = ui.add(
-							egui::Label::new(RichText::new(&name).color(p.text))
-								.sense(Sense::click()),
-						);
-						ui.add(
-							egui::Label::new(
-								RichText::new(root.display().to_string())
-									.size(11.0)
-									.color(p.text_weak),
-							)
-							.truncate(),
-						);
-						r
-					})
-					.inner;
-				if response
-					.on_hover_cursor(egui::CursorIcon::PointingHand)
-					.clicked()
-				{
-					self.open_workspace(&root);
+				match recent_row(ui, &root) {
+					RowAction::Open => self.open_workspace(&root),
+					RowAction::Remove => {
+						self.config.remove_recent(&root);
+						self.toasts.info(format!(
+							"Removed {} from recent workspaces. Its folder was not touched.",
+							root.file_name()
+								.map(|n| n.to_string_lossy())
+								.unwrap_or_default()
+						));
+					}
+					RowAction::None => {}
 				}
 			}
 		}
@@ -172,6 +157,83 @@ impl App {
 				.color(p.text_weak),
 		);
 	}
+}
+
+enum RowAction {
+	None,
+	Open,
+	Remove,
+}
+
+/// One recent workspace: the whole row opens it, with an accent background
+/// on hover and a button to take it off the list.
+fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
+	let p = palette(ui.ctx());
+	let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::hover());
+	// the row is registered before the remove button, so the button sits on
+	// top and a click on it never opens the workspace
+	let row = widgets::pointer(ui.interact(
+		rect,
+		ui.scope_id().with(("recent_row", root)),
+		Sense::click(),
+	));
+	let hovered = ui.rect_contains_pointer(rect);
+	let painter = ui.painter_at(rect);
+	if hovered {
+		painter.rect_filled(rect, 8.0, p.accent_soft);
+	}
+	let name = root
+		.file_name()
+		.map(|n| n.to_string_lossy().into_owned())
+		.unwrap_or_default();
+	let left = rect.left() + 12.0;
+	painter.text(
+		egui::pos2(left, rect.center().y),
+		Align2::LEFT_CENTER,
+		icons::FOLDER_SIMPLE,
+		FontId::proportional(16.0),
+		p.accent,
+	);
+	let name_rect = painter.text(
+		egui::pos2(left + 26.0, rect.center().y),
+		Align2::LEFT_CENTER,
+		&name,
+		FontId::new(14.0, semibold()),
+		if hovered { p.accent } else { p.text },
+	);
+	// the path fills what is left, clipped short of the remove button
+	let path_clip = egui::Rect::from_min_max(
+		egui::pos2(name_rect.right() + 10.0, rect.top()),
+		egui::pos2(rect.right() - 44.0, rect.bottom()),
+	);
+	painter.with_clip_rect(path_clip).text(
+		egui::pos2(path_clip.left(), rect.center().y),
+		Align2::LEFT_CENTER,
+		root.display().to_string(),
+		FontId::proportional(11.5),
+		p.text_weak,
+	);
+
+	let mut action = if row.clicked() {
+		RowAction::Open
+	} else {
+		RowAction::None
+	};
+	if hovered {
+		let button = egui::Rect::from_center_size(
+			rect.right_center() - Vec2::new(22.0, 0.0),
+			Vec2::splat(28.0),
+		);
+		ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
+			ui.spacing_mut().interact_size.y = 28.0;
+			if widgets::danger_icon_button(ui, icons::X, "Remove from recent workspaces").clicked()
+			{
+				action = RowAction::Remove;
+			}
+		});
+	}
+	row.on_hover_text(root.display().to_string());
+	action
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {

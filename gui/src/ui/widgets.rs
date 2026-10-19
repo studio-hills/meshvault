@@ -37,6 +37,15 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
 
 /// An icon button that shows an "on" state with the accent colour.
 pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
+	icon_widget(ui, icon, tooltip, on, false)
+}
+
+/// An icon button for a destructive action: it turns red on hover.
+pub fn danger_icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
+	icon_widget(ui, icon, tooltip, false, true)
+}
+
+fn icon_widget(ui: &mut Ui, icon: &str, tooltip: &str, on: bool, danger: bool) -> Response {
 	let p = palette(ui.ctx());
 	let size = Vec2::splat(ui.spacing().interact_size.y);
 	let (rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -45,6 +54,8 @@ pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response
 	let hovered = enabled && response.hovered();
 	let fill = if on {
 		p.accent_soft
+	} else if hovered && danger {
+		p.danger.gamma_multiply(0.16)
 	} else if hovered {
 		p.raised_hover
 	} else {
@@ -54,6 +65,8 @@ pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response
 		p.text_weak.gamma_multiply(0.45)
 	} else if on {
 		p.accent
+	} else if hovered && danger {
+		p.danger
 	} else if hovered {
 		p.text
 	} else {
@@ -80,6 +93,22 @@ pub fn primary_button(ui: &mut Ui, text: impl Into<String>) -> Response {
 			.fill(p.accent)
 			.stroke(Stroke::NONE),
 	)
+}
+
+/// A filled red button confirming a destructive action (shadcn's destructive variant).
+pub fn danger_button(ui: &mut Ui, text: impl Into<String>) -> Response {
+	let p = palette(ui.ctx());
+	ui.add(
+		egui::Button::new(RichText::new(text).color(Color32::WHITE).family(medium()))
+			.fill(p.danger)
+			.stroke(Stroke::NONE),
+	)
+}
+
+/// A menu item for a destructive action, in red.
+pub fn danger_item(ui: &mut Ui, text: impl Into<String>) -> Response {
+	let p = palette(ui.ctx());
+	ui.add(egui::Button::new(RichText::new(text).color(p.danger)))
 }
 
 /// A bordered button with an icon in front of the label (shadcn's outline variant).

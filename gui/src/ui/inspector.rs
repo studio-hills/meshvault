@@ -7,11 +7,13 @@ use super::{icons, widgets};
 use crate::app::{App, format_bytes};
 use crate::geometry::GroupKind;
 use crate::maps::Slot;
+use crate::ui::ConfirmAction;
 
 impl App {
 	pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
 		let mut pick = None;
+		let mut remove_map = None;
 		egui::ScrollArea::vertical()
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
@@ -91,8 +93,8 @@ impl App {
 						if let Some((slot, on)) = toggle {
 							doc.material.toggle(slot, on);
 						}
-						if let Some(slot) = remove {
-							doc.material.remove(slot);
+						if remove.is_some() {
+							remove_map = remove;
 						}
 					});
 				}
@@ -170,6 +172,9 @@ impl App {
 		if let Some(slot) = pick {
 			self.pick_map(slot);
 		}
+		if let Some(slot) = remove_map {
+			self.ask(ConfirmAction::RemoveMap(slot));
+		}
 	}
 }
 
@@ -219,7 +224,8 @@ fn map_row(
 						// buttons first (right to left) so the text gets only the space left over
 						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 							ui.spacing_mut().item_spacing.x = 0.0;
-							if widgets::icon_button(ui, icons::TRASH, "Remove").clicked() {
+							if widgets::danger_icon_button(ui, icons::TRASH, "Remove map").clicked()
+							{
 								*remove = Some(slot);
 							}
 							if widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, "Replace…")

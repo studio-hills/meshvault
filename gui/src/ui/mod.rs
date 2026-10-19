@@ -11,5 +11,6 @@ pub mod tree;
 mod welcome;
 pub mod widgets;
 
+pub use dialogs::{Confirm, ConfirmAction};
 pub use toasts::Toasts;
 pub use welcome::paint_gradient;

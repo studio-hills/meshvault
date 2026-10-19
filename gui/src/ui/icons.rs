@@ -41,3 +41,4 @@ pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const ARROWS_IN_LINE_VERTICAL: &str = "\u{E532}";
 pub const ARROWS_OUT_LINE_VERTICAL: &str = "\u{E536}";
 pub const CROSSHAIR_SIMPLE: &str = "\u{E1D8}";
+pub const SIGN_OUT: &str = "\u{E42A}";

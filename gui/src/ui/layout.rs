@@ -10,6 +10,7 @@ use super::{icons, widgets};
 use crate::app::App;
 use crate::geometry::GroupKind;
 use crate::maps::Slot;
+use crate::ui::ConfirmAction;
 use crate::viewport::{self, Shading, ViewSettings};
 
 impl eframe::App for App {
@@ -233,12 +234,10 @@ impl App {
 						crate::workspace_ui::reveal(&ws.root);
 					}
 				}
-				if ui
-					.button(format!("{}  Close workspace", icons::X))
-					.clicked()
-				{
+				ui.separator();
+				if widgets::danger_item(ui, format!("{}  Close workspace", icons::X)).clicked() {
 					ui.close();
-					self.close_workspace();
+					self.ask(ConfirmAction::CloseWorkspace);
 				}
 			}
 		});
@@ -273,15 +272,14 @@ impl App {
 			.doc
 			.as_ref()
 			.is_some_and(|d| !d.material.maps.is_empty());
-		if ui
-			.add_enabled(
-				has_maps,
-				egui::Button::new(format!("{}  Remove all maps", icons::TRASH)),
-			)
-			.clicked()
-		{
+		let remove_all = ui
+			.add_enabled_ui(has_maps, |ui| {
+				widgets::danger_item(ui, format!("{}  Remove all maps", icons::TRASH))
+			})
+			.inner;
+		if remove_all.clicked() {
 			ui.close();
-			self.remove_all_maps();
+			self.ask(ConfirmAction::RemoveAllMaps);
 		}
 		ui.separator();
 		if ui
@@ -291,8 +289,10 @@ impl App {
 			ui.close();
 			self.show_shortcuts = true;
 		}
-		if ui.button(format!("{}  Quit", icons::X)).clicked() {
-			ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+		ui.separator();
+		if widgets::danger_item(ui, format!("{}  Quit", icons::SIGN_OUT)).clicked() {
+			ui.close();
+			self.ask(ConfirmAction::Quit);
 		}
 	}
 

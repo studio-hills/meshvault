@@ -14,8 +14,8 @@ use crate::import_ui::{self, ImportDialog};
 use crate::maps::Slot;
 use crate::settings_ui::{self, SettingsDialog};
 use crate::texture::{self, Material};
-use crate::ui::Toasts;
 use crate::ui::theme;
+use crate::ui::{Confirm, ConfirmAction, Toasts};
 use crate::viewport::{Camera, Shading};
 use crate::workspace::{self, AssetKind, AssetState, Workspace};
 use crate::{export, workspace_ui};
@@ -84,6 +84,8 @@ pub struct App {
 	pub settings: Option<SettingsDialog>,
 	pub new_workspace: Option<NewWorkspaceDialog>,
 	pub show_shortcuts: bool,
+	/// A destructive action awaiting confirmation.
+	pub confirm: Option<Confirm>,
 	pub show_library: bool,
 	pub show_inspector: bool,
 	/// Stem of the workspace item shown in the viewer.
@@ -122,6 +124,7 @@ impl App {
 			settings: None,
 			new_workspace: None,
 			show_shortcuts: false,
+			confirm: None,
 			show_library: true,
 			show_inspector: true,
 			open_stem: None,
@@ -514,6 +517,22 @@ impl App {
 		}
 	}
 
+	/// Removes workspace items and deletes their organized files.
+	pub fn remove_items(&mut self, items: &[usize]) {
+		if let Some(ws) = &mut self.workspace {
+			let removes_open = self.open_stem.as_ref().is_some_and(|open| {
+				items
+					.iter()
+					.any(|&i| ws.items().get(i).is_some_and(|it| &it.stem == open))
+			});
+			if removes_open {
+				self.open_stem = None;
+			}
+			ws.remove(items);
+		}
+		self.save_workspace();
+	}
+
 	pub fn handle_browser(&mut self, actions: Vec<workspace_ui::Action>) {
 		for action in actions {
 			match action {
@@ -524,20 +543,8 @@ impl App {
 					}
 					self.start_downloads();
 				}
-				workspace_ui::Action::Remove(items) => {
-					if let Some(ws) = &mut self.workspace {
-						let removes_open = self.open_stem.as_ref().is_some_and(|open| {
-							items
-								.iter()
-								.any(|&i| ws.items().get(i).is_some_and(|it| &it.stem == open))
-						});
-						if removes_open {
-							self.open_stem = None;
-						}
-						ws.remove(&items);
-					}
-					self.save_workspace();
-				}
+				// deletes files, so it is confirmed first
+				workspace_ui::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
 				workspace_ui::Action::Reveal(path) => workspace_ui::reveal(&path),
 			}
 		}

@@ -26,6 +26,8 @@ pub struct SettingsDialog {
 	/// Whether a credential is saved for [API key, cookie]; cached to avoid
 	/// querying the credential store every frame.
 	saved: [bool; 2],
+	/// "Forget" was clicked; waiting for the inline confirmation.
+	confirm_forget: bool,
 }
 
 fn slot(method: AuthMethod) -> usize {
@@ -59,6 +61,7 @@ impl SettingsDialog {
 			test: None,
 			message: None,
 			notice: None,
+			confirm_forget: false,
 			saved: [
 				config::load_secret(AuthMethod::ApiKey).is_some(),
 				config::load_secret(AuthMethod::Cookie).is_some(),
@@ -174,12 +177,20 @@ impl SettingsDialog {
 				}
 				ui.label("Roblox only delivers assets to signed-in users, so downloads need a credential.");
 				ui.add_space(6.0);
-				widgets::pointer(ui.radio_value(
+				let api = widgets::pointer(ui.radio_value(
 					&mut self.method,
 					AuthMethod::ApiKey,
 					"Open Cloud API key (recommended)",
 				));
-				widgets::pointer(ui.radio_value(&mut self.method, AuthMethod::Cookie, ".ROBLOSECURITY cookie"));
+				let cookie = widgets::pointer(ui.radio_value(
+					&mut self.method,
+					AuthMethod::Cookie,
+					".ROBLOSECURITY cookie",
+				));
+				// a pending "forget" belongs to the credential it was asked about
+				if api.changed() || cookie.changed() {
+					self.confirm_forget = false;
+				}
 				ui.add_space(4.0);
 				match self.method {
 					AuthMethod::ApiKey => {
@@ -225,11 +236,37 @@ impl SettingsDialog {
 							AuthMethod::Cookie => "Cookie",
 						});
 						field(ui, &mut |ui| {
-							// laid out right to left: the button first, the input fills the rest
-							if saved && widgets::text_button(ui, "Forget").clicked() {
-								config::delete_secret(self.method);
-								self.saved[slot(self.method)] = false;
-								self.message = Some((true, "Saved credential removed.".into()));
+							// laid out right to left: the buttons first, then the input
+							// or the confirmation fills the rest
+							if saved && self.confirm_forget {
+								let what = match self.method {
+									AuthMethod::ApiKey => "key",
+									AuthMethod::Cookie => "cookie",
+								};
+								if widgets::danger_button(ui, "Forget").clicked() {
+									config::delete_secret(self.method);
+									self.saved[slot(self.method)] = false;
+									self.confirm_forget = false;
+									self.message = Some((true, "Saved credential removed.".into()));
+								}
+								if widgets::text_button(ui, "Keep").clicked() {
+									self.confirm_forget = false;
+								}
+								ui.label(
+									RichText::new(format!("Delete the saved {what}?"))
+										.color(palette(ui.ctx()).danger),
+								);
+								return;
+							}
+							if saved {
+								let p = palette(ui.ctx());
+								let forget = ui.add(
+									egui::Button::new(RichText::new("Forget").color(p.danger))
+										.stroke(egui::Stroke::new(1.0, p.danger.gamma_multiply(0.5))),
+								);
+								if forget.on_hover_text("Delete the saved credential").clicked() {
+									self.confirm_forget = true;
+								}
 							}
 							ui.add(
 								widgets::input(&mut self.secret)

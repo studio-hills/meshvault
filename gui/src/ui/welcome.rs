@@ -224,13 +224,15 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 			rect.right_center() - Vec2::new(22.0, 0.0),
 			Vec2::splat(28.0),
 		);
-		ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
-			ui.spacing_mut().interact_size.y = 28.0;
-			if widgets::danger_icon_button(ui, icons::X, "Remove from recent workspaces").clicked()
-			{
-				action = RowAction::Remove;
-			}
-		});
+		// a detached child: scope_builder would move the parent's cursor to the
+		// button's bottom edge and shift everything below the row on hover
+		let mut child = ui.new_child(egui::UiBuilder::new().max_rect(button));
+		child.spacing_mut().interact_size.y = 28.0;
+		if widgets::danger_icon_button(&mut child, icons::X, "Remove from recent workspaces")
+			.clicked()
+		{
+			action = RowAction::Remove;
+		}
 	}
 	row.on_hover_text(root.display().to_string());
 	action

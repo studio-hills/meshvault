@@ -1,5 +1,6 @@
 //! Application state and the actions the UI triggers. Drawing lives in `ui`.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -54,6 +55,12 @@ impl Document {
 	}
 }
 
+pub struct Parsing {
+	pub path: PathBuf,
+	rx: std::sync::mpsc::Receiver<Result<export::Export, String>>,
+	pub started: Instant,
+}
+
 pub struct NewWorkspaceDialog {
 	pub name: String,
 	pub parent: PathBuf,
@@ -81,6 +88,8 @@ pub struct App {
 	pub browser: workspace_ui::Browser,
 	pub downloader: Downloader,
 	pub import: Option<ImportDialog>,
+	/// An export being read on a background thread.
+	pub parsing: Option<Parsing>,
 	pub settings: Option<SettingsDialog>,
 	pub new_workspace: Option<NewWorkspaceDialog>,
 	pub show_shortcuts: bool,
@@ -121,6 +130,7 @@ impl App {
 			browser: workspace_ui::Browser::default(),
 			downloader: Downloader::default(),
 			import: None,
+			parsing: None,
 			settings: None,
 			new_workspace: None,
 			show_shortcuts: false,
@@ -265,6 +275,7 @@ impl App {
 		}
 		self.workspace = None;
 		self.import = None;
+		self.parsing = None;
 		self.open_stem = None;
 	}
 
@@ -336,13 +347,38 @@ impl App {
 	}
 
 	pub fn start_import(&mut self, path: PathBuf, bytes: &[u8]) {
-		let Some(ws) = &self.workspace else {
+		if self.workspace.is_none() {
 			// make a workspace first, then come back to this export
 			self.show_new_workspace(Some(path));
 			return;
+		}
+		// schema 1 exports with animations run to hundreds of megabytes
+		let (tx, rx) = std::sync::mpsc::channel();
+		let bytes = bytes.to_vec();
+		let ctx = self.ctx.clone();
+		std::thread::spawn(move || {
+			let result = export::parse(&String::from_utf8_lossy(&bytes));
+			drop(bytes);
+			let _ = tx.send(result);
+			ctx.request_repaint();
+		});
+		self.parsing = Some(Parsing {
+			path,
+			rx,
+			started: Instant::now(),
+		});
+	}
+
+	pub fn poll_parsing(&mut self) {
+		let Some(parsing) = &self.parsing else { return };
+		let result = match parsing.rx.try_recv() {
+			Ok(result) => result,
+			Err(std::sync::mpsc::TryRecvError::Empty) => return,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("The export reader stopped unexpectedly".into()),
 		};
-		let json = String::from_utf8_lossy(bytes);
-		match export::parse(&json) {
+		let path = self.parsing.take().expect("checked above").path;
+		let Some(ws) = &self.workspace else { return };
+		match result {
 			Ok(export) => self.import = Some(ImportDialog::new(path, export, ws)),
 			Err(e) => self.toasts.error(format!("{}: {e}", path.display())),
 		}
@@ -351,6 +387,7 @@ impl App {
 	pub fn finish_import(&mut self, outcome: import_ui::Outcome) {
 		let import_ui::Outcome::Import {
 			entries,
+			models,
 			download_now,
 		} = outcome
 		else {
@@ -360,9 +397,38 @@ impl App {
 			return;
 		};
 		let count = entries.len();
-		let added = ws.add(entries);
+		let mut added = 0;
+		let mut stems = HashMap::new();
+		for entry in &entries {
+			let (stem, new) = ws.add_entry(entry);
+			added += usize::from(new);
+			if let Some(id) = entry.source_id {
+				stems.insert(id, stem);
+			}
+		}
+		let by_id: HashMap<u32, &export::Entry> = entries
+			.iter()
+			.filter_map(|e| Some((e.source_id?, e)))
+			.collect();
+		let mut rigs = 0;
+		for model in &models {
+			let refs: BTreeSet<u32> = model.parts.iter().map(|p| p.mesh_ref).filter(|&r| r != 0).collect();
+			let meshes: Vec<(&export::Entry, String)> = refs
+				.iter()
+				.filter_map(|r| Some((*by_id.get(r)?, stems.get(r)?.clone())))
+				.collect();
+			match ws.add_model(model, &meshes) {
+				Ok(_) => rigs += 1,
+				Err(e) => self.toasts.error(format!("{}: {e}", model.name)),
+			}
+		}
+		let rigs = match rigs {
+			0 => String::new(),
+			1 => " and 1 animated model".into(),
+			n => format!(" and {n} animated models"),
+		};
 		self.toasts.success(format!(
-			"Imported {count} models ({added} new, {} already in the workspace)",
+			"Imported {count} meshes{rigs} ({added} new, {} already in the workspace)",
 			count - added
 		));
 		self.show_library = true;

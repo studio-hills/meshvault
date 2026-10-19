@@ -1,16 +1,28 @@
-//! Parsing the JSON export format:
-//! `[{Name, MeshId, Folder, TextureId?, ColorMap?, NormalMap?, RoughnessMap?, MetalnessMap?}, ...]`.
+//! Parsing export files. Two layouts are understood:
+//!
+//! - the original array (schema 0):
+//!   `[{Name, MeshId, Folder, TextureId?, ColorMap?, NormalMap?, RoughnessMap?, MetalnessMap?}, ...]`
+//! - schema version 1: `{SchemaVersion: 1, Meshes: [{Id, ...the same fields}], Models: [...]}`,
+//!   where `Models` holds rigs and animation clips that refer to meshes by `Id`.
+//!
 //! Missing fields and empty strings both mean "none".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::Deserialize;
 
+use crate::anim::schema::AnimatedModel;
 use crate::maps::MapKind;
+
+/// The newest `SchemaVersion` this build understands.
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct RawEntry {
+	/// `Meshes[].Id` in schema 1.
+	#[serde(default)]
+	id: Option<u32>,
 	name: String,
 	mesh_id: String,
 	#[serde(default)]
@@ -48,10 +60,16 @@ pub struct Entry {
 	pub mesh_id: u64,
 	/// Asset id of each map this model references.
 	pub maps: BTreeMap<MapKind, u64>,
+	/// `Meshes[].Id` in a schema 1 export, which `Parts[].MeshRef` refers to.
+	pub source_id: Option<u32>,
 }
 
 pub struct Export {
+	/// `SchemaVersion`, or 0 for the original array layout.
+	pub version: u32,
 	pub entries: Vec<Entry>,
+	/// Animated models (schema 1).
+	pub models: Vec<AnimatedModel>,
 	/// Entries that were skipped, with the reason.
 	pub skipped: Vec<String>,
 	/// Map ids that could not be understood and were ignored.
@@ -80,13 +98,77 @@ pub fn parse_asset_id(s: &str) -> Option<u64> {
 		.and_then(|id| id.trim().parse().ok())
 }
 
-pub fn parse(json: &str) -> Result<Export, String> {
-	let raw: Vec<RawEntry> =
+#[derive(Deserialize)]
+struct Header {
+	#[serde(rename = "SchemaVersion")]
+	version: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct DocumentV1 {
+	#[serde(rename = "Meshes")]
+	meshes: Vec<RawEntry>,
+	#[serde(rename = "Models")]
+	models: Vec<AnimatedModel>,
+}
+
+/// The Studio exporter prints long output as `=== JSON CHUNK i/n ===`
+/// blocks; joins the chunk contents back together.
+fn join_chunks(text: &str) -> Option<String> {
+	if !text.trim_start().starts_with("=== JSON CHUNK") {
+		return None;
+	}
+	let mut out = String::with_capacity(text.len());
+	for line in text.lines() {
+		let marker = line.trim();
+		if marker.starts_with("=== JSON CHUNK") && marker.ends_with("===") {
+			continue;
+		}
+		// chunks are split mid-text, so they are joined with nothing between
+		out.push_str(line.trim_end_matches('\r'));
+	}
+	Some(out)
+}
+
+pub fn parse(text: &str) -> Result<Export, String> {
+	let text = text.trim_start_matches('\u{feff}');
+	let joined = join_chunks(text);
+	let json = joined.as_deref().unwrap_or(text).trim_start();
+	if json.starts_with('[') {
+		let raw: Vec<RawEntry> =
+			serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
+		return Ok(convert(0, raw, Vec::new()));
+	}
+	let header: Header =
 		serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
+	let version = match &header.version {
+		None => return Err("Not a valid export file: SchemaVersion is missing".into()),
+		Some(v) => v
+			.as_u64()
+			.ok_or_else(|| format!("Unrecognised SchemaVersion {v}"))?,
+	};
+	if version != u64::from(SCHEMA_VERSION) {
+		return Err(format!(
+			"This export uses schema version {version}, which this version of Meshvault cannot read (it reads versions 0 and {SCHEMA_VERSION})."
+		));
+	}
+	let doc: DocumentV1 = serde_json::from_str(json)
+		.map_err(|e| format!("Not a valid schema {version} export: {e}"))?;
+	Ok(convert(SCHEMA_VERSION, doc.meshes, doc.models))
+}
+
+fn convert(version: u32, raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
 	let mut entries = Vec::with_capacity(raw.len());
 	let mut skipped = Vec::new();
 	let mut warnings = Vec::new();
+	let mut ids = HashSet::new();
 	for r in raw {
+		if let Some(id) = r.id
+			&& !ids.insert(id)
+		{
+			skipped.push(format!("{}: duplicate mesh Id {id}", r.name));
+			continue;
+		}
 		let Some(mesh_id) = parse_asset_id(&r.mesh_id) else {
 			skipped.push(format!("{}: unrecognised MeshId {:?}", r.name, r.mesh_id));
 			continue;
@@ -117,13 +199,16 @@ pub fn parse(json: &str) -> Result<Export, String> {
 			folder,
 			mesh_id,
 			maps,
+			source_id: r.id,
 		});
 	}
-	Ok(Export {
+	Export {
+		version,
 		entries,
+		models,
 		skipped,
 		warnings,
-	})
+	}
 }
 
 /// Folder hierarchy over a list of entries, for tree views.
@@ -314,6 +399,52 @@ mod tests {
 			[0]
 		);
 		assert_eq!(tree.all_items().len(), 3);
+	}
+
+	#[test]
+	fn parses_schema_1() {
+		let json = r#"{"SchemaVersion":1,
+			"Meshes":[
+				{"Id":1,"Name":"Torso","MeshId":"rbxassetid://10","TextureId":"","Folder":"Workspace/Wolf",
+				 "ColorMap":"rbxassetid://11","NormalMap":"","RoughnessMap":"","MetalnessMap":""},
+				{"Id":2,"Name":"Head","MeshId":"","TextureId":"","Folder":"Workspace/Wolf",
+				 "ColorMap":"","NormalMap":"","RoughnessMap":"","MetalnessMap":""}
+			],
+			"Models":[{"Name":"Wolf","Path":"Workspace/Wolf",
+				"Parts":[{"Path":"Workspace/Wolf/Torso","Name":"Torso","MeshRef":1,
+					"CFrame":[0,3,0,1,0,0,0,1,0,0,0,1],"Size":[2,2,1],"Transparency":0}],
+				"Joints":[],"Bones":[],
+				"Animations":[{"Name":"Idle","AnimationId":"rbxassetid://5","Status":"Unavailable",
+					"Duration":0,"Loop":false,"Priority":"","Keyframes":[],"Curves":[]}]}]}"#;
+		let export = parse(json).unwrap();
+		assert_eq!(export.version, 1);
+		assert_eq!(export.entries.len(), 1);
+		assert_eq!(export.entries[0].source_id, Some(1));
+		assert_eq!(
+			export.entries[0].maps,
+			BTreeMap::from([(MapKind::Color, 11)])
+		);
+		assert_eq!(export.skipped.len(), 1);
+		assert_eq!(export.models.len(), 1);
+		assert_eq!(export.models[0].parts[0].mesh_ref, 1);
+		assert_eq!(export.models[0].parts[0].cframe[1], 3.0);
+	}
+
+	#[test]
+	fn rejects_unknown_schema() {
+		let err = parse(r#"{"SchemaVersion":3,"Meshes":[],"Models":[]}"#)
+			.err()
+			.unwrap();
+		assert!(err.contains("schema version 3"), "{err}");
+		assert!(parse(r#"{"Meshes":[]}"#).is_err());
+		assert!(parse(r#"{"SchemaVersion":1,"Meshes":[]}"#).is_err());
+		assert!(parse(r#"{"SchemaVersion":1,"Meshes":[],"Models":[]}"#).is_ok());
+	}
+
+	#[test]
+	fn joins_studio_chunks() {
+		let text = "=== JSON CHUNK 1/2 ===\r\n{\"SchemaVersion\":1,\"Mes\r\n=== JSON CHUNK 2/2 ===\nhes\":[],\"Models\":[]}\n";
+		assert_eq!(parse(text).unwrap().version, 1);
 	}
 
 	/// The v2 export: every key present, empty strings for missing maps.

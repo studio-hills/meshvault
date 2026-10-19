@@ -716,6 +716,7 @@ mod tests {
 			folder: folder.split('/').map(String::from).collect(),
 			mesh_id,
 			maps: maps.iter().copied().collect(),
+			source_id: None,
 		};
 		ws.add([
 			// TextureID and ColorMap are the same image: fetched once, written twice

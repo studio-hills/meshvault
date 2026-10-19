@@ -42,9 +42,53 @@ impl App {
 		{
 			self.settings = None;
 		}
+		self.parsing_dialog(ctx);
 		self.new_workspace_dialog(ctx);
 		self.shortcuts_dialog(ctx);
 		self.confirm_dialog(ctx);
+	}
+
+	/// Shown while a large export is read in the background.
+	fn parsing_dialog(&mut self, ctx: &egui::Context) {
+		let Some(parsing) = &self.parsing else { return };
+		// small files finish before a dialog would be noticed
+		if parsing.started.elapsed().as_millis() < 150 {
+			ctx.request_repaint_after(std::time::Duration::from_millis(150));
+			return;
+		}
+		let file = parsing
+			.path
+			.file_name()
+			.map(|s| s.to_string_lossy().into_owned())
+			.unwrap_or_default();
+		let mut cancel = false;
+		egui::Modal::new(Id::unique("parsing_export"))
+			.frame(dialog_frame(ctx))
+			.backdrop_color(egui::Color32::from_black_alpha(140))
+			.show(ctx, |ui| {
+				ui.set_width(340.0);
+				ui.horizontal(|ui| {
+					ui.add(egui::Spinner::new().size(18.0));
+					ui.label(
+						RichText::new(format!("Reading {file}"))
+							.size(16.0)
+							.family(display()),
+					);
+				});
+				ui.add_space(6.0);
+				ui.label(
+					RichText::new("Large exports with animations can take a few seconds.")
+						.color(palette(ui.ctx()).text_weak),
+				);
+				ui.add_space(10.0);
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					cancel = widgets::text_button(ui, "Cancel").clicked();
+				});
+			});
+		if cancel {
+			// the reader thread finishes on its own; its result is dropped
+			self.parsing = None;
+		}
 	}
 
 	/// Asks before running a destructive action, explaining what it does.

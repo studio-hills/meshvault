@@ -8,6 +8,7 @@
 //!   Models/<Folder>/<Name>.mesh    organized copies, browsable in Explorer
 //!   Models/<Folder>/<Name>.png     TextureID, next to its mesh (same file stem)
 //!   Models/<Folder>/<Name>.normal.png   SurfaceAppearance maps (.color, .normal, ...)
+//!   Rigs/<Path>.rig.json           animated models: a schema 1 export holding one model
 //!   .cache/<asset id>              one raw copy per asset id, so duplicates download once
 //! ```
 
@@ -16,13 +17,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::export::Entry;
+use crate::anim::schema::AnimatedModel;
+use crate::export::{self, Entry};
 use crate::maps::MapKind;
 
 pub const MANIFEST: &str = "workspace.json";
 pub const MODELS_DIR: &str = "Models";
+pub const RIGS_DIR: &str = "Rigs";
 pub const CACHE_DIR: &str = ".cache";
-const MANIFEST_VERSION: u32 = 2;
+/// 3 added animated models.
+const MANIFEST_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -88,11 +92,30 @@ impl Item {
 	}
 }
 
+/// An animated model (rig and clips) from a schema 1 export. Its parts use
+/// meshes stored as ordinary items.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelItem {
+	pub name: String,
+	/// Roblox instance path; identifies the model when an export is re-imported.
+	pub path: String,
+	pub folder: Vec<String>,
+	/// The stored model record, relative to the workspace root.
+	pub file: String,
+	/// `Parts[].MeshRef` to the stem of the item holding that mesh.
+	pub meshes: BTreeMap<u32, String>,
+	pub parts: usize,
+	pub clips: usize,
+	pub playable_clips: usize,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Manifest {
 	pub version: u32,
 	pub name: String,
 	pub items: Vec<Item>,
+	#[serde(default)]
+	pub models: Vec<ModelItem>,
 }
 
 pub struct Workspace {
@@ -173,6 +196,45 @@ pub fn sanitize(name: &str) -> String {
 	}
 }
 
+fn rig_stem(file: &str) -> &str {
+	file.strip_suffix(".rig.json").unwrap_or(file)
+}
+
+/// Writes a model as a schema 1 export holding just that model and the
+/// meshes it uses, so the file can also be imported on its own.
+fn write_rig(path: &Path, model: &AnimatedModel, meshes: &[(&Entry, String)]) -> Result<(), String> {
+	let meshes: Vec<serde_json::Value> = meshes
+		.iter()
+		.filter_map(|(e, _)| {
+			let mut asset = serde_json::Map::new();
+			asset.insert("Id".into(), e.source_id?.into());
+			asset.insert("Name".into(), e.name.clone().into());
+			asset.insert("MeshId".into(), format!("rbxassetid://{}", e.mesh_id).into());
+			asset.insert("Folder".into(), e.folder.join("/").into());
+			for kind in MapKind::ALL {
+				let value = e
+					.maps
+					.get(&kind)
+					.map(|id| format!("rbxassetid://{id}"))
+					.unwrap_or_default();
+				asset.insert(kind.export_field().into(), value.into());
+			}
+			Some(asset.into())
+		})
+		.collect();
+	let doc = serde_json::json!({
+		"SchemaVersion": export::SCHEMA_VERSION,
+		"Meshes": meshes,
+		"Models": [model],
+	});
+	if let Some(dir) = path.parent() {
+		std::fs::create_dir_all(dir)
+			.map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+	}
+	let json = serde_json::to_string(&doc).map_err(|e| e.to_string())?;
+	std::fs::write(path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))
+}
+
 impl Workspace {
 	pub fn create(root: &Path, name: &str) -> Result<Self, String> {
 		if root.join(MANIFEST).exists() {
@@ -186,6 +248,7 @@ impl Workspace {
 				version: MANIFEST_VERSION,
 				name: name.to_string(),
 				items: Vec::new(),
+				models: Vec::new(),
 			},
 			stems: HashSet::new(),
 			dirty: true,
@@ -237,6 +300,7 @@ impl Workspace {
 			.items
 			.iter()
 			.map(|i| i.stem.to_lowercase())
+			.chain(manifest.models.iter().map(|m| rig_stem(&m.file).to_lowercase()))
 			.collect();
 		Ok(Self {
 			root: root.to_path_buf(),
@@ -253,6 +317,10 @@ impl Workspace {
 
 	pub fn items(&self) -> &[Item] {
 		&self.manifest.items
+	}
+
+	pub fn models(&self) -> &[ModelItem] {
+		&self.manifest.models
 	}
 
 	pub fn generation(&self) -> u64 {
@@ -276,8 +344,8 @@ impl Workspace {
 		Ok(())
 	}
 
-	fn unique_stem(&mut self, folder: &[String], name: &str) -> String {
-		let mut dir = String::from(MODELS_DIR);
+	fn unique_stem(&mut self, top: &str, folder: &[String], name: &str) -> String {
+		let mut dir = String::from(top);
 		for part in folder {
 			dir.push('/');
 			dir.push_str(&sanitize(part));
@@ -299,46 +367,154 @@ impl Workspace {
 	/// being duplicated, so re-importing an export is safe. Returns how
 	/// many new items were added.
 	pub fn add(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
-		let mut added = 0;
-		for entry in entries {
-			let maps = entry.maps.iter().map(|(&kind, &id)| {
-				(
-					kind,
-					MapRef {
-						id,
-						state: AssetState::Pending,
-					},
-				)
-			});
-			let existing = self.manifest.items.iter_mut().find(|i| {
-				i.folder == entry.folder && i.name == entry.name && i.mesh_id == entry.mesh_id
-			});
-			if let Some(item) = existing {
-				for (kind, map) in maps {
-					if !item.maps.contains_key(&kind) {
-						item.maps.insert(kind, map);
-						self.dirty = true;
-					}
-				}
-				continue;
-			}
-			let stem = self.unique_stem(&entry.folder, &entry.name);
-			let maps = maps.collect();
-			self.manifest.items.push(Item {
-				name: entry.name,
-				folder: entry.folder,
-				mesh_id: entry.mesh_id,
-				stem,
-				mesh: AssetState::Pending,
-				maps,
-				texture_id: None,
-				texture: None,
-			});
-			added += 1;
-			self.dirty = true;
-		}
+		let added = entries
+			.into_iter()
+			.filter(|e| self.add_entry(e).1)
+			.count();
 		self.generation += 1;
 		added
+	}
+
+	/// Adds one entry (see [`Self::add`]). Returns the stem of its item and
+	/// whether the item is new.
+	pub fn add_entry(&mut self, entry: &Entry) -> (String, bool) {
+		let maps = entry.maps.iter().map(|(&kind, &id)| {
+			(
+				kind,
+				MapRef {
+					id,
+					state: AssetState::Pending,
+				},
+			)
+		});
+		// the same mesh with a different image is a different item
+		let existing = self.manifest.items.iter_mut().find(|i| {
+			i.folder == entry.folder
+				&& i.name == entry.name
+				&& i.mesh_id == entry.mesh_id
+				&& i
+					.maps
+					.iter()
+					.all(|(k, m)| entry.maps.get(k).is_none_or(|&id| id == m.id))
+		});
+		if let Some(item) = existing {
+			for (kind, map) in maps {
+				if !item.maps.contains_key(&kind) {
+					item.maps.insert(kind, map);
+					self.dirty = true;
+				}
+			}
+			return (item.stem.clone(), false);
+		}
+		let stem = self.unique_stem(MODELS_DIR, &entry.folder, &entry.name);
+		let maps = maps.collect();
+		self.manifest.items.push(Item {
+			name: entry.name.clone(),
+			folder: entry.folder.clone(),
+			mesh_id: entry.mesh_id,
+			stem: stem.clone(),
+			mesh: AssetState::Pending,
+			maps,
+			texture_id: None,
+			texture: None,
+		});
+		self.dirty = true;
+		self.generation += 1;
+		(stem, true)
+	}
+
+	/// Stores an animated model. `meshes` are the entries its parts use, each
+	/// with the stem of the item holding it (from [`Self::add_entry`]). A model
+	/// with the same instance path is replaced. Returns whether it is new.
+	pub fn add_model(
+		&mut self,
+		model: &AnimatedModel,
+		meshes: &[(&Entry, String)],
+	) -> Result<bool, String> {
+		let existing = self
+			.manifest
+			.models
+			.iter()
+			.position(|m| m.path == model.path);
+		let mut folder: Vec<String> = model
+			.path
+			.split('/')
+			.filter(|s| !s.is_empty())
+			.map(String::from)
+			.collect();
+		folder.pop();
+		let file = match existing {
+			Some(i) => self.manifest.models[i].file.clone(),
+			None => format!(
+				"{}.rig.json",
+				self.unique_stem(RIGS_DIR, &folder, &model.name)
+			),
+		};
+		write_rig(&self.root.join(&file), model, meshes)?;
+		let item = ModelItem {
+			name: model.name.clone(),
+			path: model.path.clone(),
+			folder,
+			file,
+			meshes: meshes
+				.iter()
+				.filter_map(|(e, stem)| Some((e.source_id?, stem.clone())))
+				.collect(),
+			parts: model.parts.len(),
+			clips: model.animations.len(),
+			playable_clips: model
+				.animations
+				.iter()
+				.filter(|a| a.status.is_playable())
+				.count(),
+		};
+		self.dirty = true;
+		self.generation += 1;
+		match existing {
+			Some(i) => {
+				self.manifest.models[i] = item;
+				Ok(false)
+			}
+			None => {
+				self.manifest.models.push(item);
+				Ok(true)
+			}
+		}
+	}
+
+	/// Reads a stored animated model.
+	pub fn load_model(&self, index: usize) -> Result<AnimatedModel, String> {
+		let item = self
+			.manifest
+			.models
+			.get(index)
+			.ok_or("No such model")?;
+		let path = self.root.join(&item.file);
+		let text = std::fs::read_to_string(&path)
+			.map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+		let export = export::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+		export
+			.models
+			.into_iter()
+			.next()
+			.ok_or_else(|| format!("{} holds no model", path.display()))
+	}
+
+	/// Removes animated models and their rig files. The meshes they use stay.
+	pub fn remove_models(&mut self, models: &[usize]) {
+		let mut models = models.to_vec();
+		models.sort_unstable();
+		models.dedup();
+		for &i in models.iter().rev() {
+			if i >= self.manifest.models.len() {
+				continue;
+			}
+			let model = self.manifest.models.remove(i);
+			let _ = std::fs::remove_file(self.root.join(&model.file));
+			self.stems.remove(&rig_stem(&model.file).to_lowercase());
+		}
+		self.dirty = true;
+		self.generation += 1;
 	}
 
 	/// Pending downloads grouped by asset id, so each asset is fetched once.
@@ -443,6 +619,7 @@ mod tests {
 				.collect(),
 			mesh_id: mesh,
 			maps: maps.iter().copied().collect(),
+			source_id: None,
 		}
 	}
 
@@ -528,6 +705,68 @@ mod tests {
 	}
 
 	#[test]
+	fn stores_animated_models() {
+		use crate::anim::schema::{AnimationClip, ClipStatus, ModelPart};
+		let dir = temp_dir("models");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let mut torso = entry("Workspace/Wolf", "Torso", 10, &[(MapKind::Color, 11)]);
+		torso.source_id = Some(1);
+		let (stem, new) = ws.add_entry(&torso);
+		assert!(new);
+		let model = AnimatedModel {
+			name: "Wolf".into(),
+			path: "Workspace/Animals/Wolf".into(),
+			parts: vec![ModelPart {
+				name: "Torso".into(),
+				mesh_ref: 1,
+				..Default::default()
+			}],
+			animations: vec![
+				AnimationClip {
+					status: ClipStatus::KeyframeSequence,
+					..Default::default()
+				},
+				AnimationClip::default(),
+			],
+			..Default::default()
+		};
+		assert!(ws.add_model(&model, &[(&torso, stem.clone())]).unwrap());
+		// re-importing replaces it in place
+		assert!(!ws.add_model(&model, &[(&torso, stem.clone())]).unwrap());
+		let m = ws.models()[0].clone();
+		assert_eq!(m.file, "Rigs/Workspace/Animals/Wolf.rig.json");
+		assert_eq!(m.folder, ["Workspace", "Animals"]);
+		assert_eq!(m.meshes[&1], stem);
+		assert_eq!((m.parts, m.clips, m.playable_clips), (1, 2, 1));
+
+		ws.save_if_dirty().unwrap();
+		let reopened = Workspace::open(&dir).unwrap();
+		assert_eq!(reopened.models().len(), 1);
+		let loaded = reopened.load_model(0).unwrap();
+		assert_eq!(loaded.parts[0].mesh_ref, 1);
+		// the rig file is an export of its own
+		let file = std::fs::read_to_string(dir.join(&m.file)).unwrap();
+		let export = export::parse(&file).unwrap();
+		assert_eq!(export.entries[0].maps, torso.maps);
+
+		let mut ws = reopened;
+		ws.remove_models(&[0]);
+		assert!(ws.models().is_empty());
+		assert!(!dir.join("Rigs/Workspace/Animals/Wolf.rig.json").exists());
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn same_mesh_with_other_images_is_separate() {
+		let dir = temp_dir("variants");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let a = entry("F", "Handle", 1, &[(MapKind::Texture, 2)]);
+		let b = entry("F", "Handle", 1, &[(MapKind::Texture, 3)]);
+		assert_eq!(ws.add([a.clone(), b, a]), 2);
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
 	fn migrates_version_1() {
 		let dir = temp_dir("migrate");
 		std::fs::create_dir_all(dir.join("Models")).unwrap();
@@ -560,7 +799,7 @@ mod tests {
 		assert_eq!(ws.items()[1].mesh, AssetState::Pending);
 		ws.save_if_dirty().unwrap();
 		let saved = std::fs::read_to_string(dir.join(MANIFEST)).unwrap();
-		assert!(saved.contains("\"version\": 2"));
+		assert!(saved.contains("\"version\": 3"));
 		assert!(!saved.contains("texture_id"));
 		std::fs::remove_dir_all(&dir).unwrap();
 	}

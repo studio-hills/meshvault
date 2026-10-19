@@ -11,12 +11,13 @@ use crate::app::App;
 use crate::geometry::GroupKind;
 use crate::maps::Slot;
 use crate::ui::ConfirmAction;
-use crate::viewport::{self, Shading, ViewSettings};
+use crate::viewport::{self, Camera, ScenePart, Shading, ViewSettings};
 
 impl eframe::App for App {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
 		self.poll_downloads();
+		self.poll_parsing();
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
 		let p = palette(&ctx);
@@ -365,28 +366,32 @@ impl App {
 			return;
 		}
 		let p = palette(ui.ctx());
+		let settings = self.view_settings(&p);
 		let Some(doc) = &mut self.doc else { return };
 		let groups = doc.visible_groups();
-		let settings = ViewSettings {
-			shading: self.shading,
-			cull_backfaces: self.cull_backfaces,
-			show_axes: self.show_axes,
-			show_grid: self.show_grid,
+		let geometry = &doc.loaded.geometry;
+		let mut parts = [ScenePart {
+			geometry,
 			groups: &groups,
-			colour_groups: doc.loaded.geometry.group_kind == GroupKind::Hull,
+			transform: viewport::IDENTITY,
 			material: if self.show_maps {
 				&doc.material
 			} else {
 				&self.no_material
 			},
-			background: [p.viewport_top, p.viewport_bottom],
-			grid_colour: p.grid,
-		};
-		let gpu = self.gpu.as_deref().map(|renderer| viewport::Gpu {
-			renderer,
+			colour_groups: geometry.group_kind == GroupKind::Hull,
+			colour: viewport::PART_COLOUR,
 			scene: &mut doc.gpu,
-		});
-		let rect = viewport::show(ui, &doc.loaded.geometry, &mut doc.camera, &settings, gpu);
+		}];
+		let home = || Camera::framing(geometry);
+		let rect = viewport::show(
+			ui,
+			&mut parts,
+			&mut doc.camera,
+			&settings,
+			self.gpu.as_deref(),
+			&home,
+		);
 		let name = doc.name();
 		let tris = groups
 			.iter()
@@ -395,6 +400,17 @@ impl App {
 			.sum::<usize>();
 		self.viewport_toolbar(ui.ctx(), rect);
 		self.viewport_caption(ui.ctx(), rect, &name, tris);
+	}
+
+	pub(super) fn view_settings(&self, p: &super::theme::Palette) -> ViewSettings {
+		ViewSettings {
+			shading: self.shading,
+			cull_backfaces: self.cull_backfaces,
+			show_axes: self.show_axes,
+			show_grid: self.show_grid,
+			background: [p.viewport_top, p.viewport_bottom],
+			grid_colour: p.grid,
+		}
 	}
 
 	/// Floating controls over the top-left of the viewport.

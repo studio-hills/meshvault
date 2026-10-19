@@ -1,5 +1,6 @@
-//! A small CPU rasteriser on top of egui's painter: orbit camera, flat
-//! shading with back-to-front sorting, and an optional wireframe overlay.
+//! The 3D viewport: orbit camera, ground grid and axes, drawing a list of
+//! placed meshes on the GPU, or with a small CPU rasteriser on top of
+//! egui's painter (flat shading, back-to-front sorting) as a fallback.
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -52,8 +53,13 @@ pub struct Camera {
 
 impl Camera {
 	pub fn framing(geometry: &Geometry) -> Self {
-		let floor = geometry.bounds().map_or(0.0, |(lo, _)| lo[1]);
-		let (target, radius) = match geometry.bounds() {
+		Self::framing_bounds(geometry.bounds())
+	}
+
+	/// Frames an axis-aligned box `(min, max)`.
+	pub fn framing_bounds(bounds: Option<(V3, V3)>) -> Self {
+		let floor = bounds.map_or(0.0, |(lo, _)| lo[1]);
+		let (target, radius) = match bounds {
 			Some((lo, hi)) => {
 				let centre = [
 					(lo[0] + hi[0]) * 0.5,
@@ -96,33 +102,46 @@ impl Camera {
 	}
 }
 
-pub struct ViewSettings<'a> {
+pub struct ViewSettings {
 	pub shading: Shading,
 	pub cull_backfaces: bool,
 	pub show_axes: bool,
-	/// Indices into `geometry.groups` to draw.
-	pub groups: &'a [usize],
-	/// Colour each group differently (used for convex hulls).
-	pub colour_groups: bool,
-	/// Maps to apply with the geometry's UVs.
-	pub material: &'a Material,
 	pub show_grid: bool,
 	/// Top and bottom of the background gradient.
 	pub background: [Color32; 2],
 	pub grid_colour: Color32,
 }
 
-/// The GPU renderer and the open document's uploaded scene. Without it the
-/// viewer falls back to drawing on the CPU through egui's painter.
-pub struct Gpu<'a> {
-	pub renderer: &'a GpuRenderer,
+/// Row-major identity, for a mesh shown on its own.
+pub const IDENTITY: [[f32; 4]; 4] = [
+	[1.0, 0.0, 0.0, 0.0],
+	[0.0, 1.0, 0.0, 0.0],
+	[0.0, 0.0, 1.0, 0.0],
+	[0.0, 0.0, 0.0, 1.0],
+];
+
+/// One mesh placed in the scene.
+pub struct ScenePart<'a> {
+	pub geometry: &'a Geometry,
+	/// Indices into `geometry.groups` to draw.
+	pub groups: &'a [usize],
+	/// Row-major mesh-to-world transform.
+	pub transform: [[f32; 4]; 4],
+	/// Maps to apply with the geometry's UVs.
+	pub material: &'a Material,
+	/// Colour each group differently (used for convex hulls).
+	pub colour_groups: bool,
+	/// Shown where there is no colour map, or it is transparent.
+	pub colour: Color32,
+	/// The part's mesh on the GPU, uploaded on first draw. Unused without
+	/// a GPU renderer.
 	pub scene: &'a mut Option<GpuScene>,
 }
 
 const BASE: Color32 = Color32::from_rgb(170, 185, 205);
 /// Roblox's default part colour ("Medium stone grey"), shown where a
 /// colour map is transparent.
-const PART_COLOUR: Color32 = Color32::from_rgb(163, 162, 165);
+pub const PART_COLOUR: Color32 = Color32::from_rgb(163, 162, 165);
 const WIRE: Color32 = Color32::from_rgba_premultiplied(20, 24, 30, 200);
 const WIRE_ONLY: Color32 = Color32::from_rgb(140, 200, 255);
 
@@ -137,12 +156,16 @@ fn shade(c: Color32, light: f32) -> Color32 {
 	Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
+/// Draws `parts` and handles camera input. Without a GPU renderer the
+/// parts are drawn on the CPU through egui's painter. `home` is the camera
+/// a double-click returns to.
 pub fn show(
 	ui: &mut egui::Ui,
-	geometry: &Geometry,
+	parts: &mut [ScenePart],
 	camera: &mut Camera,
 	settings: &ViewSettings,
-	gpu: Option<Gpu>,
+	renderer: Option<&GpuRenderer>,
+	home: &dyn Fn() -> Camera,
 ) -> Rect {
 	let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 	let painter = ui.painter_at(rect);
@@ -172,7 +195,7 @@ pub fn show(
 		}
 	}
 	if response.double_clicked() {
-		*camera = Camera::framing(geometry);
+		*camera = home();
 	}
 	// an open hand over the model, a closed one while orbiting, a move cursor while panning
 	if response.dragged_by(egui::PointerButton::Primary) {
@@ -187,18 +210,18 @@ pub fn show(
 	if settings.show_grid {
 		draw_grid(&painter, rect, camera, settings.grid_colour);
 	}
-	let nothing_drawn = match gpu {
-		Some(gpu) => {
-			draw_gpu(&painter, rect, geometry, camera, settings, gpu);
+	let nothing_drawn = match renderer {
+		Some(renderer) => {
+			draw_gpu(&painter, rect, parts, camera, settings, renderer);
 			false
 		}
-		None => draw_cpu(&painter, rect, geometry, camera, settings),
+		None => draw_cpu(&painter, rect, parts, camera, settings),
 	};
 
 	if settings.show_axes {
 		draw_axes(&painter, rect, right, up);
 	}
-	if nothing_drawn && !geometry.triangles.is_empty() {
+	if nothing_drawn && parts.iter().any(|p| !p.geometry.triangles.is_empty()) {
 		painter.text(
 			rect.center(),
 			egui::Align2::CENTER_CENTER,
@@ -295,27 +318,59 @@ fn transpose(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 	out
 }
 
+/// Inverse transpose of the upper 3x3 of a row-major transform, which
+/// keeps normals perpendicular under non-uniform scale.
+fn normal_matrix(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+	let a = |r: usize, c: usize| m[r][c];
+	let cof = |r: usize, c: usize| {
+		let (r1, r2) = ((r + 1) % 3, (r + 2) % 3);
+		let (c1, c2) = ((c + 1) % 3, (c + 2) % 3);
+		a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)
+	};
+	let det = a(0, 0) * cof(0, 0) + a(0, 1) * cof(0, 1) + a(0, 2) * cof(0, 2);
+	let inv_det = if det.abs() > 1e-12 { 1.0 / det } else { 0.0 };
+	// (M^-1)^T is the cofactor matrix over the determinant
+	let mut out = IDENTITY;
+	for (r, row) in out.iter_mut().enumerate().take(3) {
+		for (c, v) in row.iter_mut().enumerate().take(3) {
+			*v = cof(r, c) * inv_det;
+		}
+	}
+	out
+}
+
+fn apply(m: &[[f32; 4]; 4], p: V3) -> V3 {
+	[
+		m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+		m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+		m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+	]
+}
+
 fn draw_gpu(
 	painter: &egui::Painter,
 	rect: Rect,
-	geometry: &Geometry,
+	parts: &mut [ScenePart],
 	camera: &Camera,
 	settings: &ViewSettings,
-	gpu: Gpu,
+	renderer: &GpuRenderer,
 ) {
-	let scene = gpu.scene.get_or_insert_with(|| {
-		let colours: Vec<[f32; 3]> = (0..geometry.groups.len())
-			.map(|g| {
-				linear_rgb(if settings.colour_groups {
-					group_colour(g)
-				} else {
-					PART_COLOUR
+	for part in parts.iter_mut() {
+		let geometry = part.geometry;
+		let scene = part.scene.get_or_insert_with(|| {
+			let colours: Vec<[f32; 3]> = (0..geometry.groups.len())
+				.map(|g| {
+					linear_rgb(if part.colour_groups {
+						group_colour(g)
+					} else {
+						part.colour
+					})
 				})
-			})
-			.collect();
-		gpu.renderer.create_scene(geometry, &colours)
-	});
-	gpu.renderer.sync_material(scene, settings.material);
+				.collect();
+			renderer.create_scene(geometry, &colours)
+		});
+		renderer.sync_material(scene, part.material);
+	}
 
 	let (right, up, forward) = camera.basis();
 	let eye = camera.eye();
@@ -352,6 +407,8 @@ fn draw_gpu(
 	let uniforms = Uniforms {
 		// WGSL matrices are column-major
 		view_proj: transpose(mul(proj, view)),
+		model: IDENTITY,
+		normal_model: IDENTITY,
 		eye: [eye[0], eye[1], eye[2], 1.0],
 		light_dir: [to_light[0], to_light[1], to_light[2], 0.0],
 		wire_color: [
@@ -363,9 +420,16 @@ fn draw_gpu(
 		params: [wire_mode, 0.0, 0.6, 0.0],
 		flags: [0; 4],
 	};
-	let callback = gpu
-		.renderer
-		.callback(scene, settings.groups, settings.cull_backfaces, uniforms);
+	let draws = parts.iter().filter_map(|part| {
+		let scene = part.scene.as_ref()?;
+		let uniforms = Uniforms {
+			model: transpose(part.transform),
+			normal_model: transpose(normal_matrix(part.transform)),
+			..uniforms
+		};
+		Some((scene, part.groups, uniforms))
+	});
+	let callback = renderer.callback(draws, settings.cull_backfaces);
 	painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
 		rect, callback,
 	));
@@ -376,7 +440,7 @@ fn draw_gpu(
 fn draw_cpu(
 	painter: &egui::Painter,
 	rect: Rect,
-	geometry: &Geometry,
+	parts: &[ScenePart],
 	camera: &Camera,
 	settings: &ViewSettings,
 ) -> bool {
@@ -387,14 +451,6 @@ fn draw_cpu(
 	let near = camera.radius * 1e-3;
 	let centre = rect.center();
 
-	let view: Vec<V3> = geometry
-		.positions
-		.iter()
-		.map(|&p| {
-			let d = sub(p, eye);
-			[dot(d, right), dot(d, up), dot(d, forward)]
-		})
-		.collect();
 	let project = |v: V3| {
 		Pos2::new(
 			centre.x + v[0] / v[2] * focal,
@@ -411,21 +467,37 @@ fn draw_cpu(
 		uvs: [Pos2; 3],
 		colour: Color32,
 	}
-	let texture = match (settings.material.active(Slot::Base), &geometry.uvs) {
-		(Some(tex), Some(uvs)) => Some((tex.info, uvs)),
+	// egui meshes take one texture, so maps are only drawn for a single mesh
+	let texture = match parts {
+		[part] => match (part.material.active(Slot::Base), &part.geometry.uvs) {
+			(Some(tex), Some(uvs)) => Some((tex.info, uvs)),
+			_ => None,
+		},
 		_ => None,
 	};
 	let mut tris = Vec::new();
-	for &g in settings.groups {
+	for part in parts {
+		let geometry = part.geometry;
+		let view: Vec<V3> = geometry
+			.positions
+			.iter()
+			.map(|&p| {
+				let d = sub(apply(&part.transform, p), eye);
+				[dot(d, right), dot(d, up), dot(d, forward)]
+			})
+			.collect();
+		for &g in part.groups {
 		let Some(range) = geometry.groups.get(g) else {
 			continue;
 		};
 		let base = if texture.is_some() {
 			Color32::WHITE
-		} else if settings.colour_groups {
+		} else if part.colour_groups {
 			group_colour(g)
-		} else {
+		} else if parts.len() == 1 {
 			BASE
+		} else {
+			part.colour
 		};
 		for t in &geometry.triangles[range.clone()] {
 			let v = t.map(|i| view[i as usize]);
@@ -453,6 +525,7 @@ fn draw_cpu(
 				uvs,
 				colour,
 			});
+		}
 		}
 	}
 	tris.sort_unstable_by(|a, b| b.depth.total_cmp(&a.depth));

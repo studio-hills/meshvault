@@ -31,6 +31,9 @@ struct Vertex {
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Uniforms {
 	pub view_proj: [[f32; 4]; 4],
+	/// Mesh to world, and its inverse transpose for normals (column-major).
+	pub model: [[f32; 4]; 4],
+	pub normal_model: [[f32; 4]; 4],
 	pub eye: [f32; 4],
 	pub light_dir: [f32; 4],
 	pub wire_color: [f32; 4],
@@ -52,7 +55,8 @@ pub struct GpuRenderer {
 	gamma_output: bool,
 }
 
-/// One uploaded mesh with its material, owned by the open document.
+/// One uploaded mesh with its material, owned by the open document (or by
+/// one part of an animated model).
 pub struct GpuScene {
 	vertices: wgpu::Buffer,
 	uniforms: wgpu::Buffer,
@@ -339,26 +343,32 @@ impl GpuRenderer {
 		scene.flags = flags;
 	}
 
-	/// The paint callback drawing `groups` of the scene with `uniforms`.
-	pub fn callback(
+	/// The paint callback drawing each scene's `groups` with its uniforms.
+	pub fn callback<'a>(
 		&self,
-		scene: &GpuScene,
-		groups: &[usize],
+		scenes: impl IntoIterator<Item = (&'a GpuScene, &'a [usize], Uniforms)>,
 		cull: bool,
-		mut uniforms: Uniforms,
 	) -> MeshCallback {
-		uniforms.flags = scene.flags;
-		uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
+		let draws = scenes
+			.into_iter()
+			.map(|(scene, groups, mut uniforms)| {
+				uniforms.flags = scene.flags;
+				uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
+				Draw {
+					bind_group: scene.bind_group.clone(),
+					vertices: scene.vertices.clone(),
+					uniform_buffer: scene.uniforms.clone(),
+					uniforms,
+					ranges: groups
+						.iter()
+						.filter_map(|&g| scene.groups.get(g).cloned())
+						.collect(),
+				}
+			})
+			.collect();
 		MeshCallback {
 			pipeline: self.pipelines[cull as usize].clone(),
-			bind_group: scene.bind_group.clone(),
-			vertices: scene.vertices.clone(),
-			uniform_buffer: scene.uniforms.clone(),
-			uniforms,
-			draws: groups
-				.iter()
-				.filter_map(|&g| scene.groups.get(g).cloned())
-				.collect(),
+			draws,
 		}
 	}
 }
@@ -422,13 +432,17 @@ fn upload_texture(
 	texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-pub struct MeshCallback {
-	pipeline: wgpu::RenderPipeline,
+struct Draw {
 	bind_group: wgpu::BindGroup,
 	vertices: wgpu::Buffer,
 	uniform_buffer: wgpu::Buffer,
 	uniforms: Uniforms,
-	draws: Vec<Range<u32>>,
+	ranges: Vec<Range<u32>>,
+}
+
+pub struct MeshCallback {
+	pipeline: wgpu::RenderPipeline,
+	draws: Vec<Draw>,
 }
 
 impl egui_wgpu::CallbackTrait for MeshCallback {
@@ -440,7 +454,9 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		_egui_encoder: &mut wgpu::CommandEncoder,
 		_resources: &mut egui_wgpu::CallbackResources,
 	) -> Vec<wgpu::CommandBuffer> {
-		queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&self.uniforms));
+		for draw in &self.draws {
+			queue.write_buffer(&draw.uniform_buffer, 0, bytemuck::bytes_of(&draw.uniforms));
+		}
 		Vec::new()
 	}
 
@@ -451,11 +467,13 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		_resources: &egui_wgpu::CallbackResources,
 	) {
 		render_pass.set_pipeline(&self.pipeline);
-		render_pass.set_bind_group(0, &self.bind_group, &[]);
-		render_pass.set_vertex_buffer(0, self.vertices.slice(..));
-		for range in &self.draws {
-			if !range.is_empty() {
-				render_pass.draw(range.clone(), 0..1);
+		for draw in &self.draws {
+			render_pass.set_bind_group(0, &draw.bind_group, &[]);
+			render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
+			for range in &draw.ranges {
+				if !range.is_empty() {
+					render_pass.draw(range.clone(), 0..1);
+				}
 			}
 		}
 	}

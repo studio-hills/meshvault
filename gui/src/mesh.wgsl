@@ -4,6 +4,9 @@
 
 struct Uniforms {
 	view_proj: mat4x4<f32>,
+	// mesh to world, and its inverse transpose for normals
+	model: mat4x4<f32>,
+	normal_model: mat4x4<f32>,
 	// xyz: camera position
 	eye: vec4<f32>,
 	// xyz: direction towards the key light
@@ -45,9 +48,11 @@ struct VsOut {
 @vertex
 fn vs_main(v: VsIn) -> VsOut {
 	var out: VsOut;
-	out.clip = u.view_proj * vec4<f32>(v.pos, 1.0);
-	out.world = v.pos;
-	out.normal = v.normal;
+	let world = (u.model * vec4<f32>(v.pos, 1.0)).xyz;
+	out.clip = u.view_proj * vec4<f32>(world, 1.0);
+	out.world = world;
+	// stays zero for meshes without normals, which the fragment stage checks
+	out.normal = (u.normal_model * vec4<f32>(v.normal, 0.0)).xyz;
 	out.uv = v.uv;
 	out.bary = v.bary;
 	out.color = v.color;

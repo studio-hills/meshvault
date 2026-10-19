@@ -1,11 +1,12 @@
 //! The import dialog: choose which folders, meshes and maps from an
 //! export file to add to the workspace.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use eframe::egui::{self, RichText};
 
+use crate::anim::schema::AnimatedModel;
 use crate::export::{Entry, Export, FolderTree};
 use crate::maps::MapKind;
 use crate::ui::icons;
@@ -27,6 +28,15 @@ pub struct ImportDialog {
 	kinds: BTreeMap<MapKind, bool>,
 	/// Entries already in the workspace.
 	existing: Vec<bool>,
+	/// `SchemaVersion` of the export.
+	version: u32,
+	/// Animated models (schema 1); selecting one selects the meshes it uses.
+	models: Vec<AnimatedModel>,
+	model_selected: Vec<bool>,
+	/// Models already in the workspace (same instance path).
+	model_existing: Vec<bool>,
+	/// Entry index of each `Meshes[].Id`.
+	by_source: HashMap<u32, usize>,
 	filter: String,
 	download_now: bool,
 	/// Expand/collapse requested while drawing, applied on the next frame.
@@ -41,6 +51,8 @@ pub enum Outcome {
 	Import {
 		/// Selected entries, with `maps` narrowed to what will be downloaded.
 		entries: Vec<Entry>,
+		/// Selected animated models; their meshes are among `entries`.
+		models: Vec<AnimatedModel>,
 		download_now: bool,
 	},
 }
@@ -59,7 +71,25 @@ impl ImportDialog {
 			.collect();
 		let tree = FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));
 		let n = export.entries.len();
+		let by_source = export
+			.entries
+			.iter()
+			.enumerate()
+			.filter_map(|(i, e)| Some((e.source_id?, i)))
+			.collect();
+		let model_paths: HashSet<&str> =
+			workspace.models().iter().map(|m| m.path.as_str()).collect();
+		let model_existing = export
+			.models
+			.iter()
+			.map(|m| model_paths.contains(m.path.as_str()))
+			.collect();
 		Self {
+			version: export.version,
+			model_selected: vec![false; export.models.len()],
+			model_existing,
+			models: export.models,
+			by_source,
 			source,
 			tree,
 			mesh: vec![false; n],
@@ -156,8 +186,14 @@ impl ImportDialog {
 		let counts: BTreeMap<MapKind, usize> =
 			MapKind::ALL.iter().map(|&k| (k, count(k))).collect();
 		let with_maps = self.entries.iter().filter(|e| !e.maps.is_empty()).count();
+		let animated = if self.models.is_empty() {
+			String::new()
+		} else {
+			format!(" {} animated models.", self.models.len())
+		};
 		ui.label(format!(
-			"{} models ({} with maps) in {} top-level folders.",
+			"Schema {}: {} meshes ({} with maps) in {} top-level folders.{animated}",
+			self.version,
 			self.entries.len(),
 			with_maps,
 			self.tree.folders.len()
@@ -255,13 +291,29 @@ impl ImportDialog {
 			.max_height(ui.available_height() - footer_height)
 			.show(ui, |ui| {
 				ui.spacing_mut().interact_size.y = ROW;
+				if !self.models.is_empty() {
+					self.models_section(ui);
+				}
 				let tree = std::mem::take(&mut self.tree);
 				self.folder_contents(ui, &tree, "");
 				self.tree = tree;
 			});
 
 		ui.separator();
-		let selected: Vec<usize> = (0..self.entries.len()).filter(|&i| self.mesh[i]).collect();
+		// a selected model brings the meshes it uses, even if unticked below
+		let mut needed = self.mesh.clone();
+		for (m, _) in self
+			.models
+			.iter()
+			.zip(&self.model_selected)
+			.filter(|(_, s)| **s)
+		{
+			for i in self.model_meshes(m) {
+				needed[i] = true;
+			}
+		}
+		let selected: Vec<usize> = (0..self.entries.len()).filter(|&i| needed[i]).collect();
+		let models_chosen = self.model_selected.iter().filter(|s| **s).count();
 		let chosen: Vec<BTreeMap<MapKind, u64>> =
 			selected.iter().map(|&i| self.chosen_maps(i)).collect();
 		let map_count: usize = chosen.iter().map(BTreeMap::len).sum();
@@ -273,8 +325,13 @@ impl ImportDialog {
 			})
 			.collect();
 		let already = selected.iter().filter(|&&i| self.existing[i]).count();
+		let models_note = match models_chosen {
+			0 => String::new(),
+			1 => "1 animated model, ".into(),
+			n => format!("{n} animated models, "),
+		};
 		ui.label(format!(
-			"Selected {} meshes and {} maps: {} unique assets to download.{}",
+			"Selected {models_note}{} meshes and {} maps: {} unique assets to download.{}",
 			selected.len(),
 			map_count,
 			unique.len(),
@@ -289,12 +346,22 @@ impl ImportDialog {
 			widgets::pointer(ui.checkbox(&mut self.download_now, "Start downloading now"));
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 				let import = ui
-					.add_enabled_ui(!selected.is_empty(), |ui| {
-						widgets::primary_button(ui, format!("Import {}", selected.len()))
+					.add_enabled_ui(!selected.is_empty() || models_chosen > 0, |ui| {
+						widgets::primary_button(
+							ui,
+							format!("Import {}", selected.len() + models_chosen),
+						)
 					})
 					.inner;
 				if import.clicked() {
+					let models = std::mem::take(&mut self.models)
+						.into_iter()
+						.zip(&self.model_selected)
+						.filter(|(_, s)| **s)
+						.map(|(m, _)| m)
+						.collect();
 					outcome = Some(Outcome::Import {
+						models,
 						entries: selected
 							.iter()
 							.zip(chosen)
@@ -312,6 +379,132 @@ impl ImportDialog {
 			});
 		});
 		outcome
+	}
+
+	/// Entry indices of the meshes a model's parts use.
+	fn model_meshes(&self, model: &AnimatedModel) -> Vec<usize> {
+		let mut out: Vec<usize> = model
+			.parts
+			.iter()
+			.filter_map(|p| self.by_source.get(&p.mesh_ref).copied())
+			.collect();
+		out.sort_unstable();
+		out.dedup();
+		out
+	}
+
+	fn model_matches(&self, m: &AnimatedModel) -> bool {
+		let needle = self.filter.to_lowercase();
+		needle.is_empty()
+			|| m.name.to_lowercase().contains(&needle)
+			|| m.path.to_lowercase().contains(&needle)
+	}
+
+	/// Animated models, as a folder above the mesh folders.
+	fn models_section(&mut self, ui: &mut egui::Ui) {
+		let visible: Vec<usize> = (0..self.models.len())
+			.filter(|&i| self.model_matches(&self.models[i]))
+			.collect();
+		if visible.is_empty() {
+			return;
+		}
+		let selected = visible.iter().filter(|&&i| self.model_selected[i]).count();
+		// not a valid folder path, so it cannot clash with an export folder
+		let id = tree::folder_id(SCOPE, "\0animated");
+		let mut state =
+			egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+		if !self.filter.is_empty() {
+			state.set_open(true);
+		}
+		let (arrow, _, _) = state
+			.show_header(ui, |ui| {
+				let mut all = selected == visible.len();
+				let label = format!(
+					"{}  Animated models  ({selected}/{})",
+					icons::PERSON_SIMPLE_RUN,
+					visible.len()
+				);
+				let response = widgets::pointer(
+					ui.add(
+						egui::Checkbox::new(&mut all, label)
+							.indeterminate(selected > 0 && selected < visible.len()),
+					),
+				);
+				if response.changed() {
+					for &i in &visible {
+						self.set_model(i, all);
+					}
+				}
+			})
+			.body(|ui| {
+				for &i in &visible {
+					let m = &self.models[i];
+					let meshes = self.model_meshes(m);
+					let missing = m
+						.parts
+						.iter()
+						.filter(|p| p.mesh_ref != 0 && !self.by_source.contains_key(&p.mesh_ref))
+						.count();
+					let playable = m
+						.animations
+						.iter()
+						.filter(|a| a.status.is_playable())
+						.count();
+					let existing = self.model_existing[i];
+					let mut label = RichText::new(&m.name);
+					if existing {
+						label = label.color(ui.visuals().weak_text_color());
+					}
+					let mut hover = format!(
+						"{}\n{} parts, {} meshes, {} joints, {} bones\n{} clips ({} playable)",
+						m.path,
+						m.parts.len(),
+						meshes.len(),
+						m.joints.len(),
+						m.bones.len(),
+						m.animations.len(),
+						playable
+					);
+					if missing > 0 {
+						hover.push_str(&format!(
+							"\n{missing} parts use meshes that were skipped"
+						));
+					}
+					let clips = m.animations.len();
+					ui.horizontal(|ui| {
+						let mut on = self.model_selected[i];
+						let response =
+							widgets::pointer(ui.checkbox(&mut on, label)).on_hover_text(hover);
+						if response.changed() {
+							self.set_model(i, on);
+						}
+						ui.label(
+							RichText::new(format!(
+								"{}  {playable}/{clips}",
+								icons::FILM_STRIP
+							))
+							.small()
+							.weak(),
+						)
+						.on_hover_text("Playable clips / all clips");
+						if existing {
+							ui.label(RichText::new("in workspace").small().weak());
+						}
+					});
+				}
+			});
+		widgets::pointer(arrow);
+	}
+
+	/// Selecting a model also ticks the meshes it uses, so it is clear what
+	/// will download. Deselecting leaves them ticked.
+	fn set_model(&mut self, i: usize, on: bool) {
+		self.model_selected[i] = on;
+		if on {
+			for e in self.model_meshes(&self.models[i]) {
+				self.mesh[e] = true;
+			}
+		}
 	}
 
 	fn folder_contents(&mut self, ui: &mut egui::Ui, node: &FolderTree, id_path: &str) {

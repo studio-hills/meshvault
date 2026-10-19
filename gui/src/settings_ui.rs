@@ -1,12 +1,15 @@
 //! Settings dialog for Roblox download credentials.
 
-use std::sync::mpsc::{Receiver, channel};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, channel};
 
 use eframe::egui::{self, RichText};
 
 use crate::config::{self, Config};
 use crate::download::{AuthMethod, Client, Credentials, Endpoints, sniff_extension};
+use crate::ui::icons;
+use crate::ui::theme::{palette, semibold};
+use crate::ui::widgets;
 use crate::workspace::AssetKind;
 
 pub struct SettingsDialog {
@@ -68,7 +71,9 @@ impl SettingsDialog {
 		if s.is_empty() {
 			return Ok(None);
 		}
-		s.parse().map(Some).map_err(|_| "Place ID must be a number".into())
+		s.parse()
+			.map(Some)
+			.map_err(|_| "Place ID must be a number".into())
 	}
 
 	fn save(&mut self, config: &mut Config) -> Result<(), String> {
@@ -124,7 +129,11 @@ impl SettingsDialog {
 					let header = String::from_utf8_lossy(&bytes[..bytes.len().min(12)])
 						.trim()
 						.to_string();
-					let what = if kind == "mesh" { header } else { format!(".{kind} file") };
+					let what = if kind == "mesh" {
+						header
+					} else {
+						format!(".{kind} file")
+					};
 					format!("Success: downloaded {} bytes ({what}).", bytes.len())
 				})
 				.map_err(|e| e.to_string());
@@ -149,14 +158,15 @@ impl SettingsDialog {
 
 		let mut open = true;
 		let mut close = false;
-		egui::Window::new("Roblox access")
-			.open(&mut open)
-			.collapsible(false)
-			.resizable(false)
-			.default_width(480.0)
-			.show(ctx, |ui| {
+		let modal = egui::Modal::new(egui::Id::unique("settings_dialog")).show(ctx, |ui| {
+				ui.set_width(500.0);
+				ui.horizontal(|ui| {
+					ui.label(RichText::new(icons::KEY).size(20.0).color(palette(ui.ctx()).accent));
+					ui.label(RichText::new("Roblox access").size(17.0).family(semibold()));
+				});
+				ui.add_space(4.0);
 				if let Some(notice) = &self.notice {
-					ui.label(RichText::new(notice).strong());
+					ui.label(RichText::new(notice).color(palette(ui.ctx()).warning));
 					ui.add_space(4.0);
 				}
 				ui.label("Roblox only delivers assets to signed-in users, so downloads need a credential.");
@@ -236,16 +246,13 @@ impl SettingsDialog {
 				});
 				if let Some((ok, message)) = &self.message {
 					ui.add_space(4.0);
-					let colour = if *ok {
-						egui::Color32::from_rgb(110, 200, 120)
-					} else {
-						ui.visuals().error_fg_color
-					};
+					let p = palette(ui.ctx());
+					let colour = if *ok { p.success } else { p.danger };
 					ui.label(RichText::new(message).color(colour));
 				}
 				ui.add_space(6.0);
-				ui.horizontal(|ui| {
-					if ui.button("Save").clicked() {
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					if widgets::primary_button(ui, "Save").clicked() {
 						match self.save(config) {
 							Ok(()) => close = true,
 							Err(e) => self.message = Some((false, e)),
@@ -256,6 +263,7 @@ impl SettingsDialog {
 					}
 				});
 			});
+		open &= !modal.should_close();
 		open && !close
 	}
 }

@@ -46,10 +46,13 @@ pub struct Camera {
 	pub target: V3,
 	/// Radius of the mesh's bounding sphere; scales pan and zoom speed.
 	radius: f32,
+	/// Lowest point of the model, where the ground grid sits.
+	floor: f32,
 }
 
 impl Camera {
 	pub fn framing(geometry: &Geometry) -> Self {
+		let floor = geometry.bounds().map_or(0.0, |(lo, _)| lo[1]);
 		let (target, radius) = match geometry.bounds() {
 			Some((lo, hi)) => {
 				let centre = [
@@ -69,6 +72,7 @@ impl Camera {
 			distance: radius * 1.9,
 			target,
 			radius,
+			floor,
 		}
 	}
 
@@ -102,6 +106,10 @@ pub struct ViewSettings<'a> {
 	pub colour_groups: bool,
 	/// Maps to apply with the geometry's UVs.
 	pub material: &'a Material,
+	pub show_grid: bool,
+	/// Top and bottom of the background gradient.
+	pub background: [Color32; 2],
+	pub grid_colour: Color32,
 }
 
 /// The GPU renderer and the open document's uploaded scene. Without it the
@@ -135,10 +143,10 @@ pub fn show(
 	camera: &mut Camera,
 	settings: &ViewSettings,
 	gpu: Option<Gpu>,
-) {
+) -> Rect {
 	let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 	let painter = ui.painter_at(rect);
-	painter.rect_filled(rect, 0.0, Color32::from_rgb(28, 30, 36));
+	crate::ui::paint_gradient(ui, rect, settings.background[0], settings.background[1]);
 
 	// --- input ---
 	if response.dragged_by(egui::PointerButton::Primary) {
@@ -168,6 +176,9 @@ pub fn show(
 	}
 
 	let (right, up, _) = camera.basis();
+	if settings.show_grid {
+		draw_grid(&painter, rect, camera, settings.grid_colour);
+	}
 	let nothing_drawn = match gpu {
 		Some(gpu) => {
 			draw_gpu(&painter, rect, geometry, camera, settings, gpu);
@@ -188,13 +199,71 @@ pub fn show(
 			Color32::GRAY,
 		);
 	}
-	painter.text(
-		rect.left_bottom() + Vec2::new(8.0, -8.0),
-		egui::Align2::LEFT_BOTTOM,
-		"Left-drag: orbit   Right/middle-drag: pan   Scroll: zoom   Double-click: reset",
-		egui::FontId::proportional(11.0),
-		Color32::from_gray(130),
-	);
+	rect
+}
+
+/// A ground grid under the model, drawn before the mesh so the mesh covers it.
+/// Spacing adapts to the model's size (1, 2 or 5 times a power of ten).
+fn draw_grid(painter: &egui::Painter, rect: Rect, camera: &Camera, colour: Color32) {
+	let (right, up, forward) = camera.basis();
+	let eye = camera.eye();
+	let focal = rect.height() * 0.5 / 35f32.to_radians().tan();
+	let near = camera.radius * 0.01;
+	let centre = rect.center();
+	let to_view = |p: V3| {
+		let d = sub(p, eye);
+		[dot(d, right), dot(d, up), dot(d, forward)]
+	};
+	let project = |v: V3| {
+		Pos2::new(
+			centre.x + v[0] / v[2] * focal,
+			centre.y - v[1] / v[2] * focal,
+		)
+	};
+
+	let raw = camera.radius / 4.0;
+	let magnitude = 10f32.powf(raw.log10().floor());
+	let step = [1.0, 2.0, 5.0, 10.0]
+		.into_iter()
+		.map(|m| m * magnitude)
+		.find(|s| *s >= raw)
+		.unwrap_or(raw);
+	const LINES: i32 = 12;
+	let half = step * LINES as f32;
+	let cx = (camera.target[0] / step).round() * step;
+	let cz = (camera.target[2] / step).round() * step;
+	let y = camera.floor;
+	for i in -LINES..=LINES {
+		let o = i as f32 * step;
+		// fade out towards the edge of the grid; every fifth line is stronger
+		let fade = 1.0 - (i.abs() as f32 / (LINES as f32 + 1.0));
+		let strength = if i.rem_euclid(5) == 0 { 1.0 } else { 0.55 };
+		let stroke = Stroke::new(1.0, colour.gamma_multiply(fade * strength));
+		for (a, b) in [
+			([cx + o, y, cz - half], [cx + o, y, cz + half]),
+			([cx - half, y, cz + o], [cx + half, y, cz + o]),
+		] {
+			let (mut va, mut vb) = (to_view(a), to_view(b));
+			// clip the segment to in front of the camera
+			if va[2] < near && vb[2] < near {
+				continue;
+			}
+			if va[2] < near || vb[2] < near {
+				let t = (near - va[2]) / (vb[2] - va[2]);
+				let hit = [
+					va[0] + (vb[0] - va[0]) * t,
+					va[1] + (vb[1] - va[1]) * t,
+					near,
+				];
+				if va[2] < near {
+					va = hit;
+				} else {
+					vb = hit;
+				}
+			}
+			painter.line_segment([project(va), project(vb)], stroke);
+		}
+	}
 }
 
 /// Row-major 4x4 matrix product.
@@ -218,10 +287,23 @@ fn transpose(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 	out
 }
 
-fn draw_gpu(painter: &egui::Painter, rect: Rect, geometry: &Geometry, camera: &Camera, settings: &ViewSettings, gpu: Gpu) {
+fn draw_gpu(
+	painter: &egui::Painter,
+	rect: Rect,
+	geometry: &Geometry,
+	camera: &Camera,
+	settings: &ViewSettings,
+	gpu: Gpu,
+) {
 	let scene = gpu.scene.get_or_insert_with(|| {
 		let colours: Vec<[f32; 3]> = (0..geometry.groups.len())
-			.map(|g| linear_rgb(if settings.colour_groups { group_colour(g) } else { PART_COLOUR }))
+			.map(|g| {
+				linear_rgb(if settings.colour_groups {
+					group_colour(g)
+				} else {
+					PART_COLOUR
+				})
+			})
 			.collect();
 		gpu.renderer.create_scene(geometry, &colours)
 	});
@@ -264,17 +346,32 @@ fn draw_gpu(painter: &egui::Painter, rect: Rect, geometry: &Geometry, camera: &C
 		view_proj: transpose(mul(proj, view)),
 		eye: [eye[0], eye[1], eye[2], 1.0],
 		light_dir: [to_light[0], to_light[1], to_light[2], 0.0],
-		wire_color: [wire_colour[0], wire_colour[1], wire_colour[2], wire_strength],
+		wire_color: [
+			wire_colour[0],
+			wire_colour[1],
+			wire_colour[2],
+			wire_strength,
+		],
 		params: [wire_mode, 0.0, 0.6, 0.0],
 		flags: [0; 4],
 	};
-	let callback = gpu.renderer.callback(scene, settings.groups, settings.cull_backfaces, uniforms);
-	painter.add(eframe::egui_wgpu::Callback::new_paint_callback(rect, callback));
+	let callback = gpu
+		.renderer
+		.callback(scene, settings.groups, settings.cull_backfaces, uniforms);
+	painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+		rect, callback,
+	));
 }
 
 /// Software fallback: flat shading, triangles sorted back to front.
 /// Returns true when nothing was in view.
-fn draw_cpu(painter: &egui::Painter, rect: Rect, geometry: &Geometry, camera: &Camera, settings: &ViewSettings) -> bool {
+fn draw_cpu(
+	painter: &egui::Painter,
+	rect: Rect,
+	geometry: &Geometry,
+	camera: &Camera,
+	settings: &ViewSettings,
+) -> bool {
 	// --- projection ---
 	let (right, up, forward) = camera.basis();
 	let eye = camera.eye();
@@ -290,7 +387,12 @@ fn draw_cpu(painter: &egui::Painter, rect: Rect, geometry: &Geometry, camera: &C
 			[dot(d, right), dot(d, up), dot(d, forward)]
 		})
 		.collect();
-	let project = |v: V3| Pos2::new(centre.x + v[0] / v[2] * focal, centre.y - v[1] / v[2] * focal);
+	let project = |v: V3| {
+		Pos2::new(
+			centre.x + v[0] / v[2] * focal,
+			centre.y - v[1] / v[2] * focal,
+		)
+	};
 
 	// headlight slightly above and to the left of the camera
 	let light = normalize([-0.4, 0.5, -1.0]);
@@ -348,7 +450,8 @@ fn draw_cpu(painter: &egui::Painter, rect: Rect, geometry: &Geometry, camera: &C
 	tris.sort_unstable_by(|a, b| b.depth.total_cmp(&a.depth));
 
 	let clip = rect.expand(rect.width().max(rect.height()));
-	let on_screen = |p: &[Pos2; 3]| p.iter().any(|p| rect.contains(*p)) || p.iter().all(|p| clip.contains(*p));
+	let on_screen =
+		|p: &[Pos2; 3]| p.iter().any(|p| rect.contains(*p)) || p.iter().all(|p| clip.contains(*p));
 
 	let solid = settings.shading != Shading::Wireframe;
 	let wire = settings.shading != Shading::Solid;
@@ -389,7 +492,11 @@ fn add_line(mesh: &mut egui::Mesh, a: Pos2, b: Pos2, half_width: f32, colour: Co
 	let n = Vec2::new(-d.y, d.x) / len * half_width;
 	let i = mesh.vertices.len() as u32;
 	for pos in [a + n, a - n, b - n, b + n] {
-		mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: colour });
+		mesh.vertices.push(egui::epaint::Vertex {
+			pos,
+			uv,
+			color: colour,
+		});
 	}
 	mesh.add_triangle(i, i + 1, i + 2);
 	mesh.add_triangle(i, i + 2, i + 3);

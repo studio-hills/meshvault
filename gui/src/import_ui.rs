@@ -8,6 +8,9 @@ use eframe::egui::{self, RichText};
 
 use crate::export::{Entry, Export, FolderTree};
 use crate::maps::MapKind;
+use crate::ui::icons;
+use crate::ui::theme::{palette, semibold};
+use crate::ui::widgets;
 use crate::workspace::Workspace;
 
 pub struct ImportDialog {
@@ -83,20 +86,35 @@ impl ImportDialog {
 	/// Returns `Some` once the user imports or cancels.
 	pub fn show(&mut self, ctx: &egui::Context) -> Option<Outcome> {
 		let mut outcome = None;
-		let mut open = true;
-		let title = format!(
-			"Import {}",
-			self.source.file_name().map(|s| s.to_string_lossy()).unwrap_or_default()
+		let screen = ctx.content_rect().size();
+		let size = egui::vec2(
+			(screen.x - 80.0).clamp(420.0, 820.0),
+			(screen.y - 100.0).clamp(360.0, 680.0),
 		);
-		egui::Window::new(title)
-			.open(&mut open)
-			.default_size([720.0, 600.0])
-			.resizable(true)
-			.collapsible(false)
-			.show(ctx, |ui| {
-				outcome = self.contents(ui);
+		let file = self
+			.source
+			.file_name()
+			.map(|s| s.to_string_lossy().into_owned())
+			.unwrap_or_default();
+		let modal = egui::Modal::new(egui::Id::unique("import_dialog")).show(ctx, |ui| {
+			ui.set_width(size.x);
+			ui.set_height(size.y);
+			ui.horizontal(|ui| {
+				ui.label(
+					RichText::new(icons::FILE_ARROW_DOWN)
+						.size(20.0)
+						.color(palette(ui.ctx()).accent),
+				);
+				ui.label(
+					RichText::new(format!("Import {file}"))
+						.size(17.0)
+						.family(semibold()),
+				);
 			});
-		if !open {
+			ui.add_space(4.0);
+			outcome = self.contents(ui);
+		});
+		if outcome.is_none() && modal.should_close() {
 			outcome = Some(Outcome::Cancel);
 		}
 		outcome
@@ -116,8 +134,14 @@ impl ImportDialog {
 	}
 
 	fn contents(&mut self, ui: &mut egui::Ui) -> Option<Outcome> {
-		let count = |kind| self.entries.iter().filter(|e| e.maps.contains_key(&kind)).count();
-		let counts: BTreeMap<MapKind, usize> = MapKind::ALL.iter().map(|&k| (k, count(k))).collect();
+		let count = |kind| {
+			self.entries
+				.iter()
+				.filter(|e| e.maps.contains_key(&kind))
+				.count()
+		};
+		let counts: BTreeMap<MapKind, usize> =
+			MapKind::ALL.iter().map(|&k| (k, count(k))).collect();
 		let with_maps = self.entries.iter().filter(|e| !e.maps.is_empty()).count();
 		ui.label(format!(
 			"{} models ({} with maps) in {} top-level folders.",
@@ -125,7 +149,10 @@ impl ImportDialog {
 			with_maps,
 			self.tree.folders.len()
 		));
-		for (title, list) in [("entries skipped", &self.skipped), ("map ids ignored", &self.warnings)] {
+		for (title, list) in [
+			("entries skipped", &self.skipped),
+			("map ids ignored", &self.warnings),
+		] {
 			if !list.is_empty() {
 				ui.collapsing(format!("{} {title}", list.len()), |ui| {
 					for s in list {
@@ -143,7 +170,11 @@ impl ImportDialog {
 		});
 		ui.horizontal(|ui| {
 			let visible = self.visible((0..self.entries.len()).collect());
-			let scope = if self.filter.is_empty() { "all" } else { "matching" };
+			let scope = if self.filter.is_empty() {
+				"all"
+			} else {
+				"matching"
+			};
 			if ui.button(format!("Select {scope}")).clicked() {
 				for &i in &visible {
 					self.mesh[i] = true;
@@ -195,12 +226,15 @@ impl ImportDialog {
 
 		ui.separator();
 		let selected: Vec<usize> = (0..self.entries.len()).filter(|&i| self.mesh[i]).collect();
-		let chosen: Vec<BTreeMap<MapKind, u64>> = selected.iter().map(|&i| self.chosen_maps(i)).collect();
+		let chosen: Vec<BTreeMap<MapKind, u64>> =
+			selected.iter().map(|&i| self.chosen_maps(i)).collect();
 		let map_count: usize = chosen.iter().map(BTreeMap::len).sum();
 		let unique: HashSet<u64> = selected
 			.iter()
 			.zip(&chosen)
-			.flat_map(|(&i, maps)| std::iter::once(self.entries[i].mesh_id).chain(maps.values().copied()))
+			.flat_map(|(&i, maps)| {
+				std::iter::once(self.entries[i].mesh_id).chain(maps.values().copied())
+			})
 			.collect();
 		let already = selected.iter().filter(|&&i| self.existing[i]).count();
 		ui.label(format!(
@@ -218,10 +252,11 @@ impl ImportDialog {
 		ui.horizontal(|ui| {
 			ui.checkbox(&mut self.download_now, "Start downloading now");
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-				let import = ui.add_enabled(
-					!selected.is_empty(),
-					egui::Button::new(format!("Import {}", selected.len())),
-				);
+				let import = ui
+					.add_enabled_ui(!selected.is_empty(), |ui| {
+						widgets::primary_button(ui, format!("Import {}", selected.len()))
+					})
+					.inner;
 				if import.clicked() {
 					outcome = Some(Outcome::Import {
 						entries: selected
@@ -251,8 +286,11 @@ impl ImportDialog {
 			}
 			let selected = items.iter().filter(|&&i| self.mesh[i]).count();
 			let id = ui.make_persistent_id(format!("{id_path}/{name}"));
-			let mut state =
-				egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+			let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+				ui.ctx(),
+				id,
+				false,
+			);
 			// searching expands everything so matches are visible
 			if !self.filter.is_empty() {
 				state.set_open(true);
@@ -261,9 +299,14 @@ impl ImportDialog {
 			state
 				.show_header(ui, |ui| {
 					let mut all = selected == items.len();
-					let label = format!("📁 {name}  ({selected}/{})", items.len());
+					let label = format!(
+						"{}  {name}  ({selected}/{})",
+						icons::FOLDER_SIMPLE,
+						items.len()
+					);
 					let response = ui.add(
-						egui::Checkbox::new(&mut all, label).indeterminate(selected > 0 && selected < items.len()),
+						egui::Checkbox::new(&mut all, label)
+							.indeterminate(selected > 0 && selected < items.len()),
 					);
 					if response.changed() {
 						for &i in &items {
@@ -290,12 +333,21 @@ impl ImportDialog {
 						.maps
 						.iter()
 						.map(|(k, id)| {
-							let skipped = if self.kinds[k] { "" } else { " (type not selected)" };
+							let skipped = if self.kinds[k] {
+								""
+							} else {
+								" (type not selected)"
+							};
 							format!("{}: {id}{skipped}", k.export_field())
 						})
 						.collect::<Vec<_>>()
 						.join("\n");
-					let label = format!("🖼 {} map{}", e.maps.len(), if e.maps.len() == 1 { "" } else { "s" });
+					let label = format!(
+						"{}  {} map{}",
+						icons::IMAGE,
+						e.maps.len(),
+						if e.maps.len() == 1 { "" } else { "s" }
+					);
 					ui.add_enabled(self.mesh[i], egui::Checkbox::new(&mut self.maps[i], label))
 						.on_hover_text(hover);
 				}

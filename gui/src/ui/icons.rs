@@ -1,0 +1,41 @@
+//! Phosphor icon codepoints (see assets/PHOSPHOR-LICENSE.txt). Only the
+//! icons this app uses are listed; add more from https://phosphoricons.com.
+
+pub const ARROWS_CLOCKWISE: &str = "\u{E094}";
+pub const BOUNDING_BOX: &str = "\u{E6CE}";
+pub const CARET_DOWN: &str = "\u{E136}";
+pub const CARET_RIGHT: &str = "\u{E13A}";
+pub const CHECK: &str = "\u{E182}";
+pub const CHECK_CIRCLE: &str = "\u{E184}";
+pub const CIRCLE: &str = "\u{E18A}";
+pub const CLOUD_ARROW_DOWN: &str = "\u{E1AC}";
+pub const CORNERS_OUT: &str = "\u{E1D0}";
+pub const CROSSHAIR: &str = "\u{E1D6}";
+pub const CUBE: &str = "\u{E1DA}";
+pub const DOTS_THREE_VERTICAL: &str = "\u{E208}";
+pub const EXPORT: &str = "\u{EAF0}";
+pub const EYE: &str = "\u{E220}";
+pub const EYE_SLASH: &str = "\u{E224}";
+pub const FILE: &str = "\u{E230}";
+pub const FILE_ARROW_DOWN: &str = "\u{E232}";
+pub const FOLDER: &str = "\u{E24A}";
+pub const FOLDER_OPEN: &str = "\u{E256}";
+pub const FOLDER_PLUS: &str = "\u{E258}";
+pub const FOLDER_SIMPLE: &str = "\u{E25A}";
+pub const GRID_FOUR: &str = "\u{E296}";
+pub const IMAGE: &str = "\u{E2CA}";
+pub const INFO: &str = "\u{E2CE}";
+pub const KEY: &str = "\u{E2D6}";
+pub const MOON: &str = "\u{E330}";
+pub const PACKAGE: &str = "\u{E390}";
+pub const PLUS: &str = "\u{E3D4}";
+pub const POLYGON: &str = "\u{E6D0}";
+pub const SIDEBAR_SIMPLE: &str = "\u{EC24}";
+pub const STOP: &str = "\u{E46C}";
+pub const SUN: &str = "\u{E472}";
+pub const TRASH: &str = "\u{E4A6}";
+pub const TRAY_ARROW_DOWN: &str = "\u{E010}";
+pub const TREE_STRUCTURE: &str = "\u{E67C}";
+pub const WARNING_CIRCLE: &str = "\u{E4E2}";
+pub const X: &str = "\u{E4F6}";
+pub const MAGNIFYING_GLASS: &str = "\u{E30C}";

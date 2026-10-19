@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::download::AuthMethod;
+use crate::ui::theme::ThemeMode;
 
 const KEYRING_SERVICE: &str = "rbx_mesh_gui";
 const MAX_RECENT: usize = 8;
@@ -18,6 +19,7 @@ pub struct Config {
 	pub auth_method: AuthMethod,
 	pub place_id: Option<u64>,
 	pub concurrency: usize,
+	pub theme: ThemeMode,
 }
 
 impl Default for Config {
@@ -27,6 +29,7 @@ impl Default for Config {
 			auth_method: AuthMethod::ApiKey,
 			place_id: None,
 			concurrency: 4,
+			theme: ThemeMode::Dark,
 		}
 	}
 }

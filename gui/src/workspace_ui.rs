@@ -3,9 +3,11 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 
 use crate::export::FolderTree;
+use crate::ui::icons;
+use crate::ui::theme::{Palette, palette, semibold};
 use crate::workspace::{AssetState, Item, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -33,18 +35,28 @@ pub struct Browser {
 	built_for: Option<(PathBuf, u64)>,
 }
 
-const DONE: Color32 = Color32::from_rgb(110, 200, 120);
-const FAILED: Color32 = Color32::from_rgb(230, 100, 90);
-const PENDING: Color32 = Color32::from_rgb(200, 180, 90);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Status {
+	Done,
+	Pending,
+	Failed,
+}
 
-/// A coloured dot; plain text so it can be tinted (emoji glyphs cannot).
-fn status_icon(item: &Item) -> (&'static str, Color32) {
+fn status(item: &Item) -> Status {
 	if item.has_failure() {
-		("●", FAILED)
+		Status::Failed
 	} else if item.is_done() {
-		("●", DONE)
+		Status::Done
 	} else {
-		("○", PENDING)
+		Status::Pending
+	}
+}
+
+fn status_colour(p: &Palette, s: Status) -> Color32 {
+	match s {
+		Status::Done => p.success,
+		Status::Pending => p.warning,
+		Status::Failed => p.danger,
 	}
 }
 
@@ -80,57 +92,81 @@ impl Browser {
 		}
 		let needle = self.filter.to_lowercase();
 		item.name.to_lowercase().contains(&needle)
-			|| item.folder.iter().any(|f| f.to_lowercase().contains(&needle))
+			|| item
+				.folder
+				.iter()
+				.any(|f| f.to_lowercase().contains(&needle))
 			|| item.mesh_id.to_string() == needle
 	}
 
-	pub fn show(&mut self, ui: &mut egui::Ui, ws: &Workspace, open_stem: Option<&str>) -> Vec<Action> {
+	pub fn show(
+		&mut self,
+		ui: &mut egui::Ui,
+		ws: &Workspace,
+		open_stem: Option<&str>,
+	) -> Vec<Action> {
 		self.rebuild_if_needed(ws);
+		let p = palette(ui.ctx());
 		let mut actions = Vec::new();
 		let items = ws.items();
 
-		let done = items.iter().filter(|i| i.is_done()).count();
-		let failed = items.iter().filter(|i| i.has_failure()).count();
 		ui.horizontal(|ui| {
-			ui.heading(ws.name());
-			if ui
-				.small_button("📂")
-				.on_hover_text("Show workspace folder")
-				.clicked()
-			{
-				actions.push(Action::Reveal(ws.root.clone()));
-			}
+			ui.label(RichText::new("Library").size(15.0).family(semibold()));
+			ui.label(RichText::new(items.len().to_string()).color(p.text_weak));
 		});
-		ui.label(
-			RichText::new(format!("{} models · {done} downloaded · {failed} failed", items.len()))
-				.small(),
-		);
 		if items.is_empty() {
 			ui.add_space(8.0);
-			ui.label("This workspace is empty. Use Workspace → Import export JSON…, or drop an export .json onto the window.");
+			ui.label(
+				RichText::new(
+					"No models yet. Import an export .json with the Import button, or drop it onto the window.",
+				)
+				.color(p.text_weak),
+			);
 			return actions;
 		}
-		ui.horizontal(|ui| {
-			ui.add(
-				egui::TextEdit::singleline(&mut self.filter)
-					.hint_text("Search")
-					.desired_width(ui.available_width() - 28.0),
-			);
-			if !self.filter.is_empty() && ui.small_button("✕").clicked() {
-				self.filter.clear();
-			}
-		});
-		ui.horizontal(|ui| {
-			for (value, label) in [
-				(StatusFilter::All, RichText::new("All")),
-				(StatusFilter::Downloaded, RichText::new("● Done").color(DONE)),
-				(StatusFilter::Pending, RichText::new("○ Pending").color(PENDING)),
-				(StatusFilter::Failed, RichText::new("● Failed").color(FAILED)),
+		ui.add_space(4.0);
+		ui.add(
+			egui::TextEdit::singleline(&mut self.filter)
+				.hint_text(format!(
+					"{}  Search name, folder or id",
+					icons::MAGNIFYING_GLASS
+				))
+				.desired_width(f32::INFINITY)
+				.margin(egui::Margin::symmetric(8, 6)),
+		);
+		if !self.filter.is_empty()
+			&& ui
+				.small_button(format!("{}  Clear search", icons::X))
+				.clicked()
+		{
+			self.filter.clear();
+		}
+		ui.add_space(2.0);
+		let count = |f: fn(&Item) -> bool| items.iter().filter(|i| f(i)).count();
+		let done = count(Item::is_done);
+		let failed = count(Item::has_failure);
+		let pending = count(|i| i.has_pending() && !i.has_failure());
+		ui.horizontal_wrapped(|ui| {
+			ui.spacing_mut().item_spacing.x = 4.0;
+			for (value, label, n, colour) in [
+				(StatusFilter::All, "All", items.len(), None),
+				(StatusFilter::Downloaded, "Done", done, Some(p.success)),
+				(StatusFilter::Pending, "Pending", pending, Some(p.warning)),
+				(StatusFilter::Failed, "Failed", failed, Some(p.danger)),
 			] {
-				ui.selectable_value(&mut self.status, value, label);
+				if value == StatusFilter::Failed && n == 0 && self.status != StatusFilter::Failed {
+					continue;
+				}
+				let mut text = RichText::new(format!("{label} {n}")).size(12.0);
+				if let Some(c) = colour {
+					text = RichText::new(format!("{}  {label} {n}", icons::CIRCLE))
+						.size(12.0)
+						.color(c);
+				}
+				ui.selectable_value(&mut self.status, value, text);
 			}
 		});
-		ui.separator();
+		ui.add_space(4.0);
 
 		egui::ScrollArea::vertical()
 			.auto_shrink([false, false])
@@ -154,29 +190,57 @@ impl Browser {
 		let items = ws.items();
 		for (name, child) in node.sorted_folders() {
 			let all = child.all_items();
-			let visible: Vec<usize> = all.iter().copied().filter(|&i| self.matches(&items[i])).collect();
+			let visible: Vec<usize> = all
+				.iter()
+				.copied()
+				.filter(|&i| self.matches(&items[i]))
+				.collect();
 			if visible.is_empty() {
 				continue;
 			}
-			let failed: Vec<usize> = all.iter().copied().filter(|&i| items[i].has_failure()).collect();
+			let failed: Vec<usize> = all
+				.iter()
+				.copied()
+				.filter(|&i| items[i].has_failure())
+				.collect();
 			let done = all.iter().filter(|&&i| items[i].is_done()).count();
 			let path = format!("{id_path}/{name}");
 			let id = ui.make_persistent_id(&path);
-			let mut state =
-				egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+			let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+				ui.ctx(),
+				id,
+				false,
+			);
 			if !self.filter.is_empty() || self.status != StatusFilter::All {
 				state.set_open(true);
 			}
+			let p = palette(ui.ctx());
+			let mut clicked = false;
 			state
 				.show_header(ui, |ui| {
-					let mut text = RichText::new(format!("📁 {name}  {done}/{}", all.len()));
-					if !failed.is_empty() {
-						text = text.color(FAILED);
-					}
-					let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+					let colour = if failed.is_empty() { p.text } else { p.danger };
+					let text =
+						RichText::new(format!("{}  {name}", icons::FOLDER_SIMPLE)).color(colour);
+					let response = ui.add(
+						egui::Label::new(text)
+							.sense(egui::Sense::click())
+							.truncate(),
+					);
+					// the whole name toggles the folder, not just the arrow
+					clicked = response.clicked();
+					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+						ui.label(
+							RichText::new(format!("{done}/{}", all.len()))
+								.size(11.5)
+								.color(p.text_weak),
+						);
+					});
 					response.context_menu(|ui| {
 						if ui
-							.add_enabled(!failed.is_empty(), egui::Button::new(format!("Retry {} failed", failed.len())))
+							.add_enabled(
+								!failed.is_empty(),
+								egui::Button::new(format!("Retry {} failed", failed.len())),
+							)
 							.clicked()
 						{
 							actions.push(Action::Retry(failed.clone()));
@@ -192,31 +256,41 @@ impl Browser {
 							}
 						}
 						ui.separator();
-						if ui.button(format!("Remove folder ({} models)", all.len())).clicked() {
+						if ui
+							.button(format!("Remove folder ({} models)", all.len()))
+							.clicked()
+						{
 							actions.push(Action::Remove(all.clone()));
 							ui.close();
 						}
 					});
 				})
 				.body(|ui| self.folder(ui, ws, child, &path, open_stem, actions));
+			if clicked
+				&& let Some(mut state) =
+					egui::collapsing_header::CollapsingState::load(ui.ctx(), id)
+			{
+				state.toggle(ui);
+				state.store(ui.ctx());
+			}
 		}
 		for &i in &node.items {
 			let item = &items[i];
 			if !self.matches(item) {
 				continue;
 			}
-			let (icon, colour) = status_icon(item);
+			let p = palette(ui.ctx());
 			let is_open = open_stem == Some(item.stem.as_str());
-			ui.horizontal(|ui| {
-				ui.label(RichText::new(icon).color(colour));
-				let mut label = item.name.clone();
-				if !item.maps.is_empty() {
-					label.push_str("  🖼");
-				}
-				let response = ui.selectable_label(is_open, label);
+			{
+				let response = item_row(ui, &p, item, is_open);
 				let mut hover = format!("Mesh {}: {}", item.mesh_id, describe(&item.mesh));
 				for (kind, map) in &item.maps {
-					hover.push_str(&format!("\n{} {}: {}", kind.label(), map.id, describe(&map.state)));
+					hover.push_str(&format!(
+						"\n{} {}: {}",
+						kind.label(),
+						map.id,
+						describe(&map.state)
+					));
 				}
 				let response = response.on_hover_text(hover);
 				if response.clicked() {
@@ -247,9 +321,54 @@ impl Browser {
 						ui.close();
 					}
 				});
-			});
+			}
 		}
 	}
+}
+
+/// A full-width, hoverable row: status dot, name, and a map indicator.
+fn item_row(ui: &mut egui::Ui, p: &Palette, item: &Item, selected: bool) -> egui::Response {
+	let (rect, response) =
+		ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+	let painter = ui.painter_at(rect);
+	let fill = if selected {
+		p.accent_soft
+	} else if response.hovered() {
+		p.raised_hover
+	} else {
+		Color32::TRANSPARENT
+	};
+	painter.rect_filled(rect, CornerRadius::same(6), fill);
+	let s = status(item);
+	let dot = rect.left_center() + Vec2::new(11.0, 0.0);
+	if s == Status::Pending {
+		painter.circle_stroke(dot, 3.5, Stroke::new(1.3, status_colour(p, s)));
+	} else {
+		painter.circle_filled(dot, 3.5, status_colour(p, s));
+	}
+	let text_colour = if selected { p.accent } else { p.text };
+	let right_pad = if item.maps.is_empty() { 8.0 } else { 26.0 };
+	let text_rect = egui::Rect::from_min_max(
+		rect.left_top() + Vec2::new(24.0, 0.0),
+		rect.right_bottom() - Vec2::new(right_pad, 0.0),
+	);
+	painter.with_clip_rect(text_rect).text(
+		text_rect.left_center(),
+		Align2::LEFT_CENTER,
+		&item.name,
+		FontId::proportional(13.0),
+		text_colour,
+	);
+	if !item.maps.is_empty() {
+		painter.text(
+			rect.right_center() - Vec2::new(10.0, 0.0),
+			Align2::RIGHT_CENTER,
+			icons::IMAGE,
+			FontId::proportional(13.0),
+			p.text_weak,
+		);
+	}
+	response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Opens a file browser at `path` (selecting it if it is a file).
@@ -266,11 +385,18 @@ pub fn reveal(path: &std::path::Path) {
 	}
 	#[cfg(target_os = "macos")]
 	{
-		let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+		let _ = std::process::Command::new("open")
+			.arg("-R")
+			.arg(path)
+			.spawn();
 	}
 	#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 	{
-		let dir = if path.is_file() { path.parent().unwrap_or(path) } else { path };
+		let dir = if path.is_file() {
+			path.parent().unwrap_or(path)
+		} else {
+			path
+		};
 		let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 	}
 }

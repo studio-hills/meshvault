@@ -103,21 +103,25 @@ The `gui` crate is a desktop viewer built on `rbx_mesh` and [egui](https://githu
 cargo run --release -p rbx_mesh_gui -- meshes/sphere.mesh
 ```
 
-- Open files with File → Open (Ctrl+O), drag and drop, or pass a path on the command line
+- Three-pane layout: a library of workspace models, the 3D viewport with a floating toolbar, and an inspector for the model's stats, material and properties; both side panels can be hidden
+- Dark and light themes, notifications for long-running work, and keyboard shortcuts (press `?` in the app for the list)
+- Open files with the Open button (Ctrl+O), drag and drop, or pass a path on the command line
 - Switch between LODs for mesh v3+ files (including v6/v7); toggle individual convex hulls for union physics files
-- Solid, wireframe or combined shading; optional back-face culling
+- Solid, wireframe or combined shading, a ground grid, and optional back-face culling
 - GPU rendering (wgpu): depth-tested, multisampled, mipmapped, with physically based shading; falls back to a CPU renderer when no GPU backend is available
-- Materials: base color, normal, roughness and metalness maps (Roblox `SurfaceAppearance`).  Maps next to the mesh load automatically by name (`Name.png` or `Name.color.png`, `Name.normal.png`, `Name.roughness.png`, `Name.metalness.png`); otherwise use File → Load map or drop PNG/JPEG/BMP/TGA/WebP files onto the window.  Each map can be toggled to compare with and without it
+- Materials: base color, normal, roughness and metalness maps (Roblox `SurfaceAppearance`).  Maps next to the mesh load automatically by name (`Name.png` or `Name.color.png`, `Name.normal.png`, `Name.roughness.png`, `Name.metalness.png`); otherwise use the inspector's Material section or drop PNG/JPEG/BMP/TGA/WebP files onto the window.  Each map can be toggled to compare with and without it
 - Export the visible geometry as Wavefront OBJ
-- Controls: left-drag to orbit, right/middle-drag to pan, scroll to zoom, double-click to reset
+- Controls: left-drag to orbit, right/middle-drag to pan, scroll to zoom, double-click or F to frame the model
+
+The GUI bundles the [Inter](https://rsms.me/inter/) typeface (SIL Open Font License 1.1) and [Phosphor](https://phosphoricons.com) icons (MIT); see `gui/assets/` for their licenses.
 
 ### Workspaces and bulk download
 
 A workspace is a folder of models downloaded from Roblox, organized to mirror the folders of an export file shaped like `[{"Name", "MeshId", "Folder", "TextureId"?, "ColorMap"?, "NormalMap"?, "RoughnessMap"?, "MetalnessMap"?}, ...]` (empty strings count as missing).  Content ids can be `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N` or `assetdelivery.roblox.com` URLs.
 
-1. Workspace → New workspace… (created under `Documents/rbx_mesh workspaces` by default)
-2. Workspace → Roblox access… and add a credential (see below), then press Test
-3. Workspace → Import export JSON…, or drop the `.json` onto the window, then pick the folders, meshes and textures to import
+1. Open the workspace menu in the top bar and choose New workspace… (created under `Documents/rbx_mesh workspaces` by default)
+2. Click the key icon (Roblox access, Ctrl+,) and add a credential (see below), then press Test
+3. Click Import (Ctrl+I), or drop the `.json` onto the window, then pick the folders, meshes and maps to import
 4. Browse the workspace tree; click a downloaded model to view it with its texture
 
 ```text

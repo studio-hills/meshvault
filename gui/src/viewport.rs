@@ -174,6 +174,14 @@ pub fn show(
 	if response.double_clicked() {
 		*camera = Camera::framing(geometry);
 	}
+	// an open hand over the model, a closed one while orbiting, a move cursor while panning
+	if response.dragged_by(egui::PointerButton::Primary) {
+		ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+	} else if response.dragged() {
+		ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+	} else if response.hovered() {
+		ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+	}
 
 	let (right, up, _) = camera.basis();
 	if settings.show_grid {

@@ -27,7 +27,6 @@ pub const IMAGE: &str = "\u{E2CA}";
 pub const INFO: &str = "\u{E2CE}";
 pub const KEY: &str = "\u{E2D6}";
 pub const MOON: &str = "\u{E330}";
-pub const PACKAGE: &str = "\u{E390}";
 pub const PLUS: &str = "\u{E3D4}";
 pub const POLYGON: &str = "\u{E6D0}";
 pub const SIDEBAR_SIMPLE: &str = "\u{EC24}";

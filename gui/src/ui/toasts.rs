@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, RichText, Stroke, Vec2};
 
-use super::icons;
 use super::theme::palette;
+use super::{icons, widgets};
 
 const LIFETIME: Duration = Duration::from_secs(5);
 const MAX_SHOWN: usize = 5;
@@ -89,18 +89,10 @@ impl Toasts {
 						.shadow(ctx.global_style().visuals.popup_shadow)
 						.show(ui, |ui| {
 							ui.horizontal(|ui| {
+								ui.spacing_mut().interact_size.y = 24.0;
 								ui.label(RichText::new(icon).size(18.0).color(colour));
 								ui.add(egui::Label::new(&toast.text).wrap());
-								if ui
-									.add(
-										egui::Button::new(
-											RichText::new(icons::X).color(p.text_weak),
-										)
-										.frame(false),
-									)
-									.on_hover_text("Dismiss")
-									.clicked()
-								{
+								if widgets::icon_button(ui, icons::X, "Dismiss").clicked() {
 									dismiss = Some(i);
 								}
 							});

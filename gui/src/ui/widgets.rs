@@ -1,13 +1,36 @@
 //! Small styled building blocks shared by the panels.
 
 use eframe::egui::{
-	self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Response, RichText, Sense, Stroke,
-	Ui, Vec2, WidgetText,
+	self, Align2, Color32, CornerRadius, CursorIcon, FontId, Frame, Margin, Response, RichText,
+	Sense, Stroke, Ui, Vec2, WidgetText,
 };
 
-use super::theme::{display, palette, semibold};
+use super::theme::{CONTROL_RADIUS, CONTROL_SM, display, medium, palette, semibold};
 
-/// A borderless square button showing one icon, with a tooltip.
+/// Shows a pointing hand while hovering something clickable. egui does this
+/// for buttons by itself (see `interact_cursor` in the theme); checkboxes,
+/// radios, collapsing arrows, clickable labels and custom widgets need this.
+pub fn pointer(response: Response) -> Response {
+	if response.hovered() && response.enabled() {
+		response.ctx.set_cursor_icon(CursorIcon::PointingHand);
+	}
+	response
+}
+
+/// Shrinks controls in this `ui` to the small size (toolbars, cards).
+pub fn compact(ui: &mut Ui) {
+	ui.spacing_mut().interact_size.y = CONTROL_SM;
+	ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
+}
+
+/// Sizes dropdown and context menu items: full-width rows of `CONTROL_SM`.
+pub fn menu_style(ui: &mut Ui) {
+	ui.spacing_mut().interact_size.y = CONTROL_SM;
+	ui.spacing_mut().button_padding = Vec2::new(10.0, 6.0);
+}
+
+/// A borderless square button showing one icon, with a tooltip. It is as
+/// tall as the surrounding controls (`interact_size.y`).
 pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
 	icon_toggle(ui, icon, tooltip, false)
 }
@@ -15,8 +38,9 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
 /// An icon button that shows an "on" state with the accent colour.
 pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
 	let p = palette(ui.ctx());
-	let size = Vec2::splat(28.0);
+	let size = Vec2::splat(ui.spacing().interact_size.y);
 	let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+	let response = pointer(response);
 	let enabled = ui.is_enabled();
 	let hovered = enabled && response.hovered();
 	let fill = if on {
@@ -35,32 +59,46 @@ pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response
 	} else {
 		p.text_weak
 	};
-	ui.painter().rect_filled(rect, CornerRadius::same(7), fill);
+	ui.painter()
+		.rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
 	ui.painter().text(
 		rect.center(),
 		Align2::CENTER_CENTER,
 		icon,
-		FontId::proportional(16.0),
+		FontId::proportional((size.y * 0.45).round()),
 		colour,
 	);
 	response.on_hover_text(tooltip)
 }
 
-/// A filled accent button for the main action of a screen or dialog.
+/// A filled accent button for the main action of a screen or dialog
+/// (shadcn's default variant).
 pub fn primary_button(ui: &mut Ui, text: impl Into<String>) -> Response {
 	let p = palette(ui.ctx());
 	ui.add(
-		egui::Button::new(RichText::new(text).color(p.on_accent).family(semibold()))
+		egui::Button::new(RichText::new(text).color(p.on_accent).family(medium()))
 			.fill(p.accent)
-			.stroke(Stroke::NONE)
-			.corner_radius(CornerRadius::same(7))
-			.min_size(Vec2::new(0.0, 30.0)),
+			.stroke(Stroke::NONE),
 	)
 }
 
-/// A regular button with an icon in front of the label.
+/// A bordered button with an icon in front of the label (shadcn's outline variant).
 pub fn button(ui: &mut Ui, icon: &str, text: &str) -> Response {
-	ui.add(egui::Button::new(format!("{icon}  {text}")).min_size(Vec2::new(0.0, 30.0)))
+	text_button(ui, format!("{icon}  {text}"))
+}
+
+/// A bordered button with a text label.
+pub fn text_button(ui: &mut Ui, text: impl Into<String>) -> Response {
+	ui.add(egui::Button::new(RichText::new(text).family(medium())))
+}
+
+/// A single-line text input preset (shadcn's `px-3`, text vertically
+/// centred). egui gives it the same height as a button, so the two line up.
+/// Chain `.hint_text`, `.desired_width`, `.password` as needed.
+pub fn input(text: &mut String) -> egui::TextEdit<'_> {
+	egui::TextEdit::singleline(text)
+		.margin(Margin::symmetric(12, 0))
+		.align(Align2::LEFT_CENTER)
 }
 
 /// A row of mutually exclusive icon options, like a radio group.
@@ -74,7 +112,7 @@ pub fn segmented<T: PartialEq + Copy>(
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(8))
+		.corner_radius(CornerRadius::same(CONTROL_RADIUS + 2))
 		.inner_margin(Margin::same(2))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
@@ -123,7 +161,7 @@ pub fn section<R>(
 				.selectable(false),
 		)
 	});
-	if header.inner.clicked() {
+	if pointer(header.inner).clicked() {
 		state.toggle(ui);
 	}
 	state.show_body_unindented(ui, |ui| {
@@ -162,6 +200,9 @@ pub fn badge(ui: &mut Ui, text: impl Into<WidgetText>, colour: Color32) -> Respo
 /// Two-column label/value rows with weak labels.
 pub fn properties(ui: &mut Ui, id: &str, rows: &[(String, String)]) {
 	let p = palette(ui.ctx());
+	// grids use the control height as their minimum row height; these rows
+	// hold text only
+	ui.spacing_mut().interact_size.y = 18.0;
 	egui::Grid::new(id)
 		.num_columns(2)
 		.spacing(Vec2::new(12.0, 6.0))

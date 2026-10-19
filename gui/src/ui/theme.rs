@@ -109,7 +109,24 @@ pub fn semibold() -> FontFamily {
 	FontFamily::Name("semibold".into())
 }
 
-/// Font family for display text: the brand mark, titles and headings.
+/// Font family for medium-weight text: button labels, like shadcn's `font-medium`.
+pub fn medium() -> FontFamily {
+	FontFamily::Name("medium".into())
+}
+
+// Control sizes, following shadcn/ui: default controls are 36px tall
+// (`h-9`), small ones 32px (`h-8`). Buttons and text inputs share a height
+// so they line up when placed side by side.
+/// Height of default buttons, inputs and icon buttons.
+pub const CONTROL: f32 = 36.0;
+/// Height of small controls: toolbars, menus and buttons inside cards.
+pub const CONTROL_SM: f32 = 32.0;
+/// Height of rows in trees and lists.
+pub const ROW: f32 = 26.0;
+/// Corner radius of buttons and inputs (`rounded-md`).
+pub const CONTROL_RADIUS: u8 = 6;
+
+/// Display text: the brand mark, titles and headings.
 pub fn display() -> FontFamily {
 	FontFamily::Name("display".into())
 }
@@ -139,6 +156,10 @@ pub fn install_fonts(ctx: &egui::Context) {
 		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-Regular.ttf"),
 	);
 	add(
+		"ui-medium",
+		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-Medium.ttf"),
+	);
+	add(
 		"ui-semibold",
 		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-SemiBold.ttf"),
 	);
@@ -162,6 +183,7 @@ pub fn install_fonts(ctx: &egui::Context) {
 		v
 	};
 	fonts.families.insert(FontFamily::Proportional, chain("ui"));
+	fonts.families.insert(medium(), chain("ui-medium"));
 	fonts.families.insert(semibold(), chain("ui-semibold"));
 	fonts.families.insert(display(), chain("display"));
 	fonts
@@ -177,13 +199,11 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	style.text_styles = [
 		(
 			TextStyle::Small,
-			FontId::new(11.5, FontFamily::Proportional),
+			FontId::new(12.0, FontFamily::Proportional),
 		),
-		(TextStyle::Body, FontId::new(13.5, FontFamily::Proportional)),
-		(
-			TextStyle::Button,
-			FontId::new(13.5, FontFamily::Proportional),
-		),
+		// shadcn's `text-sm`
+		(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+		(TextStyle::Button, FontId::new(14.0, medium())),
 		(TextStyle::Heading, FontId::new(18.0, display())),
 		(
 			TextStyle::Monospace,
@@ -194,8 +214,10 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 
 	let s = &mut style.spacing;
 	s.item_spacing = Vec2::new(8.0, 6.0);
-	s.button_padding = Vec2::new(10.0, 5.0);
-	s.interact_size = Vec2::new(28.0, 26.0);
+	// egui pads buttons and text inputs alike, and gives both the same
+	// minimum height, so these two settings size every control
+	s.button_padding = Vec2::new(16.0, 8.0);
+	s.interact_size = Vec2::new(CONTROL, CONTROL);
 	s.window_margin = Margin::same(16);
 	s.menu_margin = Margin::symmetric(8, 8);
 	// solid scroll bars sit beside the content instead of floating over it
@@ -241,8 +263,10 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	v.collapsing_header_frame = false;
 	v.indent_has_left_vline = false;
 	v.slider_trailing_fill = true;
+	// a pointing hand over buttons; widgets.rs adds it to other clickable things
+	v.interact_cursor = Some(egui::CursorIcon::PointingHand);
 
-	let radius = CornerRadius::same(7);
+	let radius = CornerRadius::same(CONTROL_RADIUS);
 	let w = &mut v.widgets;
 	w.noninteractive.bg_fill = p.panel;
 	w.noninteractive.weak_bg_fill = p.panel;

@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
-use super::theme::{display, palette, semibold};
+use super::theme::{ROW, display, palette, semibold};
 use super::{icons, widgets};
 use crate::app::{App, format_bytes};
 use crate::geometry::GroupKind;
@@ -102,6 +102,7 @@ impl App {
 				match doc.loaded.geometry.group_kind {
 					GroupKind::Lod if groups.len() > 1 => {
 						widgets::section(ui, "inspector_lods", "Level of detail", true, |ui| {
+							widgets::compact(ui);
 							for (i, range) in groups.iter().enumerate() {
 								let label = format!("LOD {i}");
 								ui.horizontal(|ui| {
@@ -123,10 +124,11 @@ impl App {
 						let title = format!("Convex hulls · {}", groups.len());
 						widgets::section(ui, "inspector_hulls", &title, true, |ui| {
 							ui.horizontal(|ui| {
-								if ui.small_button("Show all").clicked() {
+								widgets::compact(ui);
+								if widgets::text_button(ui, "Show all").clicked() {
 									doc.hull_visible.fill(true);
 								}
-								if ui.small_button("Hide all").clicked() {
+								if widgets::text_button(ui, "Hide all").clicked() {
 									doc.hull_visible.fill(false);
 								}
 							});
@@ -134,11 +136,12 @@ impl App {
 								.id_salt("hull_list")
 								.max_height(260.0)
 								.show(ui, |ui| {
+									ui.spacing_mut().interact_size.y = ROW;
 									for (i, range) in groups.iter().enumerate() {
-										ui.checkbox(
+										widgets::pointer(ui.checkbox(
 											&mut doc.hull_visible[i],
 											format!("Hull {i}  ·  {} tris", range.len()),
-										);
+										));
 									}
 								});
 						});
@@ -187,6 +190,8 @@ fn map_row(
 		.inner_margin(Margin::same(6))
 		.show(ui, |ui| {
 			ui.set_width(ui.available_width());
+			// small icon buttons inside the card row
+			ui.spacing_mut().interact_size.y = 30.0;
 			ui.horizontal(|ui| {
 				let thumb = Vec2::splat(40.0);
 				match material.maps.get(&slot) {

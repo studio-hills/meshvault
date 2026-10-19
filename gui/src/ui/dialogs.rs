@@ -61,7 +61,7 @@ impl App {
 				ui.add_space(10.0);
 				ui.label("Name");
 				let response = ui.add(
-					egui::TextEdit::singleline(&mut dialog.name)
+					widgets::input(&mut dialog.name)
 						.hint_text("e.g. My game assets")
 						.desired_width(f32::INFINITY),
 				);
@@ -71,21 +71,26 @@ impl App {
 				}
 				ui.add_space(6.0);
 				ui.label("Location");
-				ui.horizontal(|ui| {
-					ui.add(
-						egui::Label::new(
-							RichText::new(dialog.parent.display().to_string()).color(p.text_weak),
-						)
-						.truncate(),
-					);
-					if ui.small_button("Change…").clicked()
-						&& let Some(dir) = rfd::FileDialog::new()
-							.set_directory(&dialog.parent)
-							.pick_folder()
-					{
-						dialog.parent = dir;
-					}
-				});
+				// a read-only field with a Browse button, the same height as the name input
+				ui.allocate_ui_with_layout(
+					egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+					egui::Layout::right_to_left(egui::Align::Center),
+					|ui| {
+						if widgets::text_button(ui, "Browse…").clicked()
+							&& let Some(dir) = rfd::FileDialog::new()
+								.set_directory(&dialog.parent)
+								.pick_folder()
+						{
+							dialog.parent = dir;
+						}
+						let mut shown = dialog.parent.display().to_string();
+						ui.add(
+							widgets::input(&mut shown)
+								.interactive(false)
+								.desired_width(ui.available_width()),
+						);
+					},
+				);
 				if !dialog.name.trim().is_empty() {
 					ui.label(
 						RichText::new(format!(
@@ -103,7 +108,7 @@ impl App {
 				ui.add_space(14.0);
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 					create |= widgets::primary_button(ui, "Create").clicked();
-					cancel = ui.button("Cancel").clicked();
+					cancel = widgets::text_button(ui, "Cancel").clicked();
 				});
 			});
 		if cancel || modal.should_close() {
@@ -159,7 +164,7 @@ impl App {
 					});
 				ui.add_space(10.0);
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					ui.button("Close").clicked()
+					widgets::text_button(ui, "Close").clicked()
 				})
 				.inner
 			});

@@ -253,6 +253,13 @@ impl App {
 			self.downloader.cancel();
 		}
 		self.save_workspace();
+		// a model from the workspace closes with it; one opened from a file
+		// elsewhere stays open
+		if let (Some(ws), Some(doc)) = (&self.workspace, &self.doc)
+			&& (self.open_stem.is_some() || doc.path.starts_with(&ws.root))
+		{
+			self.doc = None;
+		}
 		self.workspace = None;
 		self.import = None;
 		self.open_stem = None;

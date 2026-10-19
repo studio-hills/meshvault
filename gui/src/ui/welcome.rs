@@ -57,7 +57,9 @@ impl App {
 						self.pick_import();
 					}
 					ui.add_space(14.0);
-					drop_zone(ui, "or drop the .json file anywhere in the window");
+					if drop_zone(ui, "or drop the .json file anywhere in the window").clicked() {
+						self.pick_import();
+					}
 				}
 				Some(ws) => {
 					let total = ws.items().len();
@@ -112,7 +114,14 @@ impl App {
 			}
 		});
 		ui.add_space(16.0);
-		drop_zone(ui, "Drop a mesh, union data, export .json or images here");
+		if drop_zone(
+			ui,
+			"Drop a mesh, union data, export .json or images here, or click to browse",
+		)
+		.clicked()
+		{
+			self.pick_file();
+		}
 
 		let recent = self.recent_workspaces();
 		if !recent.is_empty() {
@@ -183,11 +192,18 @@ fn subtitle(ui: &mut egui::Ui, text: &str) {
 	);
 }
 
-fn drop_zone(ui: &mut egui::Ui, text: &str) {
+/// A dashed drop target that can also be clicked to browse.
+fn drop_zone(ui: &mut egui::Ui, text: &str) -> egui::Response {
 	let p = palette(ui.ctx());
-	let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 72.0), Sense::hover());
-	ui.painter()
-		.rect_filled(rect, 10.0, p.panel.gamma_multiply(0.6));
+	let (rect, response) =
+		ui.allocate_exact_size(Vec2::new(ui.available_width(), 72.0), Sense::click());
+	let response = widgets::pointer(response);
+	let fill = if response.hovered() {
+		p.raised
+	} else {
+		p.panel.gamma_multiply(0.6)
+	};
+	ui.painter().rect_filled(rect, 10.0, fill);
 	widgets::dashed_rect(ui, rect, p.text_weak.gamma_multiply(0.55));
 	ui.painter().text(
 		rect.center() - Vec2::new(0.0, 10.0),
@@ -203,6 +219,7 @@ fn drop_zone(ui: &mut egui::Ui, text: &str) {
 		FontId::proportional(12.5),
 		p.text_weak,
 	);
+	response
 }
 
 /// A vertical gradient matching the 3D viewport's background.

@@ -5,7 +5,7 @@ use eframe::egui::{
 	Margin, Modifiers, Order, RichText, Stroke, Vec2,
 };
 
-use super::theme::{ThemeMode, display, palette, semibold};
+use super::theme::{CONTROL, ThemeMode, display, medium, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::geometry::GroupKind;
@@ -34,7 +34,8 @@ impl eframe::App for App {
 					.inner_margin(Margin::symmetric(12, 4)),
 			)
 			.show(ui, |ui| self.status_bar(ui));
-		if self.show_library {
+		// without a workspace there is no library: the welcome screen takes its place
+		if self.show_library && self.workspace.is_some() {
 			egui::Panel::left("library")
 				.default_size(290.0)
 				.size_range(220.0..=520.0)
@@ -62,7 +63,7 @@ impl App {
 	fn top_bar(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
 		ui.horizontal(|ui| {
-			ui.set_min_height(32.0);
+			ui.set_min_height(CONTROL);
 			ui.label(RichText::new(icons::CUBE).size(22.0).color(p.accent));
 			ui.label(RichText::new("Meshvault").size(17.0).family(display()));
 			ui.add_space(10.0);
@@ -99,42 +100,54 @@ impl App {
 				}
 			}
 			if failed > 0 && !self.downloader.is_running() {
-				let retry = ui.add(
-					egui::Button::new(
-						RichText::new(format!("{}  Retry {failed}", icons::ARROWS_CLOCKWISE))
-							.color(p.danger),
-					)
-					.min_size(Vec2::new(0.0, 30.0)),
-				);
+				let retry = ui.add(egui::Button::new(
+					RichText::new(format!("{}  Retry {failed}", icons::ARROWS_CLOCKWISE))
+						.color(p.danger)
+						.family(medium()),
+				));
 				if retry.on_hover_text("Retry failed downloads").clicked() {
 					self.retry_failed();
 				}
 			}
 
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				ui.menu_button(RichText::new(icons::DOTS_THREE_VERTICAL).size(16.0), |ui| {
-					self.more_menu(ui)
-				})
-				.response
-				.on_hover_text("More");
-				if widgets::icon_toggle(
-					ui,
-					icons::SIDEBAR_SIMPLE,
-					"Inspector  (Ctrl+Shift+B)",
-					self.show_inspector,
-				)
-				.clicked()
-				{
+				// a square menu button, matching the icon buttons beside it
+				ui.scope(|ui| {
+					ui.spacing_mut().button_padding.x = 10.0;
+					ui.menu_button(RichText::new(icons::DOTS_THREE_VERTICAL).size(16.0), |ui| {
+						self.more_menu(ui)
+					})
+					.response
+					.on_hover_text("More");
+				});
+				let has_doc = self.doc.is_some();
+				let inspector = ui
+					.add_enabled_ui(has_doc, |ui| {
+						widgets::icon_toggle(
+							ui,
+							icons::SIDEBAR_SIMPLE,
+							"Inspector  (Ctrl+Shift+B)",
+							self.show_inspector && has_doc,
+						)
+					})
+					.inner
+					.on_disabled_hover_text("Open a model to inspect it");
+				if inspector.clicked() {
 					self.show_inspector = !self.show_inspector;
 				}
-				if widgets::icon_toggle(
-					ui,
-					icons::TREE_STRUCTURE,
-					"Library  (Ctrl+B)",
-					self.show_library,
-				)
-				.clicked()
-				{
+				let has_ws = self.workspace.is_some();
+				let library = ui
+					.add_enabled_ui(has_ws, |ui| {
+						widgets::icon_toggle(
+							ui,
+							icons::TREE_STRUCTURE,
+							"Library  (Ctrl+B)",
+							self.show_library && has_ws,
+						)
+					})
+					.inner
+					.on_disabled_hover_text("Open a workspace to use the library");
+				if library.clicked() {
 					self.show_library = !self.show_library;
 				}
 				if widgets::icon_button(ui, icons::KEY, "Roblox access  (Ctrl+,)").clicked() {
@@ -165,7 +178,8 @@ impl App {
 				icons::CARET_DOWN
 			),
 		};
-		ui.menu_button(label, |ui| {
+		ui.menu_button(RichText::new(label).family(medium()), |ui| {
+			widgets::menu_style(ui);
 			ui.set_min_width(240.0);
 			let current = self.workspace.as_ref().map(|ws| ws.root.clone());
 			let recent = self.recent_workspaces();
@@ -231,6 +245,7 @@ impl App {
 	}
 
 	fn more_menu(&mut self, ui: &mut egui::Ui) {
+		widgets::menu_style(ui);
 		ui.set_min_width(220.0);
 		let has_doc = self.doc.is_some();
 		if ui
@@ -245,6 +260,7 @@ impl App {
 		}
 		ui.add_enabled_ui(has_doc, |ui| {
 			ui.menu_button(format!("{}  Load map", icons::IMAGE), |ui| {
+				widgets::menu_style(ui);
 				for slot in Slot::ALL {
 					if ui.button(format!("{}…", slot.label())).clicked() {
 						ui.close();
@@ -284,6 +300,7 @@ impl App {
 		let p = palette(ui.ctx());
 		ui.horizontal(|ui| {
 			ui.spacing_mut().item_spacing.x = 10.0;
+			ui.spacing_mut().interact_size.y = 22.0;
 			let small =
 				|text: String, colour: Color32| RichText::new(text).size(11.5).color(colour);
 			match &self.adapter {
@@ -336,63 +353,9 @@ impl App {
 	}
 
 	fn library(&mut self, ui: &mut egui::Ui) {
-		match &self.workspace {
-			Some(ws) => {
-				let actions = self.browser.show(ui, ws, self.open_stem.as_deref());
-				self.handle_browser(actions);
-			}
-			None => self.library_empty(ui),
-		}
-	}
-
-	fn library_empty(&mut self, ui: &mut egui::Ui) {
-		let p = palette(ui.ctx());
-		ui.label(RichText::new("Library").size(16.0).family(display()));
-		ui.add_space(6.0);
-		widgets::card(ui, |ui| {
-			ui.label(RichText::new(icons::PACKAGE).size(26.0).color(p.accent));
-			ui.label(RichText::new("Bulk download models").family(semibold()));
-			ui.label(
-				RichText::new(
-					"A workspace downloads the models from your export file and keeps them organized by folder.",
-				)
-				.color(p.text_weak)
-				.line_height(Some(19.0)),
-			);
-			ui.add_space(4.0);
-			if widgets::primary_button(ui, format!("{}  New workspace", icons::FOLDER_PLUS))
-				.clicked()
-			{
-				self.show_new_workspace(None);
-			}
-			if widgets::button(ui, icons::FOLDER_OPEN, "Open workspace…").clicked() {
-				self.pick_open_workspace();
-			}
-		});
-		let recent = self.recent_workspaces();
-		if !recent.is_empty() {
-			ui.add_space(10.0);
-			ui.label(
-				RichText::new("RECENT")
-					.size(11.0)
-					.family(semibold())
-					.color(p.text_weak),
-			);
-			for root in recent {
-				let name = root
-					.file_name()
-					.map(|n| n.to_string_lossy().into_owned())
-					.unwrap_or_default();
-				if ui
-					.add(
-						egui::Button::new(format!("{}  {name}", icons::FOLDER_SIMPLE)).frame(false),
-					)
-					.on_hover_text(root.display().to_string())
-					.clicked()
-				{
-					self.open_workspace(&root);
-				}
-			}
+		if let Some(ws) = &self.workspace {
+			let actions = self.browser.show(ui, ws, self.open_stem.as_deref());
+			self.handle_browser(actions);
 		}
 	}
 
@@ -448,6 +411,7 @@ impl App {
 					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)
 					.show(ui, |ui| {
+						ui.spacing_mut().interact_size.y = 30.0;
 						ui.horizontal(|ui| {
 							ui.spacing_mut().item_spacing.x = 4.0;
 							widgets::segmented(
@@ -604,7 +568,7 @@ impl App {
 		if pressed(shortcut(cmd, Key::E)) {
 			self.export_obj();
 		}
-		if pressed(shortcut(cmd, Key::B)) {
+		if pressed(shortcut(cmd, Key::B)) && self.workspace.is_some() {
 			self.show_library = !self.show_library;
 		}
 		if pressed(shortcut(cmd, Key::Comma)) {

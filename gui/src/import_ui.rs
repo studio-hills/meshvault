@@ -9,7 +9,7 @@ use eframe::egui::{self, RichText};
 use crate::export::{Entry, Export, FolderTree};
 use crate::maps::MapKind;
 use crate::ui::icons;
-use crate::ui::theme::{dialog_frame, display, palette};
+use crate::ui::theme::{ROW, dialog_frame, display, palette};
 use crate::ui::tree::{self, FolderCommand};
 use crate::ui::widgets;
 use crate::workspace::Workspace;
@@ -175,40 +175,18 @@ impl ImportDialog {
 			}
 		}
 		ui.horizontal(|ui| {
-			ui.label("Search:");
-			ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("name, folder or id"));
-			if !self.filter.is_empty() && ui.small_button("✕").clicked() {
+			ui.add(
+				widgets::input(&mut self.filter)
+					.hint_text(format!(
+						"{}  Search name, folder or id",
+						icons::MAGNIFYING_GLASS
+					))
+					.desired_width(300.0),
+			);
+			if !self.filter.is_empty()
+				&& widgets::icon_button(ui, icons::X, "Clear search").clicked()
+			{
 				self.filter.clear();
-			}
-		});
-		ui.horizontal(|ui| {
-			let visible = self.visible((0..self.entries.len()).collect());
-			let scope = if self.filter.is_empty() {
-				"all"
-			} else {
-				"matching"
-			};
-			if ui.button(format!("Select {scope}")).clicked() {
-				for &i in &visible {
-					self.mesh[i] = true;
-				}
-			}
-			if ui.button(format!("Deselect {scope}")).clicked() {
-				for &i in &visible {
-					self.mesh[i] = false;
-				}
-			}
-			ui.separator();
-			ui.label("Maps:");
-			if ui.small_button("all").clicked() {
-				for &i in &visible {
-					self.maps[i] = true;
-				}
-			}
-			if ui.small_button("none").clicked() {
-				for &i in &visible {
-					self.maps[i] = false;
-				}
 			}
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 				ui.spacing_mut().item_spacing.x = 0.0;
@@ -224,6 +202,36 @@ impl ImportDialog {
 				}
 			});
 		});
+		ui.horizontal(|ui| {
+			let visible = self.visible((0..self.entries.len()).collect());
+			let scope = if self.filter.is_empty() {
+				"all"
+			} else {
+				"matching"
+			};
+			if widgets::text_button(ui, format!("Select {scope}")).clicked() {
+				for &i in &visible {
+					self.mesh[i] = true;
+				}
+			}
+			if widgets::text_button(ui, format!("Deselect {scope}")).clicked() {
+				for &i in &visible {
+					self.mesh[i] = false;
+				}
+			}
+			ui.separator();
+			ui.label("Maps:");
+			if widgets::text_button(ui, "All").clicked() {
+				for &i in &visible {
+					self.maps[i] = true;
+				}
+			}
+			if widgets::text_button(ui, "None").clicked() {
+				for &i in &visible {
+					self.maps[i] = false;
+				}
+			}
+		});
 		if with_maps > 0 {
 			ui.horizontal_wrapped(|ui| {
 				ui.label("Download map types:");
@@ -233,18 +241,20 @@ impl ImportDialog {
 						continue;
 					}
 					let enabled = self.kinds.get_mut(&kind).expect("all kinds present");
-					ui.checkbox(enabled, format!("{} ({n})", kind.label()))
+					widgets::pointer(ui.checkbox(enabled, format!("{} ({n})", kind.label())))
 						.on_hover_text(format!("The {} field", kind.export_field()));
 				}
 			});
 		}
 		ui.separator();
 
-		let footer_height = 64.0;
+		// summary line plus a row of buttons
+		let footer_height = 84.0;
 		egui::ScrollArea::vertical()
 			.auto_shrink([false, false])
 			.max_height(ui.available_height() - footer_height)
 			.show(ui, |ui| {
+				ui.spacing_mut().interact_size.y = ROW;
 				let tree = std::mem::take(&mut self.tree);
 				self.folder_contents(ui, &tree, "");
 				self.tree = tree;
@@ -276,7 +286,7 @@ impl ImportDialog {
 		));
 		let mut outcome = None;
 		ui.horizontal(|ui| {
-			ui.checkbox(&mut self.download_now, "Start downloading now");
+			widgets::pointer(ui.checkbox(&mut self.download_now, "Start downloading now"));
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 				let import = ui
 					.add_enabled_ui(!selected.is_empty(), |ui| {
@@ -296,7 +306,7 @@ impl ImportDialog {
 						download_now: self.download_now,
 					});
 				}
-				if ui.button("Cancel").clicked() {
+				if widgets::text_button(ui, "Cancel").clicked() {
 					outcome = Some(Outcome::Cancel);
 				}
 			});
@@ -322,7 +332,7 @@ impl ImportDialog {
 			if !self.filter.is_empty() {
 				state.set_open(true);
 			}
-			state
+			let (arrow, _, _) = state
 				.show_header(ui, |ui| {
 					let mut all = selected == items.len();
 					let label = format!(
@@ -334,6 +344,7 @@ impl ImportDialog {
 						egui::Checkbox::new(&mut all, label)
 							.indeterminate(selected > 0 && selected < items.len()),
 					);
+					let response = widgets::pointer(response);
 					if response.changed() {
 						for &i in &items {
 							self.mesh[i] = all;
@@ -363,6 +374,7 @@ impl ImportDialog {
 					});
 				})
 				.body(|ui| self.folder_contents(ui, child, &path));
+			widgets::pointer(arrow);
 		}
 		for &i in &node.items {
 			if !self.matches(i) {
@@ -374,7 +386,7 @@ impl ImportDialog {
 				if self.existing[i] {
 					label = label.color(ui.visuals().weak_text_color());
 				}
-				ui.checkbox(&mut self.mesh[i], label)
+				widgets::pointer(ui.checkbox(&mut self.mesh[i], label))
 					.on_hover_text(format!("Mesh id {}", e.mesh_id));
 				if !e.maps.is_empty() {
 					let hover = e
@@ -396,8 +408,10 @@ impl ImportDialog {
 						e.maps.len(),
 						if e.maps.len() == 1 { "" } else { "s" }
 					);
-					ui.add_enabled(self.mesh[i], egui::Checkbox::new(&mut self.maps[i], label))
-						.on_hover_text(hover);
+					widgets::pointer(
+						ui.add_enabled(self.mesh[i], egui::Checkbox::new(&mut self.maps[i], label)),
+					)
+					.on_hover_text(hover);
 				}
 				if self.existing[i] {
 					ui.label(RichText::new("in workspace").small().weak());

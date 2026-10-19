@@ -174,8 +174,12 @@ impl SettingsDialog {
 				}
 				ui.label("Roblox only delivers assets to signed-in users, so downloads need a credential.");
 				ui.add_space(6.0);
-				ui.radio_value(&mut self.method, AuthMethod::ApiKey, "Open Cloud API key (recommended)");
-				ui.radio_value(&mut self.method, AuthMethod::Cookie, ".ROBLOSECURITY cookie");
+				widgets::pointer(ui.radio_value(
+					&mut self.method,
+					AuthMethod::ApiKey,
+					"Open Cloud API key (recommended)",
+				));
+				widgets::pointer(ui.radio_value(&mut self.method, AuthMethod::Cookie, ".ROBLOSECURITY cookie"));
 				ui.add_space(4.0);
 				match self.method {
 					AuthMethod::ApiKey => {
@@ -203,50 +207,73 @@ impl SettingsDialog {
 				}
 				ui.add_space(6.0);
 				let saved = self.saved[slot(self.method)];
-				egui::Grid::new("settings").num_columns(2).show(ui, |ui| {
-					ui.label(match self.method {
-						AuthMethod::ApiKey => "API key",
-						AuthMethod::Cookie => "Cookie",
-					});
-					ui.horizontal(|ui| {
-						ui.add(
-							egui::TextEdit::singleline(&mut self.secret)
-								.password(true)
-								.desired_width(260.0)
-								.hint_text(if saved { "saved (type to replace)" } else { "paste here" }),
-						);
-						if saved && ui.small_button("Forget").clicked() {
-							config::delete_secret(self.method);
-							self.saved[slot(self.method)] = false;
-							self.message = Some((true, "Saved credential removed.".into()));
-						}
-					});
-					ui.end_row();
-					ui.label("Place ID");
-					ui.add(
-						egui::TextEdit::singleline(&mut self.place_id)
-							.desired_width(260.0)
-							.hint_text("optional"),
-					)
-					.on_hover_text(
-						"A place you can edit. Sent as Roblox-Place-Id, which can grant access \
-						to private assets used in that place.",
+				// every field shares one width, so inputs and buttons line up
+				const FIELD: f32 = 320.0;
+				let field = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+					ui.allocate_ui_with_layout(
+						egui::vec2(FIELD, ui.spacing().interact_size.y),
+						egui::Layout::right_to_left(egui::Align::Center),
+						|ui| add(ui),
 					);
-					ui.end_row();
-					ui.label("Parallel downloads");
-					ui.add(egui::Slider::new(&mut self.concurrency, 1..=8));
-					ui.end_row();
-					ui.label("Test with asset id");
-					ui.horizontal(|ui| {
-						ui.add(egui::TextEdit::singleline(&mut self.test_id).desired_width(180.0));
-						if self.test.is_some() {
-							ui.spinner();
-						} else if ui.button("Test").clicked() {
-							self.start_test(ui.ctx());
-						}
+				};
+				egui::Grid::new("settings")
+					.num_columns(2)
+					.spacing(egui::vec2(16.0, 10.0))
+					.show(ui, |ui| {
+						ui.label(match self.method {
+							AuthMethod::ApiKey => "API key",
+							AuthMethod::Cookie => "Cookie",
+						});
+						field(ui, &mut |ui| {
+							// laid out right to left: the button first, the input fills the rest
+							if saved && widgets::text_button(ui, "Forget").clicked() {
+								config::delete_secret(self.method);
+								self.saved[slot(self.method)] = false;
+								self.message = Some((true, "Saved credential removed.".into()));
+							}
+							ui.add(
+								widgets::input(&mut self.secret)
+									.password(true)
+									.desired_width(ui.available_width())
+									.hint_text(if saved { "saved (type to replace)" } else { "paste here" }),
+							);
+						});
+						ui.end_row();
+
+						ui.label("Place ID");
+						field(ui, &mut |ui| {
+							ui.add(
+								widgets::input(&mut self.place_id)
+									.desired_width(ui.available_width())
+									.hint_text("optional"),
+							)
+							.on_hover_text(
+								"A place you can edit. Sent as Roblox-Place-Id, which can grant access \
+								to private assets used in that place.",
+							);
+						});
+						ui.end_row();
+
+						ui.label("Parallel downloads");
+						field(ui, &mut |ui| {
+							ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+								ui.spacing_mut().slider_width = FIELD - 60.0;
+								widgets::pointer(ui.add(egui::Slider::new(&mut self.concurrency, 1..=8)));
+							});
+						});
+						ui.end_row();
+
+						ui.label("Test with asset id");
+						field(ui, &mut |ui| {
+							if self.test.is_some() {
+								ui.spinner();
+							} else if widgets::text_button(ui, "Test").clicked() {
+								self.start_test(ui.ctx());
+							}
+							ui.add(widgets::input(&mut self.test_id).desired_width(ui.available_width()));
+						});
+						ui.end_row();
 					});
-					ui.end_row();
-				});
 				if let Some((ok, message)) = &self.message {
 					ui.add_space(4.0);
 					let p = palette(ui.ctx());
@@ -261,7 +288,7 @@ impl SettingsDialog {
 							Err(e) => self.message = Some((false, e)),
 						}
 					}
-					if ui.button("Cancel").clicked() {
+					if widgets::text_button(ui, "Cancel").clicked() {
 						close = true;
 					}
 				});

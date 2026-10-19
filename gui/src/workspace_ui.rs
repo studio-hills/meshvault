@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 
 use crate::export::FolderTree;
-use crate::ui::theme::{Palette, display, palette};
+use crate::ui::theme::{Palette, ROW, display, palette};
 use crate::ui::tree::{self, FolderCommand};
 use crate::ui::{icons, widgets};
 use crate::workspace::{AssetState, Item, Workspace};
@@ -140,6 +140,7 @@ impl Browser {
 			}
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 				ui.spacing_mut().item_spacing.x = 0.0;
+				ui.spacing_mut().interact_size.y = 28.0;
 				if widgets::icon_button(ui, icons::ARROWS_IN_LINE_VERTICAL, "Collapse all folders")
 					.clicked()
 				{
@@ -171,22 +172,27 @@ impl Browser {
 			return actions;
 		}
 		ui.add_space(4.0);
-		ui.add(
-			egui::TextEdit::singleline(&mut self.filter)
-				.hint_text(format!(
-					"{}  Search name, folder or id",
-					icons::MAGNIFYING_GLASS
-				))
-				.desired_width(f32::INFINITY)
-				.margin(egui::Margin::symmetric(8, 6)),
-		);
-		if !self.filter.is_empty()
-			&& ui
-				.small_button(format!("{}  Clear search", icons::X))
-				.clicked()
-		{
-			self.filter.clear();
-		}
+		// search with a clear button beside it, the same height
+		ui.horizontal(|ui| {
+			let clear_width = if self.filter.is_empty() {
+				0.0
+			} else {
+				ui.spacing().interact_size.y + ui.spacing().item_spacing.x
+			};
+			ui.add(
+				widgets::input(&mut self.filter)
+					.hint_text(format!(
+						"{}  Search name, folder or id",
+						icons::MAGNIFYING_GLASS
+					))
+					.desired_width(ui.available_width() - clear_width),
+			);
+			if !self.filter.is_empty()
+				&& widgets::icon_button(ui, icons::X, "Clear search").clicked()
+			{
+				self.filter.clear();
+			}
+		});
 		ui.add_space(2.0);
 		let count = |f: fn(&Item) -> bool| items.iter().filter(|i| f(i)).count();
 		let done = count(Item::is_done);
@@ -194,6 +200,8 @@ impl Browser {
 		let pending = count(|i| i.has_pending() && !i.has_failure());
 		ui.horizontal_wrapped(|ui| {
 			ui.spacing_mut().item_spacing.x = 4.0;
+			ui.spacing_mut().interact_size.y = 28.0;
+			ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
 			for (value, label, n, colour) in [
 				(StatusFilter::All, "All", items.len(), None),
 				(StatusFilter::Downloaded, "Done", done, Some(p.success)),
@@ -217,6 +225,7 @@ impl Browser {
 		egui::ScrollArea::vertical()
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
+				ui.spacing_mut().interact_size.y = ROW;
 				let tree = std::mem::take(&mut self.tree);
 				self.folder(ui, ws, &tree, "", open_stem, &mut actions);
 				self.tree = tree;
@@ -262,15 +271,17 @@ impl Browser {
 			}
 			let p = palette(ui.ctx());
 			let mut clicked = false;
-			state
+			let (arrow, _, _) = state
 				.show_header(ui, |ui| {
 					let colour = if failed.is_empty() { p.text } else { p.danger };
 					let text =
 						RichText::new(format!("{}  {name}", icons::FOLDER_SIMPLE)).color(colour);
-					let response = ui.add(
-						egui::Label::new(text)
-							.sense(egui::Sense::click())
-							.truncate(),
+					let response = widgets::pointer(
+						ui.add(
+							egui::Label::new(text)
+								.sense(egui::Sense::click())
+								.truncate(),
+						),
 					);
 					// the whole name toggles the folder, not just the arrow
 					clicked = response.clicked();
@@ -282,6 +293,7 @@ impl Browser {
 						);
 					});
 					response.context_menu(|ui| {
+						widgets::menu_style(ui);
 						if ui
 							.add_enabled(
 								!failed.is_empty(),
@@ -335,6 +347,7 @@ impl Browser {
 					});
 				})
 				.body(|ui| self.folder(ui, ws, child, &path, open_stem, actions));
+			widgets::pointer(arrow);
 			if clicked
 				&& let Some(mut state) =
 					egui::collapsing_header::CollapsingState::load(ui.ctx(), id)
@@ -369,6 +382,7 @@ impl Browser {
 					actions.push(Action::Open(i));
 				}
 				response.context_menu(|ui| {
+					widgets::menu_style(ui);
 					if ui.button("Open").clicked() {
 						actions.push(Action::Open(i));
 						ui.close();

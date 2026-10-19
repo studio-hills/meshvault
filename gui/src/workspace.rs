@@ -202,14 +202,21 @@ fn rig_stem(file: &str) -> &str {
 
 /// Writes a model as a schema 1 export holding just that model and the
 /// meshes it uses, so the file can also be imported on its own.
-fn write_rig(path: &Path, model: &AnimatedModel, meshes: &[(&Entry, String)]) -> Result<(), String> {
+fn write_rig(
+	path: &Path,
+	model: &AnimatedModel,
+	meshes: &[(&Entry, String)],
+) -> Result<(), String> {
 	let meshes: Vec<serde_json::Value> = meshes
 		.iter()
 		.filter_map(|(e, _)| {
 			let mut asset = serde_json::Map::new();
 			asset.insert("Id".into(), e.source_id?.into());
 			asset.insert("Name".into(), e.name.clone().into());
-			asset.insert("MeshId".into(), format!("rbxassetid://{}", e.mesh_id).into());
+			asset.insert(
+				"MeshId".into(),
+				format!("rbxassetid://{}", e.mesh_id).into(),
+			);
 			asset.insert("Folder".into(), e.folder.join("/").into());
 			for kind in MapKind::ALL {
 				let value = e
@@ -300,7 +307,12 @@ impl Workspace {
 			.items
 			.iter()
 			.map(|i| i.stem.to_lowercase())
-			.chain(manifest.models.iter().map(|m| rig_stem(&m.file).to_lowercase()))
+			.chain(
+				manifest
+					.models
+					.iter()
+					.map(|m| rig_stem(&m.file).to_lowercase()),
+			)
 			.collect();
 		Ok(Self {
 			root: root.to_path_buf(),
@@ -366,11 +378,9 @@ impl Workspace {
 	/// (same folder, name and mesh) gain any newly selected maps instead of
 	/// being duplicated, so re-importing an export is safe. Returns how
 	/// many new items were added.
+	#[cfg(test)]
 	pub fn add(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
-		let added = entries
-			.into_iter()
-			.filter(|e| self.add_entry(e).1)
-			.count();
+		let added = entries.into_iter().filter(|e| self.add_entry(e).1).count();
 		self.generation += 1;
 		added
 	}
@@ -392,15 +402,14 @@ impl Workspace {
 			i.folder == entry.folder
 				&& i.name == entry.name
 				&& i.mesh_id == entry.mesh_id
-				&& i
-					.maps
+				&& i.maps
 					.iter()
 					.all(|(k, m)| entry.maps.get(k).is_none_or(|&id| id == m.id))
 		});
 		if let Some(item) = existing {
 			for (kind, map) in maps {
-				if !item.maps.contains_key(&kind) {
-					item.maps.insert(kind, map);
+				if let std::collections::btree_map::Entry::Vacant(slot) = item.maps.entry(kind) {
+					slot.insert(map);
 					self.dirty = true;
 				}
 			}
@@ -480,24 +489,6 @@ impl Workspace {
 				Ok(true)
 			}
 		}
-	}
-
-	/// Reads a stored animated model.
-	pub fn load_model(&self, index: usize) -> Result<AnimatedModel, String> {
-		let item = self
-			.manifest
-			.models
-			.get(index)
-			.ok_or("No such model")?;
-		let path = self.root.join(&item.file);
-		let text = std::fs::read_to_string(&path)
-			.map_err(|e| format!("Could not read {}: {e}", path.display()))?;
-		let export = export::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-		export
-			.models
-			.into_iter()
-			.next()
-			.ok_or_else(|| format!("{} holds no model", path.display()))
 	}
 
 	/// Removes animated models and their rig files. The meshes they use stay.
@@ -742,11 +733,10 @@ mod tests {
 		ws.save_if_dirty().unwrap();
 		let reopened = Workspace::open(&dir).unwrap();
 		assert_eq!(reopened.models().len(), 1);
-		let loaded = reopened.load_model(0).unwrap();
-		assert_eq!(loaded.parts[0].mesh_ref, 1);
 		// the rig file is an export of its own
 		let file = std::fs::read_to_string(dir.join(&m.file)).unwrap();
 		let export = export::parse(&file).unwrap();
+		assert_eq!(export.models[0].parts[0].mesh_ref, 1);
 		assert_eq!(export.entries[0].maps, torso.maps);
 
 		let mut ws = reopened;

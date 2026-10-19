@@ -219,36 +219,13 @@ impl GpuRenderer {
 	/// own barycentric coordinate for the wireframe). `colours` gives each
 	/// group's base colour.
 	pub fn create_scene(&self, geometry: &Geometry, colours: &[[f32; 3]]) -> GpuScene {
-		let mut vertices = Vec::with_capacity(geometry.triangles.len() * 3);
-		let mut groups = Vec::with_capacity(geometry.groups.len());
-		const BARY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-		for (g, range) in geometry.groups.iter().enumerate() {
-			let start = vertices.len() as u32;
-			let color = colours.get(g).copied().unwrap_or([0.8; 3]);
-			for t in &geometry.triangles[range.clone()] {
-				for (corner, &i) in t.iter().enumerate() {
-					let i = i as usize;
-					vertices.push(Vertex {
-						pos: geometry.positions[i],
-						normal: geometry.normals.as_ref().map_or([0.0; 3], |n| n[i]),
-						uv: geometry.uvs.as_ref().map_or([0.0; 2], |u| u[i]),
-						bary: BARY[corner],
-						color,
-					});
-				}
-			}
-			groups.push(start..vertices.len() as u32);
-		}
-		// wgpu rejects empty buffers
-		if vertices.is_empty() {
-			vertices.push(bytemuck::Zeroable::zeroed());
-		}
+		let (vertices, groups) = build_vertices(geometry, colours);
 		let vertex_buffer = self
 			.device
 			.create_buffer_init(&wgpu::util::BufferInitDescriptor {
 				label: Some("rbx_mesh vertices"),
 				contents: bytemuck::cast_slice(&vertices),
-				usage: wgpu::BufferUsages::VERTEX,
+				usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			});
 		let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("rbx_mesh uniforms"),
@@ -266,6 +243,14 @@ impl GpuRenderer {
 			material_generation: u64::MAX,
 			textures: BTreeMap::new(),
 		}
+	}
+
+	/// Replaces the vertices of a scene with moved ones (a skinned mesh
+	/// each frame). The triangles must be the same as when it was created.
+	pub fn update_vertices(&self, scene: &GpuScene, geometry: &Geometry, colours: &[[f32; 3]]) {
+		let (vertices, _) = build_vertices(geometry, colours);
+		self.queue
+			.write_buffer(&scene.vertices, 0, bytemuck::cast_slice(&vertices));
 	}
 
 	fn bind_group(
@@ -371,6 +356,34 @@ impl GpuRenderer {
 			draws,
 		}
 	}
+}
+
+fn build_vertices(geometry: &Geometry, colours: &[[f32; 3]]) -> (Vec<Vertex>, Vec<Range<u32>>) {
+	let mut vertices = Vec::with_capacity(geometry.triangles.len() * 3);
+	let mut groups = Vec::with_capacity(geometry.groups.len());
+	const BARY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+	for (g, range) in geometry.groups.iter().enumerate() {
+		let start = vertices.len() as u32;
+		let color = colours.get(g).copied().unwrap_or([0.8; 3]);
+		for t in &geometry.triangles[range.clone()] {
+			for (corner, &i) in t.iter().enumerate() {
+				let i = i as usize;
+				vertices.push(Vertex {
+					pos: geometry.positions[i],
+					normal: geometry.normals.as_ref().map_or([0.0; 3], |n| n[i]),
+					uv: geometry.uvs.as_ref().map_or([0.0; 2], |u| u[i]),
+					bary: BARY[corner],
+					color,
+				});
+			}
+		}
+		groups.push(start..vertices.len() as u32);
+	}
+	// wgpu rejects empty buffers
+	if vertices.is_empty() {
+		vertices.push(bytemuck::Zeroable::zeroed());
+	}
+	(vertices, groups)
 }
 
 /// Uploads an image with a full mip chain (generated on the CPU, since

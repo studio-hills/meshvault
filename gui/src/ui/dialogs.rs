@@ -20,6 +20,8 @@ pub enum ConfirmAction {
 	RemoveAllMaps,
 	/// Workspace item indices; their downloaded files are deleted.
 	RemoveItems(Vec<usize>),
+	/// Animated model indices; their rig files are deleted.
+	RemoveModels(Vec<usize>),
 }
 
 pub struct Confirm {
@@ -43,6 +45,7 @@ impl App {
 			self.settings = None;
 		}
 		self.parsing_dialog(ctx);
+		self.loading_model_dialog(ctx);
 		self.new_workspace_dialog(ctx);
 		self.shortcuts_dialog(ctx);
 		self.confirm_dialog(ctx);
@@ -91,6 +94,45 @@ impl App {
 		}
 	}
 
+	/// Shown while an animated model's meshes and maps are read.
+	fn loading_model_dialog(&mut self, ctx: &egui::Context) {
+		let Some(loading) = &self.loading_model else {
+			return;
+		};
+		if loading.started.elapsed().as_millis() < 150 {
+			ctx.request_repaint_after(std::time::Duration::from_millis(150));
+			return;
+		}
+		let name = loading.name.clone();
+		let mut cancel = false;
+		egui::Modal::new(Id::unique("loading_model"))
+			.frame(dialog_frame(ctx))
+			.backdrop_color(egui::Color32::from_black_alpha(140))
+			.show(ctx, |ui| {
+				ui.set_width(340.0);
+				ui.horizontal(|ui| {
+					ui.add(egui::Spinner::new().size(18.0));
+					ui.label(
+						RichText::new(format!("Opening {name}"))
+							.size(16.0)
+							.family(display()),
+					);
+				});
+				ui.add_space(6.0);
+				ui.label(
+					RichText::new("Reading its meshes, maps and animations.")
+						.color(palette(ui.ctx()).text_weak),
+				);
+				ui.add_space(10.0);
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					cancel = widgets::text_button(ui, "Cancel").clicked();
+				});
+			});
+		if cancel {
+			self.loading_model = None;
+		}
+	}
+
 	/// Asks before running a destructive action, explaining what it does.
 	pub fn ask(&mut self, action: ConfirmAction) {
 		let downloading = self.downloader.is_running();
@@ -131,6 +173,17 @@ impl App {
 				(
 					format!("Remove {what} from the workspace?"),
 					"Their downloaded files are deleted from the workspace folder. The download cache is kept, so importing them again is quick.".to_string(),
+					"Remove",
+				)
+			}
+			ConfirmAction::RemoveModels(models) => {
+				let what = match (models.len(), models.first().and_then(|&i| self.workspace.as_ref()?.models().get(i))) {
+					(1, Some(model)) => format!("\u{201c}{}\u{201d}", model.name),
+					(n, _) => format!("{n} animated models"),
+				};
+				(
+					format!("Remove {what} from the workspace?"),
+					"The rig and its animations are deleted from the workspace folder. The meshes it uses stay in the library.".to_string(),
 					"Remove",
 				)
 			}
@@ -207,6 +260,7 @@ impl App {
 			}
 			ConfirmAction::RemoveAllMaps => self.remove_all_maps(),
 			ConfirmAction::RemoveItems(items) => self.remove_items(&items),
+			ConfirmAction::RemoveModels(models) => self.remove_models(&models),
 		}
 	}
 

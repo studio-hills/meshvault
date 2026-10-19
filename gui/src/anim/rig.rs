@@ -86,6 +86,26 @@ pub struct Rig {
 	pub warnings: Vec<String>,
 }
 
+fn closest<'a>(
+	items: impl Iterator<Item = (&'a str, &'a str)>,
+	name: &str,
+	near: &str,
+) -> Option<usize> {
+	let shared = |path: &str| {
+		path.split('/')
+			.zip(near.split('/'))
+			.take_while(|(a, b)| a == b)
+			.count()
+	};
+	items
+		.enumerate()
+		.filter(|(_, (n, _))| *n == name)
+		// max_by_key keeps the last of equals, so reverse to prefer the first
+		.map(|(i, (_, path))| (shared(path), std::cmp::Reverse(i)))
+		.max()
+		.map(|(_, std::cmp::Reverse(i))| i)
+}
+
 impl Rig {
 	pub fn build(model: &AnimatedModel) -> Rig {
 		let mut rig = Rig::default();
@@ -103,7 +123,10 @@ impl Rig {
 			});
 		}
 		for j in &model.joints {
-			match (part_index.get(j.part0.as_str()), part_index.get(j.part1.as_str())) {
+			match (
+				part_index.get(j.part0.as_str()),
+				part_index.get(j.part1.as_str()),
+			) {
 				(Some(&part0), Some(&part1)) => rig.motors.push(Motor {
 					name: j.name.clone(),
 					part0,
@@ -111,13 +134,18 @@ impl Rig {
 					c0: CFrame::from_components(&j.c0),
 					c1: CFrame::from_components(&j.c1),
 				}),
-				_ => rig
-					.warnings
-					.push(format!("Joint {} links a part that was not exported", j.path)),
+				_ => rig.warnings.push(format!(
+					"Joint {} links a part that was not exported",
+					j.path
+				)),
 			}
 		}
-		let bone_index: HashMap<&str, usize> =
-			model.bones.iter().enumerate().map(|(i, b)| (b.path.as_str(), i)).collect();
+		let bone_index: HashMap<&str, usize> = model
+			.bones
+			.iter()
+			.enumerate()
+			.map(|(i, b)| (b.path.as_str(), i))
+			.collect();
 		for b in &model.bones {
 			let parent = if let Some(&i) = part_index.get(b.parent_path.as_str()) {
 				BoneParent::Part(i)
@@ -172,7 +200,8 @@ impl Rig {
 			}
 		}
 		if cyclic {
-			self.warnings.push("Some joints form a loop and are ignored".into());
+			self.warnings
+				.push("Some joints form a loop and are ignored".into());
 		}
 		order.sort();
 		order.into_iter().map(|(_, i)| i).collect()
@@ -257,17 +286,48 @@ impl Rig {
 	}
 
 	/// Solves world transforms from a clip sample at `time`.
+	#[cfg(test)]
 	pub fn pose(&self, clip: &Clip, binding: &Binding, time: f32) -> Posed {
+		let samples: Vec<CFrame> = clip.sample(time).map(|(_, t)| t).collect();
+		self.pose_from(binding, &samples)
+	}
+
+	/// Solves world transforms from already sampled tracks, one per entry
+	/// of `binding.targets`.
+	pub fn pose_from(&self, binding: &Binding, samples: &[CFrame]) -> Posed {
 		let mut motor_t = vec![CFrame::IDENTITY; self.motors.len()];
 		let mut bone_t = vec![CFrame::IDENTITY; self.bones.len()];
-		for ((_, transform), target) in clip.sample(time).zip(&binding.targets) {
+		for (transform, target) in samples.iter().zip(&binding.targets) {
 			match target {
-				Some(Target::Motor(i)) => motor_t[*i] = transform,
-				Some(Target::Bone(i)) => bone_t[*i] = transform,
+				Some(Target::Motor(i)) => motor_t[*i] = *transform,
+				Some(Target::Bone(i)) => bone_t[*i] = *transform,
 				None => {}
 			}
 		}
 		self.solve(&motor_t, &bone_t)
+	}
+
+	/// The bone named `name` closest to `near` in the instance tree (the
+	/// longest shared path), since names repeat across accessories.
+	pub fn bone_near(&self, name: &str, near: &str) -> Option<usize> {
+		closest(
+			self.bones
+				.iter()
+				.map(|b| (b.name.as_str(), b.path.as_str())),
+			name,
+			near,
+		)
+	}
+
+	/// The part named `name` closest to `near`; see [`Self::bone_near`].
+	pub fn part_near(&self, name: &str, near: &str) -> Option<usize> {
+		closest(
+			self.parts
+				.iter()
+				.map(|p| (p.name.as_str(), p.path.as_str())),
+			name,
+			near,
+		)
 	}
 
 	/// `motor_t` / `bone_t` are local animated transforms (identity when empty).
@@ -302,7 +362,11 @@ impl Rig {
 			.iter()
 			.zip(&self.parts)
 			.map(|(a, b)| {
-				let d = [a.pos[0] - b.rest.pos[0], a.pos[1] - b.rest.pos[1], a.pos[2] - b.rest.pos[2]];
+				let d = [
+					a.pos[0] - b.rest.pos[0],
+					a.pos[1] - b.rest.pos[1],
+					a.pos[2] - b.rest.pos[2],
+				];
 				(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 			})
 			.fold(0.0, f32::max)
@@ -313,7 +377,8 @@ impl Rig {
 mod tests {
 	use super::*;
 	use crate::anim::schema::{
-		AnimationClip, BoneInfo, ClipStatus, EasingDirection, EasingStyle, Keyframe, ModelPart, MotorJoint, Pose,
+		AnimationClip, BoneInfo, ClipStatus, EasingDirection, EasingStyle, Keyframe, ModelPart,
+		MotorJoint, Pose,
 	};
 
 	const IDENT: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
@@ -343,7 +408,10 @@ mod tests {
 		AnimatedModel {
 			name: "M".into(),
 			path: "W/M".into(),
-			parts: vec![part("W/M/Root", "Root", at(0.0, 2.0, 0.0)), part("W/M/Meshes/Arm", "Meshes/Arm", at(0.0, 2.0, 0.0))],
+			parts: vec![
+				part("W/M/Root", "Root", at(0.0, 2.0, 0.0)),
+				part("W/M/Meshes/Arm", "Meshes/Arm", at(0.0, 2.0, 0.0)),
+			],
 			joints: vec![MotorJoint {
 				name: "Shoulder".into(),
 				path: "W/M/Root/Shoulder".into(),
@@ -406,7 +474,10 @@ mod tests {
 				},
 				Keyframe {
 					time: 1.0,
-					poses: vec![rotate_pose("Meshes/Arm", half_turn), rotate_pose("Tail", half_turn / 2.0)],
+					poses: vec![
+						rotate_pose("Meshes/Arm", half_turn),
+						rotate_pose("Tail", half_turn / 2.0),
+					],
 					markers: vec![],
 				},
 			],
@@ -417,7 +488,11 @@ mod tests {
 		assert_eq!(binding.matched(), 2, "unmatched: {:?}", binding.unmatched);
 		let posed = rig.pose(&clip, &binding, 1.0);
 		// the arm swings up around the hinge at y=3: its centre goes from 2 to 4
-		assert!((posed.parts[1].pos[1] - 4.0).abs() < 1e-5, "{:?}", posed.parts[1].pos);
+		assert!(
+			(posed.parts[1].pos[1] - 4.0).abs() < 1e-5,
+			"{:?}",
+			posed.parts[1].pos
+		);
 		// the root does not move
 		assert!(posed.parts[0].approx_eq(&rig.parts[0].rest, 1e-6));
 		// the tail bends 90° about Z: the tip, 1 stud along Z from the tail, stays put along Z

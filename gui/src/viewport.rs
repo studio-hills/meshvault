@@ -40,6 +40,7 @@ pub enum Shading {
 	SolidWireframe,
 }
 
+#[derive(Clone)]
 pub struct Camera {
 	pub yaw: f32,
 	pub pitch: f32,
@@ -136,6 +137,8 @@ pub struct ScenePart<'a> {
 	/// The part's mesh on the GPU, uploaded on first draw. Unused without
 	/// a GPU renderer.
 	pub scene: &'a mut Option<GpuScene>,
+	/// The vertices moved since the last draw (skinning), so they are uploaded again.
+	pub moved: bool,
 }
 
 const BASE: Color32 = Color32::from_rgb(170, 185, 205);
@@ -357,8 +360,8 @@ fn draw_gpu(
 ) {
 	for part in parts.iter_mut() {
 		let geometry = part.geometry;
-		let scene = part.scene.get_or_insert_with(|| {
-			let colours: Vec<[f32; 3]> = (0..geometry.groups.len())
+		let colours = || -> Vec<[f32; 3]> {
+			(0..geometry.groups.len())
 				.map(|g| {
 					linear_rgb(if part.colour_groups {
 						group_colour(g)
@@ -366,10 +369,16 @@ fn draw_gpu(
 						part.colour
 					})
 				})
-				.collect();
-			renderer.create_scene(geometry, &colours)
-		});
-		renderer.sync_material(scene, part.material);
+				.collect()
+		};
+		match part.scene {
+			Some(scene) if part.moved => renderer.update_vertices(scene, geometry, &colours()),
+			Some(_) => {}
+			None => *part.scene = Some(renderer.create_scene(geometry, &colours())),
+		}
+		if let Some(scene) = part.scene {
+			renderer.sync_material(scene, part.material);
+		}
 	}
 
 	let (right, up, forward) = camera.basis();
@@ -487,45 +496,45 @@ fn draw_cpu(
 			})
 			.collect();
 		for &g in part.groups {
-		let Some(range) = geometry.groups.get(g) else {
-			continue;
-		};
-		let base = if texture.is_some() {
-			Color32::WHITE
-		} else if part.colour_groups {
-			group_colour(g)
-		} else if parts.len() == 1 {
-			BASE
-		} else {
-			part.colour
-		};
-		for t in &geometry.triangles[range.clone()] {
-			let v = t.map(|i| view[i as usize]);
-			if v.iter().any(|v| v[2] <= near) {
+			let Some(range) = geometry.groups.get(g) else {
 				continue;
-			}
-			let n = normalize(cross(sub(v[1], v[0]), sub(v[2], v[0])));
-			// Roblox winds front faces counter-clockwise; in view space the
-			// camera looks down +z, so front faces have a negative normal z.
-			let facing = -dot(n, normalize(v[0]));
-			if settings.cull_backfaces && facing < 0.0 {
-				continue;
-			}
-			let diffuse = dot(n, light).abs();
-			// textures are already lit by their artist, so darken them less
-			let ambient = if texture.is_some() { 0.5 } else { 0.25 };
-			let colour = shade(base, ambient + (1.0 - ambient) * diffuse);
-			let uvs = match texture {
-				Some((tex, uvs)) => t.map(|i| tex.map(uvs[i as usize])),
-				None => [egui::epaint::WHITE_UV; 3],
 			};
-			tris.push(Tri {
-				depth: v[0][2] + v[1][2] + v[2][2],
-				pts: v.map(project),
-				uvs,
-				colour,
-			});
-		}
+			let base = if texture.is_some() {
+				Color32::WHITE
+			} else if part.colour_groups {
+				group_colour(g)
+			} else if parts.len() == 1 {
+				BASE
+			} else {
+				part.colour
+			};
+			for t in &geometry.triangles[range.clone()] {
+				let v = t.map(|i| view[i as usize]);
+				if v.iter().any(|v| v[2] <= near) {
+					continue;
+				}
+				let n = normalize(cross(sub(v[1], v[0]), sub(v[2], v[0])));
+				// Roblox winds front faces counter-clockwise; in view space the
+				// camera looks down +z, so front faces have a negative normal z.
+				let facing = -dot(n, normalize(v[0]));
+				if settings.cull_backfaces && facing < 0.0 {
+					continue;
+				}
+				let diffuse = dot(n, light).abs();
+				// textures are already lit by their artist, so darken them less
+				let ambient = if texture.is_some() { 0.5 } else { 0.25 };
+				let colour = shade(base, ambient + (1.0 - ambient) * diffuse);
+				let uvs = match texture {
+					Some((tex, uvs)) => t.map(|i| tex.map(uvs[i as usize])),
+					None => [egui::epaint::WHITE_UV; 3],
+				};
+				tris.push(Tri {
+					depth: v[0][2] + v[1][2] + v[2][2],
+					pts: v.map(project),
+					uvs,
+					colour,
+				});
+			}
 		}
 	}
 	tris.sort_unstable_by(|a, b| b.depth.total_cmp(&a.depth));

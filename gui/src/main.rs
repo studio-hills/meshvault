@@ -12,6 +12,7 @@ mod geometry;
 mod gpu;
 mod import_ui;
 mod maps;
+mod model_view;
 mod settings_ui;
 mod texture;
 mod ui;

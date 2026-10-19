@@ -13,6 +13,7 @@ use crate::geometry::{self, GroupKind, Loaded};
 use crate::gpu::{GpuRenderer, GpuScene};
 use crate::import_ui::{self, ImportDialog};
 use crate::maps::Slot;
+use crate::model_view::{MeshSource, ModelView};
 use crate::settings_ui::{self, SettingsDialog};
 use crate::texture::{self, Material};
 use crate::ui::theme;
@@ -61,6 +62,13 @@ pub struct Parsing {
 	pub started: Instant,
 }
 
+/// An animated model being read on a background thread.
+pub struct LoadingModel {
+	pub name: String,
+	rx: std::sync::mpsc::Receiver<Result<ModelView, String>>,
+	pub started: Instant,
+}
+
 pub struct NewWorkspaceDialog {
 	pub name: String,
 	pub parent: PathBuf,
@@ -99,6 +107,9 @@ pub struct App {
 	pub show_inspector: bool,
 	/// Stem of the workspace item shown in the viewer.
 	pub open_stem: Option<String>,
+	/// The animated model shown instead of `doc`.
+	pub model: Option<ModelView>,
+	pub loading_model: Option<LoadingModel>,
 	last_save: Instant,
 }
 
@@ -138,6 +149,8 @@ impl App {
 			show_library: true,
 			show_inspector: true,
 			open_stem: None,
+			model: None,
+			loading_model: None,
 			last_save: Instant::now(),
 		};
 		// reopen the last workspace
@@ -173,7 +186,13 @@ impl App {
 			.extension()
 			.is_some_and(|e| e.eq_ignore_ascii_case("json"))
 		{
-			self.start_import(path, bytes);
+			// a rig file of the open workspace opens its model; any other
+			// export is imported
+			if let Some(index) = self.workspace_model_at(&path) {
+				self.open_model(index);
+			} else {
+				self.start_import(path, bytes);
+			}
 			return;
 		}
 		// an image dropped or opened while a mesh is shown becomes one of its
@@ -218,6 +237,8 @@ impl App {
 			Ok(loaded) => {
 				let camera = Camera::framing(&loaded.geometry);
 				let hull_visible = vec![true; loaded.geometry.groups.len()];
+				self.model = None;
+				self.loading_model = None;
 				self.doc = Some(Document {
 					path,
 					size: bytes.len(),
@@ -244,6 +265,9 @@ impl App {
 	pub fn frame_model(&mut self) {
 		if let Some(doc) = &mut self.doc {
 			doc.camera = Camera::framing(&doc.loaded.geometry);
+		}
+		if let Some(model) = &mut self.model {
+			model.camera = model.home();
 		}
 	}
 
@@ -273,6 +297,8 @@ impl App {
 		{
 			self.doc = None;
 		}
+		self.model = None;
+		self.loading_model = None;
 		self.workspace = None;
 		self.import = None;
 		self.parsing = None;
@@ -374,7 +400,9 @@ impl App {
 		let result = match parsing.rx.try_recv() {
 			Ok(result) => result,
 			Err(std::sync::mpsc::TryRecvError::Empty) => return,
-			Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("The export reader stopped unexpectedly".into()),
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+				Err("The export reader stopped unexpectedly".into())
+			}
 		};
 		let path = self.parsing.take().expect("checked above").path;
 		let Some(ws) = &self.workspace else { return };
@@ -412,7 +440,12 @@ impl App {
 			.collect();
 		let mut rigs = 0;
 		for model in &models {
-			let refs: BTreeSet<u32> = model.parts.iter().map(|p| p.mesh_ref).filter(|&r| r != 0).collect();
+			let refs: BTreeSet<u32> = model
+				.parts
+				.iter()
+				.map(|p| p.mesh_ref)
+				.filter(|&r| r != 0)
+				.collect();
 			let meshes: Vec<(&export::Entry, String)> = refs
 				.iter()
 				.filter_map(|r| Some((*by_id.get(r)?, stems.get(r)?.clone())))
@@ -556,17 +589,7 @@ impl App {
 				return;
 			}
 		};
-		// each slot uses the first downloaded map that feeds it (ColorMap over TextureID)
-		let maps: Vec<(Slot, PathBuf)> = Slot::ALL
-			.iter()
-			.filter_map(|&slot| {
-				let path = slot
-					.sources()
-					.iter()
-					.find_map(|&k| item.done_path(AssetKind::Map(k)))?;
-				Some((slot, ws.root.join(path)))
-			})
-			.collect();
+		let maps = item_maps(&ws.root, item);
 		let stem = item.stem.clone();
 		match std::fs::read(&mesh_path) {
 			Ok(bytes) => {
@@ -581,6 +604,115 @@ impl App {
 				.toasts
 				.error(format!("Could not read {}: {e}", mesh_path.display())),
 		}
+	}
+
+	/// Opens an animated model from the workspace. Its meshes and maps are
+	/// read on a background thread.
+	pub fn open_model(&mut self, index: usize) {
+		let Some(ws) = &self.workspace else { return };
+		let Some(item) = ws.models().get(index) else {
+			return;
+		};
+		let sources: HashMap<u32, MeshSource> = item
+			.meshes
+			.iter()
+			.map(|(&mesh_ref, stem)| {
+				let found = ws.items().iter().find(|i| &i.stem == stem);
+				let source = match found {
+					Some(i) => MeshSource {
+						name: i.name.clone(),
+						mesh: match &i.mesh {
+							AssetState::Done { path } => Ok(ws.root.join(path)),
+							AssetState::Pending => Err("not downloaded yet".into()),
+							AssetState::Failed { error } => {
+								Err(format!("download failed: {error}"))
+							}
+						},
+						maps: item_maps(&ws.root, i),
+					},
+					None => MeshSource {
+						name: stem.clone(),
+						mesh: Err("removed from the workspace".into()),
+						maps: Vec::new(),
+					},
+				};
+				(mesh_ref, source)
+			})
+			.collect();
+		let file = ws.root.join(&item.file);
+		let name = item.name.clone();
+		let (tx, rx) = std::sync::mpsc::channel();
+		let ctx = self.ctx.clone();
+		std::thread::spawn(move || {
+			let result = std::fs::read_to_string(&file)
+				.map_err(|e| format!("Could not read {}: {e}", file.display()))
+				.and_then(|text| export::parse(&text))
+				.and_then(|export| {
+					export
+						.models
+						.into_iter()
+						.next()
+						.ok_or_else(|| format!("{} holds no model", file.display()))
+				})
+				.map(|model| ModelView::load(&ctx, index, &model, &sources));
+			let _ = tx.send(result);
+			ctx.request_repaint();
+		});
+		self.loading_model = Some(LoadingModel {
+			name,
+			rx,
+			started: Instant::now(),
+		});
+	}
+
+	/// The open workspace's model stored at `path`, if it is one.
+	fn workspace_model_at(&self, path: &Path) -> Option<usize> {
+		let ws = self.workspace.as_ref()?;
+		let path = path.canonicalize().ok()?;
+		ws.models().iter().position(|m| {
+			ws.root
+				.join(&m.file)
+				.canonicalize()
+				.is_ok_and(|p| p == path)
+		})
+	}
+
+	pub fn poll_model(&mut self) {
+		let Some(loading) = &self.loading_model else {
+			return;
+		};
+		let result = match loading.rx.try_recv() {
+			Ok(result) => result,
+			Err(std::sync::mpsc::TryRecvError::Empty) => return,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+				Err("Reading the model stopped unexpectedly".into())
+			}
+		};
+		self.loading_model = None;
+		match result {
+			Ok(model) => {
+				self.doc = None;
+				self.open_stem = None;
+				self.model = Some(model);
+			}
+			Err(e) => self.toasts.error(e),
+		}
+	}
+
+	/// Removes animated models from the workspace; their meshes stay.
+	pub fn remove_models(&mut self, models: &[usize]) {
+		if let Some(ws) = &mut self.workspace {
+			if let Some(open) = &mut self.model {
+				if models.contains(&open.index) {
+					self.model = None;
+				} else {
+					// later models move up
+					open.index -= models.iter().filter(|&&i| i < open.index).count();
+				}
+			}
+			ws.remove_models(models);
+		}
+		self.save_workspace();
 	}
 
 	/// Removes workspace items and deletes their organized files.
@@ -603,6 +735,10 @@ impl App {
 		for action in actions {
 			match action {
 				workspace_ui::Action::Open(i) => self.open_item(i),
+				workspace_ui::Action::OpenModel(i) => self.open_model(i),
+				workspace_ui::Action::RemoveModels(models) => {
+					self.ask(ConfirmAction::RemoveModels(models))
+				}
 				workspace_ui::Action::Retry(items) => {
 					if let Some(ws) = &mut self.workspace {
 						ws.retry(items);
@@ -693,6 +829,21 @@ impl App {
 			Err(e) => self.toasts.error(format!("Export failed: {e}")),
 		}
 	}
+}
+
+/// Each material slot's downloaded map: the first that feeds it (ColorMap
+/// over TextureID).
+fn item_maps(root: &Path, item: &workspace::Item) -> Vec<(Slot, PathBuf)> {
+	Slot::ALL
+		.iter()
+		.filter_map(|&slot| {
+			let path = slot
+				.sources()
+				.iter()
+				.find_map(|&k| item.done_path(AssetKind::Map(k)))?;
+			Some((slot, root.join(path)))
+		})
+		.collect()
 }
 
 /// Picks the material slot for a dropped image from its name, following the

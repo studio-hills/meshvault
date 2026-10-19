@@ -466,9 +466,7 @@ impl ImportDialog {
 						playable
 					);
 					if missing > 0 {
-						hover.push_str(&format!(
-							"\n{missing} parts use meshes that were skipped"
-						));
+						hover.push_str(&format!("\n{missing} parts use meshes that were skipped"));
 					}
 					let clips = m.animations.len();
 					ui.horizontal(|ui| {
@@ -479,12 +477,9 @@ impl ImportDialog {
 							self.set_model(i, on);
 						}
 						ui.label(
-							RichText::new(format!(
-								"{}  {playable}/{clips}",
-								icons::FILM_STRIP
-							))
-							.small()
-							.weak(),
+							RichText::new(format!("{}  {playable}/{clips}", icons::FILM_STRIP))
+								.small()
+								.weak(),
 						)
 						.on_hover_text("Playable clips / all clips");
 						if existing {

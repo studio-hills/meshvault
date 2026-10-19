@@ -51,11 +51,22 @@ impl CFrame {
 		}
 	}
 
+	#[cfg(test)]
 	pub fn components(&self) -> [f32; 12] {
 		let r = &self.rot;
 		[
-			self.pos[0], self.pos[1], self.pos[2], r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0],
-			r[2][1], r[2][2],
+			self.pos[0],
+			self.pos[1],
+			self.pos[2],
+			r[0][0],
+			r[0][1],
+			r[0][2],
+			r[1][0],
+			r[1][1],
+			r[1][2],
+			r[2][0],
+			r[2][1],
+			r[2][2],
 		]
 	}
 
@@ -90,7 +101,11 @@ impl CFrame {
 	/// Inverse of a rigid transform (the rotation is orthonormal).
 	pub fn inverse(&self) -> CFrame {
 		let r = &self.rot;
-		let rot = [[r[0][0], r[1][0], r[2][0]], [r[0][1], r[1][1], r[2][1]], [r[0][2], r[1][2], r[2][2]]];
+		let rot = [
+			[r[0][0], r[1][0], r[2][0]],
+			[r[0][1], r[1][1], r[2][1]],
+			[r[0][2], r[1][2], r[2][2]],
+		];
 		let inv = CFrame { pos: [0.0; 3], rot };
 		CFrame {
 			pos: scale(inv.rotate(self.pos), -1.0),
@@ -104,16 +119,36 @@ impl CFrame {
 		let trace = m[0][0] + m[1][1] + m[2][2];
 		let q = if trace > 0.0 {
 			let s = (trace + 1.0).sqrt() * 2.0;
-			[(m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s, 0.25 * s]
+			[
+				(m[2][1] - m[1][2]) / s,
+				(m[0][2] - m[2][0]) / s,
+				(m[1][0] - m[0][1]) / s,
+				0.25 * s,
+			]
 		} else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
 			let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
-			[0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s, (m[2][1] - m[1][2]) / s]
+			[
+				0.25 * s,
+				(m[0][1] + m[1][0]) / s,
+				(m[0][2] + m[2][0]) / s,
+				(m[2][1] - m[1][2]) / s,
+			]
 		} else if m[1][1] > m[2][2] {
 			let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
-			[(m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s, (m[0][2] - m[2][0]) / s]
+			[
+				(m[0][1] + m[1][0]) / s,
+				0.25 * s,
+				(m[1][2] + m[2][1]) / s,
+				(m[0][2] - m[2][0]) / s,
+			]
 		} else {
 			let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
-			[(m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s]
+			[
+				(m[0][2] + m[2][0]) / s,
+				(m[1][2] + m[2][1]) / s,
+				0.25 * s,
+				(m[1][0] - m[0][1]) / s,
+			]
 		};
 		normalize4(q)
 	}
@@ -123,9 +158,21 @@ impl CFrame {
 		CFrame {
 			pos,
 			rot: [
-				[1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-				[2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-				[2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+				[
+					1.0 - 2.0 * (y * y + z * z),
+					2.0 * (x * y - z * w),
+					2.0 * (x * z + y * w),
+				],
+				[
+					2.0 * (x * y + z * w),
+					1.0 - 2.0 * (x * x + z * z),
+					2.0 * (y * z - x * w),
+				],
+				[
+					2.0 * (x * z - y * w),
+					2.0 * (y * z + x * w),
+					1.0 - 2.0 * (x * x + y * y),
+				],
 			],
 		}
 	}
@@ -133,7 +180,10 @@ impl CFrame {
 	/// Interpolates position linearly and rotation spherically, like
 	/// Roblox's `CFrame:Lerp`.
 	pub fn lerp(&self, other: &CFrame, t: f32) -> CFrame {
-		CFrame::from_quat(lerp3(self.pos, other.pos, t), slerp(self.quat(), other.quat(), t))
+		CFrame::from_quat(
+			lerp3(self.pos, other.pos, t),
+			slerp(self.quat(), other.quat(), t),
+		)
 	}
 
 	/// Rotation about one axis (0 = X, 1 = Y, 2 = Z) by `angle` radians.
@@ -152,7 +202,11 @@ impl CFrame {
 	pub fn from_euler(angles: V3, order: &str) -> CFrame {
 		let mut out = CFrame::IDENTITY;
 		let letters: Vec<char> = order.chars().filter(|c| "XYZ".contains(*c)).collect();
-		let letters = if letters.len() == 3 { letters } else { vec!['X', 'Y', 'Z'] };
+		let letters = if letters.len() == 3 {
+			letters
+		} else {
+			vec!['X', 'Y', 'Z']
+		};
 		for letter in letters {
 			let axis = match letter {
 				'X' => 0,
@@ -166,7 +220,7 @@ impl CFrame {
 
 	/// Row-major 4x4 matrix with a non-uniform scale applied before the
 	/// transform (`self * diag(scale)`), for placing meshes.
-	pub fn to_matrix(&self, scale: V3) -> [[f32; 4]; 4] {
+	pub fn to_matrix(self, scale: V3) -> [[f32; 4]; 4] {
 		let r = &self.rot;
 		let mut m = [[0.0; 4]; 4];
 		for row in 0..3 {
@@ -179,6 +233,7 @@ impl CFrame {
 		m
 	}
 
+	#[cfg(test)]
 	pub fn approx_eq(&self, other: &CFrame, eps: f32) -> bool {
 		self.components()
 			.iter()
@@ -275,9 +330,12 @@ mod tests {
 
 	#[test]
 	fn quaternion_round_trip_and_slerp() {
-		for (axis, angle) in [(0, 0.4), (1, 2.9), (2, -3.0), (1, 3.14159)] {
+		for (axis, angle) in [(0, 0.4), (1, 2.9), (2, -3.0), (1, std::f32::consts::PI)] {
 			let r = CFrame::axis_rotation(axis, angle);
-			assert!(CFrame::from_quat([0.0; 3], r.quat()).approx_eq(&r, 1e-5), "axis {axis} angle {angle}");
+			assert!(
+				CFrame::from_quat([0.0; 3], r.quat()).approx_eq(&r, 1e-5),
+				"axis {axis} angle {angle}"
+			);
 		}
 		let a = CFrame::IDENTITY;
 		let b = CFrame {

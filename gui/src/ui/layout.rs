@@ -18,6 +18,7 @@ impl eframe::App for App {
 		let ctx = ui.ctx().clone();
 		self.poll_downloads();
 		self.poll_parsing();
+		self.poll_model();
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
 		let p = palette(&ctx);
@@ -44,7 +45,7 @@ impl eframe::App for App {
 				.frame(Frame::NONE.fill(p.panel).inner_margin(Margin::same(12)))
 				.show(ui, |ui| self.library(ui));
 		}
-		if self.show_inspector && self.doc.is_some() {
+		if self.show_inspector && (self.doc.is_some() || self.model.is_some()) {
 			egui::Panel::right("inspector")
 				.default_size(300.0)
 				.size_range(240.0..=520.0)
@@ -122,7 +123,7 @@ impl App {
 					.response
 					.on_hover_text("More");
 				});
-				let has_doc = self.doc.is_some();
+				let has_doc = self.doc.is_some() || self.model.is_some();
 				let inspector = ui
 					.add_enabled_ui(has_doc, |ui| {
 						widgets::icon_toggle(
@@ -316,9 +317,10 @@ impl App {
 						);
 				}
 			}
-			let path = match &self.doc {
-				Some(doc) => doc.path.display().to_string(),
-				None => "No model open".into(),
+			let path = match (&self.doc, &self.model) {
+				(Some(doc), _) => doc.path.display().to_string(),
+				(None, Some(model)) => model.path.clone(),
+				(None, None) => "No model open".into(),
 			};
 			ui.add(egui::Label::new(small(path, p.text_weak)).truncate());
 
@@ -344,10 +346,12 @@ impl App {
 				} else if let Some(ws) = &self.workspace {
 					let items = ws.items();
 					let done = items.iter().filter(|i| i.is_done()).count();
-					ui.label(small(
-						format!("{} models · {done} downloaded", items.len()),
-						p.text_weak,
-					));
+					let mut text = format!("{} meshes · {done} downloaded", items.len());
+					let models = ws.models().len();
+					if models > 0 {
+						text = format!("{models} animated · {text}");
+					}
+					ui.label(small(text, p.text_weak));
 				}
 			});
 		});
@@ -355,12 +359,19 @@ impl App {
 
 	fn library(&mut self, ui: &mut egui::Ui) {
 		if let Some(ws) = &self.workspace {
-			let actions = self.browser.show(ui, ws, self.open_stem.as_deref());
+			let open_model = self.model.as_ref().map(|m| m.index);
+			let actions = self
+				.browser
+				.show(ui, ws, self.open_stem.as_deref(), open_model);
 			self.handle_browser(actions);
 		}
 	}
 
 	fn center(&mut self, ui: &mut egui::Ui) {
+		if self.model.is_some() {
+			self.model_center(ui);
+			return;
+		}
 		if self.doc.is_none() {
 			self.welcome(ui);
 			return;
@@ -382,6 +393,7 @@ impl App {
 			colour_groups: geometry.group_kind == GroupKind::Hull,
 			colour: viewport::PART_COLOUR,
 			scene: &mut doc.gpu,
+			moved: false,
 		}];
 		let home = || Camera::framing(geometry);
 		let rect = viewport::show(
@@ -414,7 +426,7 @@ impl App {
 	}
 
 	/// Floating controls over the top-left of the viewport.
-	fn viewport_toolbar(&mut self, ctx: &egui::Context, rect: egui::Rect) {
+	pub(super) fn viewport_toolbar(&mut self, ctx: &egui::Context, rect: egui::Rect) {
 		let p = palette(ctx);
 		egui::Area::new(Id::unique("viewport_toolbar"))
 			.fixed_pos(rect.left_top() + Vec2::new(12.0, 12.0))
@@ -512,7 +524,12 @@ impl App {
 			.extension()
 			.map(|e| e.to_string_lossy().to_lowercase())
 			.unwrap_or_default();
-		let (icon, title) = if ext == "json" {
+		let is_rig = path
+			.file_name()
+			.is_some_and(|n| n.to_string_lossy().to_lowercase().ends_with(".rig.json"));
+		let (icon, title) = if is_rig {
+			(icons::PERSON_SIMPLE_RUN, "Open animated model")
+		} else if ext == "json" {
 			(icons::FILE_ARROW_DOWN, "Import export file")
 		} else if crate::texture::is_image(&path) {
 			(icons::IMAGE, "Use as material map")
@@ -598,6 +615,11 @@ impl App {
 		if key(Key::F) {
 			self.frame_model();
 		}
+		if let Some(model) = &mut self.model
+			&& key(Key::Space)
+		{
+			model.toggle_play();
+		}
 		if key(Key::Num1) {
 			self.shading = Shading::Solid;
 		}
@@ -634,6 +656,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
 	("Ctrl+B", "Toggle library"),
 	("Ctrl+Shift+B", "Toggle inspector"),
 	("F", "Frame model"),
+	("Space", "Play or pause the animation"),
 	("1 / 2 / 3", "Solid / solid + wireframe / wireframe"),
 	("M", "Toggle maps"),
 	("G", "Toggle ground grid"),

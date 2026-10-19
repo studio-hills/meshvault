@@ -22,10 +22,16 @@ mod real_export {
 		struct Doc {
 			models: Vec<AnimatedModel>,
 		}
-		let Ok(path) = std::env::var("RBX_V1_EXPORT") else { return };
+		let Ok(path) = std::env::var("RBX_V1_EXPORT") else {
+			return;
+		};
 		let started = std::time::Instant::now();
 		let doc: Doc = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-		println!("parsed {} models in {:.1?}", doc.models.len(), started.elapsed());
+		println!(
+			"parsed {} models in {:.1?}",
+			doc.models.len(),
+			started.elapsed()
+		);
 		let (mut tracks, mut matched, mut worst) = (0, 0, (0.0f32, String::new()));
 		let mut consistent = 0;
 		for model in &doc.models {
@@ -53,14 +59,23 @@ mod real_export {
 				let sample: Vec<_> = unmatched.iter().take(5).collect();
 				println!(
 					"{:<40} rest err {:>7.3}  bound {m:>4}/{t:<4} motors {:>3} bones {:>3} unmatched e.g. {sample:?}",
-					model.path, err, rig.motors.len(), rig.bones.len()
+					model.path,
+					err,
+					rig.motors.len(),
+					rig.bones.len()
 				);
 			}
 		}
 		println!("largest rest error {:.4} studs ({})", worst.0, worst.1);
-		println!("tracks bound {matched}/{tracks}; consistent rigs {consistent}/{}", doc.models.len());
+		println!(
+			"tracks bound {matched}/{tracks}; consistent rigs {consistent}/{}",
+			doc.models.len()
+		);
 		// characters exported mid-animation have offset snapshots (Motor6D.Transform
 		// is not exported), but stored assets should solve back to their CFrames
-		assert!(consistent * 4 >= doc.models.len() * 3, "most rigs should solve to their exported pose");
+		assert!(
+			consistent * 4 >= doc.models.len() * 3,
+			"most rigs should solve to their exported pose"
+		);
 	}
 }

@@ -11,6 +11,10 @@ use crate::ui::ConfirmAction;
 
 impl App {
 	pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
+		if self.model.is_some() {
+			self.model_inspector(ui);
+			return;
+		}
 		let p = palette(ui.ctx());
 		let mut pick = None;
 		let mut remove_map = None;

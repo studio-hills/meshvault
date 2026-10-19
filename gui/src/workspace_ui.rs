@@ -9,7 +9,7 @@ use crate::export::FolderTree;
 use crate::ui::theme::{Palette, ROW, display, palette};
 use crate::ui::tree::{self, FolderCommand};
 use crate::ui::{icons, widgets};
-use crate::workspace::{AssetState, Item, Workspace};
+use crate::workspace::{AssetState, Item, ModelItem, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatusFilter {
@@ -22,6 +22,8 @@ pub enum StatusFilter {
 
 pub enum Action {
 	Open(usize),
+	OpenModel(usize),
+	RemoveModels(Vec<usize>),
 	Retry(Vec<usize>),
 	Remove(Vec<usize>),
 	Reveal(PathBuf),
@@ -69,6 +71,23 @@ fn status_colour(p: &Palette, s: Status) -> Color32 {
 	}
 }
 
+/// A model is done when every mesh it uses is downloaded.
+fn model_status(ws: &Workspace, model: &ModelItem) -> Status {
+	let mut status = Status::Done;
+	for stem in model.meshes.values() {
+		match ws.items().iter().find(|i| &i.stem == stem).map(status_of) {
+			Some(Status::Failed) => return Status::Failed,
+			Some(Status::Pending) | None => status = Status::Pending,
+			Some(Status::Done) => {}
+		}
+	}
+	status
+}
+
+fn status_of(item: &Item) -> Status {
+	status(item)
+}
+
 fn describe(state: &AssetState) -> String {
 	match state {
 		AssetState::Pending => "not downloaded yet".into(),
@@ -108,11 +127,148 @@ impl Browser {
 			|| item.mesh_id.to_string() == needle
 	}
 
+	fn model_matches(&self, ws: &Workspace, model: &ModelItem) -> bool {
+		let status_ok = match self.status {
+			StatusFilter::All => true,
+			StatusFilter::Downloaded => model_status(ws, model) == Status::Done,
+			StatusFilter::Pending => model_status(ws, model) == Status::Pending,
+			StatusFilter::Failed => model_status(ws, model) == Status::Failed,
+		};
+		let needle = self.filter.to_lowercase();
+		status_ok
+			&& (needle.is_empty()
+				|| model.name.to_lowercase().contains(&needle)
+				|| model.path.to_lowercase().contains(&needle))
+	}
+
+	/// Animated models, as a folder above the mesh folders.
+	fn models(
+		&self,
+		ui: &mut egui::Ui,
+		ws: &Workspace,
+		open_model: Option<usize>,
+		actions: &mut Vec<Action>,
+	) {
+		let visible: Vec<usize> = (0..ws.models().len())
+			.filter(|&i| self.model_matches(ws, &ws.models()[i]))
+			.collect();
+		if visible.is_empty() {
+			return;
+		}
+		let p = palette(ui.ctx());
+		// not a valid folder path, so it cannot clash with an export folder
+		let id = tree::folder_id(SCOPE, "\0animated");
+		let mut state =
+			egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+		if !self.filter.is_empty() || self.status != StatusFilter::All {
+			state.set_open(true);
+		}
+		let mut clicked = false;
+		let (arrow, _, _) = state
+			.show_header(ui, |ui| {
+				let response = widgets::pointer(
+					ui.add(
+						egui::Label::new(RichText::new(format!(
+							"{}  Animated models",
+							icons::PERSON_SIMPLE_RUN
+						)))
+						.sense(egui::Sense::click())
+						.truncate(),
+					),
+				);
+				clicked = response.clicked();
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					ui.label(
+						RichText::new(ws.models().len().to_string())
+							.size(11.5)
+							.color(p.text_weak),
+					);
+				});
+				response.context_menu(|ui| {
+					widgets::menu_style(ui);
+					if widgets::danger_item(
+						ui,
+						format!("{}  Remove all animated models", icons::TRASH),
+					)
+					.clicked()
+					{
+						actions.push(Action::RemoveModels((0..ws.models().len()).collect()));
+						ui.close();
+					}
+				});
+			})
+			.body(|ui| {
+				for &i in &visible {
+					let model = &ws.models()[i];
+					let is_open = open_model == Some(i);
+					let response = model_row(ui, &p, model, model_status(ws, model), is_open);
+					let missing = model
+						.meshes
+						.values()
+						.filter(|stem| {
+							ws.items()
+								.iter()
+								.find(|it| &it.stem == *stem)
+								.is_none_or(|it| !matches!(it.mesh, AssetState::Done { .. }))
+						})
+						.count();
+					let mut hover = format!(
+						"{}\n{} parts, {} meshes\n{} of {} clips playable",
+						model.path,
+						model.parts,
+						model.meshes.len(),
+						model.playable_clips,
+						model.clips
+					);
+					if missing > 0 {
+						hover.push_str(&format!("\n{missing} meshes not downloaded yet"));
+					}
+					let response = response.on_hover_text(hover);
+					if response.clicked() {
+						actions.push(Action::OpenModel(i));
+					}
+					response.context_menu(|ui| {
+						widgets::menu_style(ui);
+						if ui.button("Open").clicked() {
+							actions.push(Action::OpenModel(i));
+							ui.close();
+						}
+						if ui.button("Show rig file in file browser").clicked() {
+							actions.push(Action::Reveal(ws.root.join(&model.file)));
+							ui.close();
+						}
+						if ui.button("Copy instance path").clicked() {
+							ui.ctx().copy_text(model.path.clone());
+							ui.close();
+						}
+						ui.separator();
+						if widgets::danger_item(
+							ui,
+							format!("{}  Remove from workspace", icons::TRASH),
+						)
+						.clicked()
+						{
+							actions.push(Action::RemoveModels(vec![i]));
+							ui.close();
+						}
+					});
+				}
+			});
+		widgets::pointer(arrow);
+		if clicked
+			&& let Some(mut state) = egui::collapsing_header::CollapsingState::load(ui.ctx(), id)
+		{
+			state.toggle(ui);
+			state.store(ui.ctx());
+		}
+	}
+
 	pub fn show(
 		&mut self,
 		ui: &mut egui::Ui,
 		ws: &Workspace,
 		open_stem: Option<&str>,
+		open_model: Option<usize>,
 	) -> Vec<Action> {
 		self.rebuild_if_needed(ws);
 		let p = palette(ui.ctx());
@@ -135,7 +291,7 @@ impl Browser {
 		ui.horizontal(|ui| {
 			ui.label(RichText::new("Library").size(16.0).family(display()));
 			ui.label(RichText::new(items.len().to_string()).color(p.text_weak));
-			if items.is_empty() {
+			if items.is_empty() && ws.models().is_empty() {
 				return;
 			}
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -161,7 +317,7 @@ impl Browser {
 				}
 			});
 		});
-		if items.is_empty() {
+		if items.is_empty() && ws.models().is_empty() {
 			ui.add_space(8.0);
 			ui.label(
 				RichText::new(
@@ -226,6 +382,7 @@ impl Browser {
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
 				ui.spacing_mut().interact_size.y = ROW;
+				self.models(ui, ws, open_model, &mut actions);
 				let tree = std::mem::take(&mut self.tree);
 				self.folder(ui, ws, &tree, "", open_stem, &mut actions);
 				self.tree = tree;
@@ -414,6 +571,50 @@ impl Browser {
 			}
 		}
 	}
+}
+
+/// A library row for an animated model: status dot, name, clip count.
+fn model_row(
+	ui: &mut egui::Ui,
+	p: &Palette,
+	model: &ModelItem,
+	s: Status,
+	selected: bool,
+) -> egui::Response {
+	let (rect, response) =
+		ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+	let painter = ui.painter_at(rect);
+	let fill = if selected {
+		p.accent_soft
+	} else if response.hovered() {
+		p.raised_hover
+	} else {
+		Color32::TRANSPARENT
+	};
+	painter.rect_filled(rect, CornerRadius::same(6), fill);
+	let dot = rect.left_center() + Vec2::new(11.0, 0.0);
+	if s == Status::Pending {
+		painter.circle_stroke(dot, 3.5, Stroke::new(1.3, status_colour(p, s)));
+	} else {
+		painter.circle_filled(dot, 3.5, status_colour(p, s));
+	}
+	let clips = format!("{}  {}", icons::FILM_STRIP, model.playable_clips);
+	let clips_galley = painter.layout_no_wrap(clips, FontId::proportional(11.5), p.text_weak);
+	let text_rect = egui::Rect::from_min_max(
+		rect.left_top() + Vec2::new(24.0, 0.0),
+		rect.right_bottom() - Vec2::new(clips_galley.size().x + 16.0, 0.0),
+	);
+	painter.with_clip_rect(text_rect).text(
+		text_rect.left_center(),
+		Align2::LEFT_CENTER,
+		&model.name,
+		FontId::proportional(13.0),
+		if selected { p.accent } else { p.text },
+	);
+	let pos =
+		rect.right_center() - Vec2::new(10.0 + clips_galley.size().x, clips_galley.size().y / 2.0);
+	painter.galley(pos, clips_galley, p.text_weak);
+	response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A full-width, hoverable row: status dot, name, and a map indicator.

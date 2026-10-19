@@ -72,7 +72,10 @@ pub enum ClipStatus {
 
 impl ClipStatus {
 	pub fn is_playable(self) -> bool {
-		matches!(self, ClipStatus::KeyframeSequence | ClipStatus::CurveAnimation)
+		matches!(
+			self,
+			ClipStatus::KeyframeSequence | ClipStatus::CurveAnimation
+		)
 	}
 
 	pub fn label(self) -> &'static str {

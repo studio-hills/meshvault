@@ -5,7 +5,8 @@
 
 use super::math::CFrame;
 use super::schema::{
-	AnimationClip, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle, Pose, RotationKey, ScalarKey,
+	AnimationClip, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle, Pose,
+	RotationKey, ScalarKey,
 };
 
 /// What a track animates: a pose name plus its parent pose's name, which
@@ -27,14 +28,20 @@ struct PoseKey {
 #[derive(Clone, Debug)]
 enum Rotation {
 	None,
-	Euler { order: String, channels: [Vec<ScalarKey>; 3] },
+	Euler {
+		order: String,
+		channels: [Vec<ScalarKey>; 3],
+	},
 	Keys(Vec<RotationKey>),
 }
 
 #[derive(Clone, Debug)]
 enum Sampler {
 	Poses(Vec<PoseKey>),
-	Curves { position: Option<[Vec<ScalarKey>; 3]>, rotation: Rotation },
+	Curves {
+		position: Option<[Vec<ScalarKey>; 3]>,
+		rotation: Rotation,
+	},
 }
 
 #[derive(Clone, Debug)]
@@ -52,7 +59,6 @@ pub struct ClipMarker {
 
 #[derive(Clone, Debug)]
 pub struct Clip {
-	pub name: String,
 	pub duration: f32,
 	pub looped: bool,
 	pub tracks: Vec<Track>,
@@ -65,7 +71,6 @@ impl Clip {
 	/// Builds a playable clip, or explains why the record has no motion.
 	pub fn from_record(record: &AnimationClip) -> Result<Clip, String> {
 		let mut clip = Clip {
-			name: record.name.clone(),
 			duration: record.duration,
 			looped: record.looped,
 			tracks: Vec::new(),
@@ -77,8 +82,12 @@ impl Clip {
 			ClipStatus::CurveAnimation => clip.add_curves(record),
 			other => {
 				return Err(match other {
-					ClipStatus::Unavailable => "The clip could not be loaded when it was exported.".into(),
-					ClipStatus::CurveAnimationExportFailed => "The curve animation failed to export.".into(),
+					ClipStatus::Unavailable => {
+						"The clip could not be loaded when it was exported.".into()
+					}
+					ClipStatus::CurveAnimationExportFailed => {
+						"The curve animation failed to export.".into()
+					}
 					_ => "This clip type is not supported.".into(),
 				});
 			}
@@ -117,11 +126,22 @@ impl Clip {
 	}
 
 	fn add_curves(&mut self, record: &AnimationClip) {
-		let mut by_target: Vec<(TargetKey, Option<[Vec<ScalarKey>; 3]>, Rotation)> = Vec::new();
+		// target, its X/Y/Z position channels, and its rotation
+		type Gathered = (TargetKey, Option<[Vec<ScalarKey>; 3]>, Rotation);
+		let mut by_target: Vec<Gathered> = Vec::new();
 		for track in &record.curves {
-			let name = track.path.rsplit('/').next().unwrap_or_default().to_string();
+			let name = track
+				.path
+				.rsplit('/')
+				.next()
+				.unwrap_or_default()
+				.to_string();
 			let target = TargetKey {
-				name: if name.is_empty() { track.name.clone() } else { name },
+				name: if name.is_empty() {
+					track.name.clone()
+				} else {
+					name
+				},
 				// the folder above the target names its parent pose
 				parent: track.path.rsplit('/').nth(1).map(String::from),
 			};
@@ -154,7 +174,9 @@ impl Clip {
 		}
 		self.tracks = by_target
 			.into_iter()
-			.filter(|(_, position, rotation)| position.is_some() || !matches!(rotation, Rotation::None))
+			.filter(|(_, position, rotation)| {
+				position.is_some() || !matches!(rotation, Rotation::None)
+			})
 			.map(|(target, position, rotation)| Track {
 				target,
 				sampler: Sampler::Curves { position, rotation },
@@ -174,10 +196,19 @@ fn channels_of(channels: &Channels) -> [Vec<ScalarKey>; 3] {
 		keys.sort_by(|a, b| a.time.total_cmp(&b.time));
 		keys
 	};
-	[sorted(&channels.x), sorted(&channels.y), sorted(&channels.z)]
+	[
+		sorted(&channels.x),
+		sorted(&channels.y),
+		sorted(&channels.z),
+	]
 }
 
-fn walk_poses(poses: &[Pose], parent: Option<&str>, time: f32, tracks: &mut Vec<(TargetKey, Vec<PoseKey>)>) {
+fn walk_poses(
+	poses: &[Pose],
+	parent: Option<&str>,
+	time: f32,
+	tracks: &mut Vec<(TargetKey, Vec<PoseKey>)>,
+) {
 	for pose in poses {
 		// weight 0 marks placeholder poses that only group their children;
 		// treating them as keys would snap the target back to rest
@@ -248,7 +279,10 @@ impl Track {
 					),
 					Rotation::Keys(keys) => sample_rotation(keys, time),
 				};
-				CFrame::from_position(pos).mul(&CFrame { pos: [0.0; 3], ..rot })
+				CFrame::from_position(pos).mul(&CFrame {
+					pos: [0.0; 3],
+					..rot
+				})
 			}
 		}
 	}
@@ -274,7 +308,11 @@ fn sample_poses(keys: &[PoseKey], time: f32) -> CFrame {
 		Ok(i) => {
 			let (a, b) = (&keys[i], &keys[i + 1]);
 			let span = b.time - a.time;
-			let t = if span > 0.0 { (time - a.time) / span } else { 1.0 };
+			let t = if span > 0.0 {
+				(time - a.time) / span
+			} else {
+				1.0
+			};
 			// a pose's easing shapes the transition from it to the next pose
 			let eased = pose_ease(a.style, a.direction, t);
 			a.transform.lerp(&b.transform, eased)
@@ -296,7 +334,11 @@ pub fn pose_ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 
 				EasingDirection::Out => EasingDirection::In,
 				other => other,
 			};
-			let style = if style == EasingStyle::Cubic { EasingStyle::CubicV2 } else { style };
+			let style = if style == EasingStyle::Cubic {
+				EasingStyle::CubicV2
+			} else {
+				style
+			};
 			ease(style, flipped, t)
 		}
 		_ => ease(style, direction, t),
@@ -376,7 +418,11 @@ pub fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
 		Ok(i) => {
 			let (a, b) = (&keys[i], &keys[i + 1]);
 			let span = b.time - a.time;
-			let s = if span > 0.0 { (time - a.time) / span } else { 1.0 };
+			let s = if span > 0.0 {
+				(time - a.time) / span
+			} else {
+				1.0
+			};
 			match a.interpolation.as_str() {
 				"Constant" => a.value,
 				"Cubic" => {
@@ -386,7 +432,9 @@ pub fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
 					let h10 = s3 - 2.0 * s2 + s;
 					let h01 = -2.0 * s3 + 3.0 * s2;
 					let h11 = s3 - s2;
-					h00 * a.value + h10 * span * a.right_tangent + h01 * b.value + h11 * span * b.left_tangent
+					h00 * a.value
+						+ h10 * span * a.right_tangent
+						+ h01 * b.value + h11 * span * b.left_tangent
 				}
 				_ => a.value + (b.value - a.value) * s,
 			}
@@ -402,12 +450,19 @@ fn sample_rotation(keys: &[RotationKey], time: f32) -> CFrame {
 		Err(i) => CFrame::from_components(&keys[i].value),
 		Ok(i) => {
 			let (a, b) = (&keys[i], &keys[i + 1]);
-			let (ca, cb) = (CFrame::from_components(&a.value), CFrame::from_components(&b.value));
+			let (ca, cb) = (
+				CFrame::from_components(&a.value),
+				CFrame::from_components(&b.value),
+			);
 			if a.interpolation == "Constant" {
 				return ca;
 			}
 			let span = b.time - a.time;
-			let s = if span > 0.0 { (time - a.time) / span } else { 1.0 };
+			let s = if span > 0.0 {
+				(time - a.time) / span
+			} else {
+				1.0
+			};
 			// cubic rotation keys are approximated by a spherical lerp
 			ca.lerp(&cb, s)
 		}
@@ -442,7 +497,11 @@ mod tests {
 
 	#[test]
 	fn scalar_interpolation_modes() {
-		let keys = vec![key(0.0, 0.0, "Linear"), key(1.0, 10.0, "Constant"), key(2.0, 20.0, "Linear")];
+		let keys = vec![
+			key(0.0, 0.0, "Linear"),
+			key(1.0, 10.0, "Constant"),
+			key(2.0, 20.0, "Linear"),
+		];
 		assert_eq!(sample_scalar(&keys, -1.0), Some(0.0));
 		assert_eq!(sample_scalar(&keys, 0.25), Some(2.5));
 		assert_eq!(sample_scalar(&keys, 1.5), Some(10.0), "constant holds");
@@ -456,12 +515,31 @@ mod tests {
 
 	#[test]
 	fn easing_shapes() {
-		assert_eq!(pose_ease(EasingStyle::Linear, EasingDirection::In, 0.3), 0.3);
-		assert_eq!(pose_ease(EasingStyle::Constant, EasingDirection::In, 0.9), 0.0);
-		for style in [EasingStyle::CubicV2, EasingStyle::Sine, EasingStyle::Bounce, EasingStyle::Elastic, EasingStyle::Back] {
-			for dir in [EasingDirection::In, EasingDirection::Out, EasingDirection::InOut] {
+		assert_eq!(
+			pose_ease(EasingStyle::Linear, EasingDirection::In, 0.3),
+			0.3
+		);
+		assert_eq!(
+			pose_ease(EasingStyle::Constant, EasingDirection::In, 0.9),
+			0.0
+		);
+		for style in [
+			EasingStyle::CubicV2,
+			EasingStyle::Sine,
+			EasingStyle::Bounce,
+			EasingStyle::Elastic,
+			EasingStyle::Back,
+		] {
+			for dir in [
+				EasingDirection::In,
+				EasingDirection::Out,
+				EasingDirection::InOut,
+			] {
 				assert!(ease(style, dir, 0.0).abs() < 1e-5, "{style:?} {dir:?} at 0");
-				assert!((ease(style, dir, 1.0) - 1.0).abs() < 1e-5, "{style:?} {dir:?} at 1");
+				assert!(
+					(ease(style, dir, 1.0) - 1.0).abs() < 1e-5,
+					"{style:?} {dir:?} at 1"
+				);
 			}
 		}
 		// legacy Cubic "In" behaves like CubicV2 "Out"
@@ -481,7 +559,12 @@ mod tests {
 			keyframes: vec![
 				Keyframe {
 					time: 0.0,
-					poses: vec![pose("HumanoidRootPart", 0.0, 0.0, vec![pose("Torso", 0.0, 1.0, vec![])])],
+					poses: vec![pose(
+						"HumanoidRootPart",
+						0.0,
+						0.0,
+						vec![pose("Torso", 0.0, 1.0, vec![])],
+					)],
 					markers: vec![],
 				},
 				Keyframe {
@@ -494,7 +577,12 @@ mod tests {
 				},
 				Keyframe {
 					time: 2.0,
-					poses: vec![pose("HumanoidRootPart", 0.0, 0.0, vec![pose("Torso", 2.0, 1.0, vec![])])],
+					poses: vec![pose(
+						"HumanoidRootPart",
+						0.0,
+						0.0,
+						vec![pose("Torso", 2.0, 1.0, vec![])],
+					)],
 					markers: vec![],
 				},
 			],
@@ -518,7 +606,10 @@ mod tests {
 			..Default::default()
 		};
 		let euler = Channels {
-			y: Some(vec![key(0.0, 0.0, "Linear"), key(1.0, std::f32::consts::PI, "Linear")]),
+			y: Some(vec![
+				key(0.0, 0.0, "Linear"),
+				key(1.0, std::f32::consts::PI, "Linear"),
+			]),
 			..Default::default()
 		};
 		let record = AnimationClip {
@@ -569,6 +660,10 @@ mod tests {
 			status: ClipStatus::Unavailable,
 			..Default::default()
 		};
-		assert!(Clip::from_record(&record).unwrap_err().contains("could not be loaded"));
+		assert!(
+			Clip::from_record(&record)
+				.unwrap_err()
+				.contains("could not be loaded")
+		);
 	}
 }

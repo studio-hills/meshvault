@@ -5,6 +5,7 @@ mod dialogs;
 pub mod icons;
 mod inspector;
 mod layout;
+mod model;
 pub mod theme;
 mod toasts;
 pub mod tree;

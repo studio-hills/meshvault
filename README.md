@@ -12,7 +12,7 @@ Print the mesh vertices for any mesh version / vertex size
 
 ```rust
 use rbx_mesh::read_mesh_versioned;
-use rbx_mesh::mesh::{Mesh,Vertices2};
+use rbx_mesh::mesh::{Chunks6,CoreMeshChunk,Mesh,Vertices2};
 
 let file=std::fs::read("meshes/torso.mesh")?;
 let versioned_mesh=read_mesh_versioned(std::io::Cursor::new(file))?;
@@ -32,6 +32,20 @@ match versioned_mesh{
 	},
 	Mesh::V4(mesh)=>println!("{:?}",mesh.vertices),
 	Mesh::V5(mesh)=>println!("{:?}",mesh.vertices),
+	// v6 and v7 are made of chunks; the vertices live in the COREMESH chunk
+	Mesh::V6(mesh)=>{
+		if let Some(CoreMeshChunk::V1(core))=mesh.core_mesh(){
+			println!("{:?}",core.vertices);
+		}
+	},
+	// v7 usually Draco compresses COREMESH (decode needs the default "mesh-v7-draco" feature)
+	Mesh::V7(mesh)=>{
+		match mesh.core_mesh(){
+			Some(CoreMeshChunk::V1(core))=>println!("{:?}",core.vertices),
+			Some(CoreMeshChunk::V2(draco))=>println!("{:?}",draco.decode().unwrap().vertices),
+			_=>(),
+		}
+	},
 }
 # binrw::BinResult::Ok(())
 ```
@@ -80,6 +94,43 @@ match mesh{
 }
 # binrw::BinResult::Ok(())
 ```
+
+## GUI Viewer
+
+The `gui` crate is a desktop viewer built on `rbx_mesh` and [egui](https://github.com/emilk/egui).  It auto-detects the file type, shows header details (version, vertex/face counts, LODs, bones, FACS, hulls, physics info) and renders the mesh in an orbitable 3D view.
+
+```sh
+cargo run --release -p rbx_mesh_gui -- meshes/sphere.mesh
+```
+
+- Open files with File → Open (Ctrl+O), drag and drop, or pass a path on the command line
+- Switch between LODs for mesh v3+ files (including v6/v7); toggle individual convex hulls for union physics files
+- Solid, wireframe or combined shading; optional back-face culling
+- GPU rendering (wgpu): depth-tested, multisampled, mipmapped, with physically based shading; falls back to a CPU renderer when no GPU backend is available
+- Materials: base color, normal, roughness and metalness maps (Roblox `SurfaceAppearance`).  Maps next to the mesh load automatically by name (`Name.png` or `Name.color.png`, `Name.normal.png`, `Name.roughness.png`, `Name.metalness.png`); otherwise use File → Load map or drop PNG/JPEG/BMP/TGA/WebP files onto the window.  Each map can be toggled to compare with and without it
+- Export the visible geometry as Wavefront OBJ
+- Controls: left-drag to orbit, right/middle-drag to pan, scroll to zoom, double-click to reset
+
+### Workspaces and bulk download
+
+A workspace is a folder of models downloaded from Roblox, organized to mirror the folders of an export file shaped like `[{"Name", "MeshId", "Folder", "TextureId"?, "ColorMap"?, "NormalMap"?, "RoughnessMap"?, "MetalnessMap"?}, ...]` (empty strings count as missing).  Content ids can be `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N` or `assetdelivery.roblox.com` URLs.
+
+1. Workspace → New workspace… (created under `Documents/rbx_mesh workspaces` by default)
+2. Workspace → Roblox access… and add a credential (see below), then press Test
+3. Workspace → Import export JSON…, or drop the `.json` onto the window, then pick the folders, meshes and textures to import
+4. Browse the workspace tree; click a downloaded model to view it with its texture
+
+```text
+<workspace>/workspace.json            items and their download state
+<workspace>/Models/<Folder>/<Name>.mesh
+<workspace>/Models/<Folder>/<Name>.png  TextureID, next to its mesh
+<workspace>/Models/<Folder>/<Name>.color.png, .normal.png, .roughness.png, .metalness.png
+<workspace>/.cache/<asset id>          each asset is downloaded once, even when reused
+```
+
+Roblox requires authentication to download assets.  Use an [Open Cloud API key](https://create.roblox.com/dashboard/credentials) with the `legacy-asset:manage` permission (recommended), or a `.ROBLOSECURITY` cookie.  Credentials are kept in the system credential store (Windows Credential Manager, macOS Keychain or Secret Service), never in the workspace or config files.  Downloads run in parallel, retry rate limits and server errors, resolve Decal ids to their image, and resume after the app is closed.  Each asset id is downloaded once even when it is used as several maps or by many models.  The import dialog can include or skip each map type.  Re-importing an export only adds what is new.
+
+The app also accepts a workspace folder and an export on the command line: `rbx_mesh_gui <workspace> <export.json>`.
 
 #### License
 

@@ -12,6 +12,11 @@ mod v4;
 pub use v4::*;
 mod v5;
 pub use v5::*;
+// v6 and v7 are chunked; v7 adds Draco compression of the core mesh
+mod v6;
+pub use v6::*;
+mod v7;
+pub use v7::*;
 
 use binrw::BinReaderExt;
 
@@ -31,8 +36,8 @@ pub enum Mesh {
 	V3(Mesh3),
 	V4(Mesh4),
 	V5(Mesh5),
-	//Version6(Mesh6),
-	//Version7(Mesh7),
+	V6(Mesh6),
+	V7(Mesh7),
 }
 
 #[cfg(not(feature = "mesh-v1"))]
@@ -45,8 +50,8 @@ pub enum Mesh {
 	V3(Mesh3),
 	V4(Mesh4),
 	V5(Mesh5),
-	//Version6(Mesh6),
-	//Version7(Mesh7),
+	V6(Mesh6),
+	V7(Mesh7),
 }
 
 pub fn read_versioned<R: BinReaderExt>(mut read: R) -> Result<Mesh, Error> {

@@ -7,8 +7,11 @@ repository = "https://github.com/krakow10/rbx_mesh"
 license = "MIT OR Apache-2.0"
 description = "Rust parser for Roblox mesh files."
 authors = ["Rhys Lloyd <krakow20@gmail.com>"]
-exclude = ["meshes", "src/test/snapshots"]
+exclude = ["meshes", "src/test/snapshots", "gui"]
 keywords = ["roblox", "mesh", "parser", "decoder", "union"]
+
+[workspace]
+members = ["gui"]
 
 [features]
 default = [
@@ -17,6 +20,7 @@ default = [
 	"union-physics",
 	"mesh-v1",
 	"csgphs-v8-zstd",
+	"mesh-v7-draco",
 ]
 mesh = []
 union-graphics = []
@@ -24,12 +28,15 @@ union-physics = []
 
 # TODO: remove this feature in the next breaking release
 mesh-v1 = ["mesh"]
+# decode Draco compressed COREMESH chunks found in mesh v7.00
+mesh-v7-draco = ["mesh", "dep:draco-core"]
 # union physics v8 depends on zstd, pick your poison
 csgphs-v8-zstd = ["union-physics", "dep:zstd"] # non-rust dependency
 csgphs-v8-ruzstd = ["union-physics", "dep:ruzstd"] # 3.5x slower than zstd
 
 [dependencies]
 binrw = "0.15.0"
+draco-core = { version = "2.3.2", default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode"], optional = true }
 ruzstd = { version = "0.8.2", default-features = false, optional = true, features = ["std"] }
 zstd = { version = "0.13.3", default-features = false, optional = true }
 

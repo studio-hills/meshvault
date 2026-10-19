@@ -293,10 +293,17 @@ impl SettingsDialog {
 
 						ui.label("Parallel downloads");
 						field(ui, &mut |ui| {
-							ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-								ui.spacing_mut().slider_width = FIELD - 60.0;
-								widgets::pointer(ui.add(egui::Slider::new(&mut self.concurrency, 1..=8)));
-							});
+							// right to left like the other fields: the number box ends
+							// on the shared right edge and the slider fills the rest
+							let height = ui.spacing().interact_size.y;
+							widgets::pointer(ui.add_sized(
+								[48.0, height],
+								egui::DragValue::new(&mut self.concurrency).range(1..=8),
+							));
+							ui.spacing_mut().slider_width = ui.available_width() - ui.spacing().item_spacing.x;
+							widgets::pointer(ui.add(
+								egui::Slider::new(&mut self.concurrency, 1..=8).show_value(false),
+							));
 						});
 						ui.end_row();
 

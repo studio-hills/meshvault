@@ -5,7 +5,7 @@ use eframe::egui::{
 	Ui, Vec2, WidgetText,
 };
 
-use super::theme::{palette, semibold};
+use super::theme::{display, palette, semibold};
 
 /// A borderless square button showing one icon, with a tooltip.
 pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
@@ -17,16 +17,20 @@ pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response
 	let p = palette(ui.ctx());
 	let size = Vec2::splat(28.0);
 	let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+	let enabled = ui.is_enabled();
+	let hovered = enabled && response.hovered();
 	let fill = if on {
 		p.accent_soft
-	} else if response.hovered() {
+	} else if hovered {
 		p.raised_hover
 	} else {
 		Color32::TRANSPARENT
 	};
-	let colour = if on {
+	let colour = if !enabled {
+		p.text_weak.gamma_multiply(0.45)
+	} else if on {
 		p.accent
-	} else if response.hovered() {
+	} else if hovered {
 		p.text
 	} else {
 		p.text_weak
@@ -175,7 +179,7 @@ pub fn stat(ui: &mut Ui, value: &str, caption: &str) {
 	let p = palette(ui.ctx());
 	ui.vertical(|ui| {
 		ui.spacing_mut().item_spacing.y = 0.0;
-		ui.label(RichText::new(value).size(18.0).family(semibold()));
+		ui.label(RichText::new(value).size(18.0).family(display()));
 		ui.label(RichText::new(caption).size(11.0).color(p.text_weak));
 	});
 }

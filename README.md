@@ -95,12 +95,12 @@ match mesh{
 # binrw::BinResult::Ok(())
 ```
 
-## GUI Viewer
+## Meshvault (GUI)
 
-The `gui` crate is a desktop viewer built on `rbx_mesh` and [egui](https://github.com/emilk/egui).  It auto-detects the file type, shows header details (version, vertex/face counts, LODs, bones, FACS, hulls, physics info) and renders the mesh in an orbitable 3D view.
+The `gui` crate is Meshvault, a desktop viewer built on `rbx_mesh` and [egui](https://github.com/emilk/egui).  It auto-detects the file type, shows header details (version, vertex/face counts, LODs, bones, FACS, hulls, physics info) and renders the mesh in an orbitable 3D view.
 
 ```sh
-cargo run --release -p rbx_mesh_gui -- meshes/sphere.mesh
+cargo run --release -p meshvault -- meshes/sphere.mesh
 ```
 
 - Three-pane layout: a library of workspace models, the 3D viewport with a floating toolbar, and an inspector for the model's stats, material and properties; both side panels can be hidden
@@ -113,13 +113,13 @@ cargo run --release -p rbx_mesh_gui -- meshes/sphere.mesh
 - Export the visible geometry as Wavefront OBJ
 - Controls: left-drag to orbit, right/middle-drag to pan, scroll to zoom, double-click or F to frame the model
 
-The GUI bundles the [Inter](https://rsms.me/inter/) typeface (SIL Open Font License 1.1) and [Phosphor](https://phosphoricons.com) icons (MIT); see `gui/assets/` for their licenses.
+Meshvault bundles the [Cal Sans](https://github.com/calcom/sans) typeface (SIL Open Font License 1.1) and [Phosphor](https://phosphoricons.com) icons (MIT); see `gui/assets/` for their licenses.
 
 ### Workspaces and bulk download
 
 A workspace is a folder of models downloaded from Roblox, organized to mirror the folders of an export file shaped like `[{"Name", "MeshId", "Folder", "TextureId"?, "ColorMap"?, "NormalMap"?, "RoughnessMap"?, "MetalnessMap"?}, ...]` (empty strings count as missing).  Content ids can be `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N` or `assetdelivery.roblox.com` URLs.
 
-1. Open the workspace menu in the top bar and choose New workspace… (created under `Documents/rbx_mesh workspaces` by default)
+1. Open the workspace menu in the top bar and choose New workspace… (created under `Documents/Meshvault` by default)
 2. Click the key icon (Roblox access, Ctrl+,) and add a credential (see below), then press Test
 3. Click Import (Ctrl+I), or drop the `.json` onto the window, then pick the folders, meshes and maps to import
 4. Browse the workspace tree; click a downloaded model to view it with its texture
@@ -134,7 +134,7 @@ A workspace is a folder of models downloaded from Roblox, organized to mirror th
 
 Roblox requires authentication to download assets.  Use an [Open Cloud API key](https://create.roblox.com/dashboard/credentials) with the `legacy-asset:manage` permission (recommended), or a `.ROBLOSECURITY` cookie.  Credentials are kept in the system credential store (Windows Credential Manager, macOS Keychain or Secret Service), never in the workspace or config files.  Downloads run in parallel, retry rate limits and server errors, resolve Decal ids to their image, and resume after the app is closed.  Each asset id is downloaded once even when it is used as several maps or by many models.  The import dialog can include or skip each map type.  Re-importing an export only adds what is new.
 
-The app also accepts a workspace folder and an export on the command line: `rbx_mesh_gui <workspace> <export.json>`.
+The app also accepts a workspace folder and an export on the command line: `meshvault <workspace> <export.json>`.
 
 #### License
 

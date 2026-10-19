@@ -5,7 +5,7 @@ use eframe::egui::{
 	Margin, Modifiers, Order, RichText, Stroke, Vec2,
 };
 
-use super::theme::{ThemeMode, palette, semibold};
+use super::theme::{ThemeMode, display, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::geometry::GroupKind;
@@ -64,7 +64,7 @@ impl App {
 		ui.horizontal(|ui| {
 			ui.set_min_height(32.0);
 			ui.label(RichText::new(icons::CUBE).size(22.0).color(p.accent));
-			ui.label(RichText::new("rbx_mesh").size(15.0).family(semibold()));
+			ui.label(RichText::new("Meshvault").size(17.0).family(display()));
 			ui.add_space(10.0);
 			self.workspace_switcher(ui);
 			ui.add_space(4.0);
@@ -170,7 +170,11 @@ impl App {
 			let current = self.workspace.as_ref().map(|ws| ws.root.clone());
 			let recent = self.recent_workspaces();
 			if !recent.is_empty() {
-				ui.label(RichText::new("RECENT").size(11.0).family(semibold()).weak());
+				// line the heading up with the menu items' text
+				ui.horizontal(|ui| {
+					ui.add_space(ui.spacing().button_padding.x);
+					ui.label(RichText::new("RECENT").size(11.0).family(semibold()).weak());
+				});
 				for root in recent {
 					let name = root
 						.file_name()
@@ -343,7 +347,7 @@ impl App {
 
 	fn library_empty(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
-		ui.label(RichText::new("Library").size(15.0).family(semibold()));
+		ui.label(RichText::new("Library").size(16.0).family(display()));
 		ui.add_space(6.0);
 		widgets::card(ui, |ui| {
 			ui.label(RichText::new(icons::PACKAGE).size(26.0).color(p.accent));
@@ -352,7 +356,8 @@ impl App {
 				RichText::new(
 					"A workspace downloads the models from your export file and keeps them organized by folder.",
 				)
-				.color(p.text_weak),
+				.color(p.text_weak)
+				.line_height(Some(19.0)),
 			);
 			ui.add_space(4.0);
 			if widgets::primary_button(ui, format!("{}  New workspace", icons::FOLDER_PLUS))

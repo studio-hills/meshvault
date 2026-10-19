@@ -252,7 +252,7 @@ mod tests {
 	}
 
 	/// Checks a real export without committing it:
-	/// `RBX_EXPORT=path/to/OUTPUT.json cargo test -p rbx_mesh_gui -- --ignored`
+	/// `RBX_EXPORT=path/to/OUTPUT.json cargo test -p meshvault -- --ignored`
 	#[test]
 	#[ignore]
 	fn parses_real_export() {

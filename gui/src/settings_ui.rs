@@ -8,7 +8,7 @@ use eframe::egui::{self, RichText};
 use crate::config::{self, Config};
 use crate::download::{AuthMethod, Client, Credentials, Endpoints, sniff_extension};
 use crate::ui::icons;
-use crate::ui::theme::{palette, semibold};
+use crate::ui::theme::{dialog_frame, display, palette};
 use crate::ui::widgets;
 use crate::workspace::AssetKind;
 
@@ -158,11 +158,14 @@ impl SettingsDialog {
 
 		let mut open = true;
 		let mut close = false;
-		let modal = egui::Modal::new(egui::Id::unique("settings_dialog")).show(ctx, |ui| {
+		let modal = egui::Modal::new(egui::Id::unique("settings_dialog"))
+			.frame(dialog_frame(ctx))
+			.backdrop_color(egui::Color32::from_black_alpha(140))
+			.show(ctx, |ui| {
 				ui.set_width(500.0);
 				ui.horizontal(|ui| {
 					ui.label(RichText::new(icons::KEY).size(20.0).color(palette(ui.ctx()).accent));
-					ui.label(RichText::new("Roblox access").size(17.0).family(semibold()));
+					ui.label(RichText::new("Roblox access").size(18.0).family(display()));
 				});
 				ui.add_space(4.0);
 				if let Some(notice) = &self.notice {

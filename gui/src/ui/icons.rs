@@ -39,3 +39,6 @@ pub const TREE_STRUCTURE: &str = "\u{E67C}";
 pub const WARNING_CIRCLE: &str = "\u{E4E2}";
 pub const X: &str = "\u{E4F6}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
+pub const ARROWS_IN_LINE_VERTICAL: &str = "\u{E532}";
+pub const ARROWS_OUT_LINE_VERTICAL: &str = "\u{E536}";
+pub const CROSSHAIR_SIMPLE: &str = "\u{E1D8}";

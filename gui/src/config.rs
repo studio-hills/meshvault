@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::download::AuthMethod;
 use crate::ui::theme::ThemeMode;
 
-const KEYRING_SERVICE: &str = "rbx_mesh_gui";
+/// Name used for the config folder and the credential store.
+const APP_ID: &str = "meshvault";
+/// The name used before the app was called Meshvault; settings and
+/// credentials saved under it are migrated on first use.
+const LEGACY_APP_ID: &str = "rbx_mesh_gui";
 const MAX_RECENT: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,16 +38,32 @@ impl Default for Config {
 	}
 }
 
+fn config_path_for(app_id: &str) -> Option<PathBuf> {
+	Some(dirs::config_dir()?.join(app_id).join("config.json"))
+}
+
 fn config_path() -> Option<PathBuf> {
-	Some(dirs::config_dir()?.join("rbx_mesh_gui").join("config.json"))
+	config_path_for(APP_ID)
+}
+
+fn read_config(path: Option<PathBuf>) -> Option<Config> {
+	let text = std::fs::read_to_string(path?).ok()?;
+	serde_json::from_str(&text).ok()
 }
 
 impl Config {
 	pub fn load() -> Self {
-		config_path()
-			.and_then(|p| std::fs::read_to_string(p).ok())
-			.and_then(|s| serde_json::from_str(&s).ok())
-			.unwrap_or_default()
+		if let Some(config) = read_config(config_path()) {
+			return config;
+		}
+		// first run after the rename: carry the old settings over
+		match read_config(config_path_for(LEGACY_APP_ID)) {
+			Some(config) => {
+				config.save();
+				config
+			}
+			None => Self::default(),
+		}
 	}
 
 	pub fn save(&self) {
@@ -68,7 +88,7 @@ impl Config {
 		dirs::document_dir()
 			.or_else(dirs::home_dir)
 			.unwrap_or_else(|| PathBuf::from("."))
-			.join("rbx_mesh workspaces")
+			.join("Meshvault")
 	}
 }
 
@@ -79,22 +99,35 @@ fn keyring_user(method: AuthMethod) -> &'static str {
 	}
 }
 
-pub fn load_secret(method: AuthMethod) -> Option<String> {
-	keyring::Entry::new(KEYRING_SERVICE, keyring_user(method))
+fn read_secret(service: &str, method: AuthMethod) -> Option<String> {
+	keyring::Entry::new(service, keyring_user(method))
 		.ok()?
 		.get_password()
 		.ok()
 		.filter(|s| !s.is_empty())
 }
 
+pub fn load_secret(method: AuthMethod) -> Option<String> {
+	if let Some(secret) = read_secret(APP_ID, method) {
+		return Some(secret);
+	}
+	// copy a credential saved under the old name. The old entry is left in
+	// place so builds from before the rename keep working; Forget removes both.
+	let secret = read_secret(LEGACY_APP_ID, method)?;
+	let _ = save_secret(method, &secret);
+	Some(secret)
+}
+
 pub fn save_secret(method: AuthMethod, secret: &str) -> Result<(), String> {
-	keyring::Entry::new(KEYRING_SERVICE, keyring_user(method))
+	keyring::Entry::new(APP_ID, keyring_user(method))
 		.and_then(|e| e.set_password(secret.trim()))
 		.map_err(|e| format!("Could not save to the system credential store: {e}"))
 }
 
 pub fn delete_secret(method: AuthMethod) {
-	if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, keyring_user(method)) {
-		let _ = entry.delete_credential();
+	for service in [APP_ID, LEGACY_APP_ID] {
+		if let Ok(entry) = keyring::Entry::new(service, keyring_user(method)) {
+			let _ = entry.delete_credential();
+		}
 	}
 }

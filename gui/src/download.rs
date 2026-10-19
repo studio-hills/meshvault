@@ -90,7 +90,7 @@ pub struct Client {
 	endpoints: Endpoints,
 }
 
-const USER_AGENT: &str = concat!("rbx_mesh_gui/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("Meshvault/", env!("CARGO_PKG_VERSION"));
 /// Largest asset accepted; Roblox meshes and textures are far smaller.
 const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 

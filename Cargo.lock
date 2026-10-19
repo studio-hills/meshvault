@@ -1974,6 +1974,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "meshvault"
+version = "0.1.0"
+dependencies = [
+ "binrw",
+ "bytemuck",
+ "dirs",
+ "eframe",
+ "flate2",
+ "image",
+ "keyring",
+ "naga",
+ "rbx_mesh",
+ "rfd",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2849,25 +2868,6 @@ dependencies = [
  "insta",
  "ruzstd",
  "zstd",
-]
-
-[[package]]
-name = "rbx_mesh_gui"
-version = "0.1.0"
-dependencies = [
- "binrw",
- "bytemuck",
- "dirs",
- "eframe",
- "flate2",
- "image",
- "keyring",
- "naga",
- "rbx_mesh",
- "rfd",
- "serde",
- "serde_json",
- "ureq",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
-//! The app's look: Inter for text, Phosphor for icons, and a dark and a
-//! light palette with consistent spacing, rounding and elevation.
+//! The app's look: Cal Sans for text and titles, Phosphor for icons, and a
+//! dark and a light palette with consistent spacing, rounding and elevation.
 
 use std::sync::Arc;
 
@@ -104,9 +104,25 @@ pub fn palette(ctx: &egui::Context) -> Palette {
 	}
 }
 
-/// Font family for semibold text (headings, labels that need weight).
+/// Font family for semibold interface text (labels that need weight).
 pub fn semibold() -> FontFamily {
 	FontFamily::Name("semibold".into())
+}
+
+/// Font family for display text: the brand mark, titles and headings.
+pub fn display() -> FontFamily {
+	FontFamily::Name("display".into())
+}
+
+/// The frame for modal dialogs: roomier than egui's popup frame.
+pub fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
+	let p = palette(ctx);
+	egui::Frame::NONE
+		.fill(p.panel)
+		.stroke(Stroke::new(1.0, p.border))
+		.corner_radius(CornerRadius::same(14))
+		.inner_margin(Margin::same(24))
+		.shadow(ctx.global_style().visuals.window_shadow)
 }
 
 pub fn install_fonts(ctx: &egui::Context) {
@@ -116,16 +132,25 @@ pub fn install_fonts(ctx: &egui::Context) {
 			.font_data
 			.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
 	};
-	add("inter", include_bytes!("../../assets/Inter-Regular.ttf"));
+	// Cal Sans Text UI for interface text, Cal Sans for display text
+	// (see assets/font/calsans-static-essentials/OFL.txt)
 	add(
-		"inter-semibold",
-		include_bytes!("../../assets/Inter-SemiBold.ttf"),
+		"ui",
+		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-Regular.ttf"),
+	);
+	add(
+		"ui-semibold",
+		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-SemiBold.ttf"),
+	);
+	add(
+		"display",
+		include_bytes!("../../assets/font/calsans-static-essentials/CalSans-SemiBold.ttf"),
 	);
 	add("phosphor", include_bytes!("../../assets/Phosphor.ttf"));
 
-	// Phosphor first: it only has private-use codepoints, and Inter puts
-	// alternate letter shapes in that range, so Inter would shadow the icons.
-	// Then Inter for text, then egui's defaults (emoji, symbols).
+	// Phosphor first: it has only private-use icon codepoints, so it never
+	// replaces letters, and no text font can shadow an icon. Then the text
+	// font, then egui's defaults (emoji, symbols).
 	let defaults = fonts
 		.families
 		.get(&FontFamily::Proportional)
@@ -136,10 +161,9 @@ pub fn install_fonts(ctx: &egui::Context) {
 		v.extend(defaults.iter().cloned());
 		v
 	};
-	fonts
-		.families
-		.insert(FontFamily::Proportional, chain("inter"));
-	fonts.families.insert(semibold(), chain("inter-semibold"));
+	fonts.families.insert(FontFamily::Proportional, chain("ui"));
+	fonts.families.insert(semibold(), chain("ui-semibold"));
+	fonts.families.insert(display(), chain("display"));
 	fonts
 		.families
 		.entry(FontFamily::Monospace)
@@ -160,7 +184,7 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 			TextStyle::Button,
 			FontId::new(13.5, FontFamily::Proportional),
 		),
-		(TextStyle::Heading, FontId::new(17.0, semibold())),
+		(TextStyle::Heading, FontId::new(18.0, display())),
 		(
 			TextStyle::Monospace,
 			FontId::new(12.5, FontFamily::Monospace),
@@ -173,7 +197,13 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	s.button_padding = Vec2::new(10.0, 5.0);
 	s.interact_size = Vec2::new(28.0, 26.0);
 	s.window_margin = Margin::same(16);
-	s.menu_margin = Margin::same(6);
+	s.menu_margin = Margin::symmetric(8, 8);
+	// solid scroll bars sit beside the content instead of floating over it
+	s.scroll = egui::style::ScrollStyle {
+		bar_width: 8.0,
+		bar_inner_margin: 6.0,
+		..egui::style::ScrollStyle::solid()
+	};
 	s.indent = 16.0;
 	s.icon_spacing = 6.0;
 

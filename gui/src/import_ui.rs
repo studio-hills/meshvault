@@ -9,7 +9,8 @@ use eframe::egui::{self, RichText};
 use crate::export::{Entry, Export, FolderTree};
 use crate::maps::MapKind;
 use crate::ui::icons;
-use crate::ui::theme::{palette, semibold};
+use crate::ui::theme::{dialog_frame, display, palette};
+use crate::ui::tree::{self, FolderCommand};
 use crate::ui::widgets;
 use crate::workspace::Workspace;
 
@@ -28,7 +29,12 @@ pub struct ImportDialog {
 	existing: Vec<bool>,
 	filter: String,
 	download_now: bool,
+	/// Expand/collapse requested while drawing, applied on the next frame.
+	pending: Option<FolderCommand>,
 }
+
+/// Folder state namespace for the import tree.
+const SCOPE: &str = "import";
 
 pub enum Outcome {
 	Cancel,
@@ -65,6 +71,7 @@ impl ImportDialog {
 			warnings: export.warnings,
 			filter: String::new(),
 			download_now: true,
+			pending: None,
 		}
 	}
 
@@ -96,24 +103,27 @@ impl ImportDialog {
 			.file_name()
 			.map(|s| s.to_string_lossy().into_owned())
 			.unwrap_or_default();
-		let modal = egui::Modal::new(egui::Id::unique("import_dialog")).show(ctx, |ui| {
-			ui.set_width(size.x);
-			ui.set_height(size.y);
-			ui.horizontal(|ui| {
-				ui.label(
-					RichText::new(icons::FILE_ARROW_DOWN)
-						.size(20.0)
-						.color(palette(ui.ctx()).accent),
-				);
-				ui.label(
-					RichText::new(format!("Import {file}"))
-						.size(17.0)
-						.family(semibold()),
-				);
+		let modal = egui::Modal::new(egui::Id::unique("import_dialog"))
+			.frame(dialog_frame(ctx))
+			.backdrop_color(egui::Color32::from_black_alpha(140))
+			.show(ctx, |ui| {
+				ui.set_width(size.x);
+				ui.set_height(size.y);
+				ui.horizontal(|ui| {
+					ui.label(
+						RichText::new(icons::FILE_ARROW_DOWN)
+							.size(20.0)
+							.color(palette(ui.ctx()).accent),
+					);
+					ui.label(
+						RichText::new(format!("Import {file}"))
+							.size(18.0)
+							.family(display()),
+					);
+				});
+				ui.add_space(4.0);
+				outcome = self.contents(ui);
 			});
-			ui.add_space(4.0);
-			outcome = self.contents(ui);
-		});
 		if outcome.is_none() && modal.should_close() {
 			outcome = Some(Outcome::Cancel);
 		}
@@ -134,6 +144,9 @@ impl ImportDialog {
 	}
 
 	fn contents(&mut self, ui: &mut egui::Ui) -> Option<Outcome> {
+		if let Some(command) = self.pending.take() {
+			command.apply(ui.ctx(), SCOPE, &self.tree);
+		}
 		let count = |kind| {
 			self.entries
 				.iter()
@@ -197,6 +210,19 @@ impl ImportDialog {
 					self.maps[i] = false;
 				}
 			}
+			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+				ui.spacing_mut().item_spacing.x = 0.0;
+				if widgets::icon_button(ui, icons::ARROWS_IN_LINE_VERTICAL, "Collapse all folders")
+					.clicked()
+				{
+					self.pending = Some(FolderCommand::All(false));
+				}
+				if widgets::icon_button(ui, icons::ARROWS_OUT_LINE_VERTICAL, "Expand all folders")
+					.clicked()
+				{
+					self.pending = Some(FolderCommand::All(true));
+				}
+			});
 		});
 		if with_maps > 0 {
 			ui.horizontal_wrapped(|ui| {
@@ -220,7 +246,7 @@ impl ImportDialog {
 			.max_height(ui.available_height() - footer_height)
 			.show(ui, |ui| {
 				let tree = std::mem::take(&mut self.tree);
-				self.folder_contents(ui, &tree, "root");
+				self.folder_contents(ui, &tree, "");
 				self.tree = tree;
 			});
 
@@ -285,7 +311,8 @@ impl ImportDialog {
 				continue;
 			}
 			let selected = items.iter().filter(|&&i| self.mesh[i]).count();
-			let id = ui.make_persistent_id(format!("{id_path}/{name}"));
+			let path = tree::child_path(id_path, name);
+			let id = tree::folder_id(SCOPE, &path);
 			let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
 				ui.ctx(),
 				id,
@@ -295,7 +322,6 @@ impl ImportDialog {
 			if !self.filter.is_empty() {
 				state.set_open(true);
 			}
-			let path = format!("{id_path}/{name}");
 			state
 				.show_header(ui, |ui| {
 					let mut all = selected == items.len();
@@ -313,6 +339,28 @@ impl ImportDialog {
 							self.mesh[i] = all;
 						}
 					}
+					response.context_menu(|ui| {
+						if ui
+							.button(format!(
+								"{}  Expand all inside",
+								icons::ARROWS_OUT_LINE_VERTICAL
+							))
+							.clicked()
+						{
+							self.pending = Some(FolderCommand::Subtree(path.clone(), true));
+							ui.close();
+						}
+						if ui
+							.button(format!(
+								"{}  Collapse all inside",
+								icons::ARROWS_IN_LINE_VERTICAL
+							))
+							.clicked()
+						{
+							self.pending = Some(FolderCommand::Subtree(path.clone(), false));
+							ui.close();
+						}
+					});
 				})
 				.body(|ui| self.folder_contents(ui, child, &path));
 		}

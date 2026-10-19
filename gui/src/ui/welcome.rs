@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Align2, FontId, RichText, Sense, Vec2};
 
-use super::theme::{palette, semibold};
+use super::theme::{display, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -166,12 +166,21 @@ impl App {
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {
-	ui.label(RichText::new(text).size(22.0).family(semibold()));
+	ui.label(RichText::new(text).size(24.0).family(display()));
 }
 
 fn subtitle(ui: &mut egui::Ui, text: &str) {
 	let p = palette(ui.ctx());
-	ui.add(egui::Label::new(RichText::new(text).color(p.text_weak).size(14.0)).wrap());
+	// Cal Sans sets tightly; extra leading keeps wrapped lines readable
+	ui.add(
+		egui::Label::new(
+			RichText::new(text)
+				.color(p.text_weak)
+				.size(14.0)
+				.line_height(Some(20.0)),
+		)
+		.wrap(),
+	);
 }
 
 fn drop_zone(ui: &mut egui::Ui, text: &str) {

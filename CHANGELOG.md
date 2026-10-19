@@ -4,7 +4,7 @@
 
 - Mesh v6.00 and v7.00 support (chunked format: COREMESH, LODS, SKINNING, FACS, HSRAVIS)
 - Draco decoding of v7 COREMESH chunks via `CoreMeshDraco7::decode`, behind the default `mesh-v7-draco` feature
-- `rbx_mesh_gui` desktop viewer in `gui/`
+- Meshvault, a desktop viewer and bulk downloader, in `gui/`
 
 ### Changed
 

@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
-use super::theme::{palette, semibold};
+use super::theme::{display, palette, semibold};
 use super::{icons, widgets};
 use crate::app::{App, format_bytes};
 use crate::geometry::GroupKind;
@@ -20,8 +20,7 @@ impl App {
 
 				// header
 				ui.add(
-					egui::Label::new(RichText::new(doc.name()).size(15.0).family(semibold()))
-						.wrap(),
+					egui::Label::new(RichText::new(doc.name()).size(16.0).family(display())).wrap(),
 				);
 				ui.horizontal_wrapped(|ui| {
 					widgets::badge(ui, &doc.loaded.format, p.accent);

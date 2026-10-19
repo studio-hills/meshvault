@@ -7,6 +7,7 @@ mod inspector;
 mod layout;
 pub mod theme;
 mod toasts;
+pub mod tree;
 mod welcome;
 pub mod widgets;
 

@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 
 use crate::export::FolderTree;
-use crate::ui::icons;
-use crate::ui::theme::{Palette, palette, semibold};
+use crate::ui::theme::{Palette, display, palette};
+use crate::ui::tree::{self, FolderCommand};
+use crate::ui::{icons, widgets};
 use crate::workspace::{AssetState, Item, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -33,7 +34,15 @@ pub struct Browser {
 	tree: FolderTree,
 	/// Workspace and generation the tree was built from.
 	built_for: Option<(PathBuf, u64)>,
+	/// Expand/collapse requested while drawing, applied on the next frame.
+	pending: std::cell::RefCell<Option<FolderCommand>>,
+	/// Open the folders leading to the open model and scroll to it.
+	reveal: bool,
+	scroll_to_open: std::cell::Cell<bool>,
 }
+
+/// Folder state namespace for the library tree.
+const SCOPE: &str = "library";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {
@@ -110,9 +119,46 @@ impl Browser {
 		let mut actions = Vec::new();
 		let items = ws.items();
 
+		let ctx = ui.ctx().clone();
+		if let Some(command) = self.pending.borrow_mut().take() {
+			command.apply(&ctx, SCOPE, &self.tree);
+		}
+		if std::mem::take(&mut self.reveal)
+			&& let Some(item) = open_stem.and_then(|stem| items.iter().find(|i| i.stem == stem))
+		{
+			self.filter.clear();
+			self.status = StatusFilter::All;
+			tree::open_path(&ctx, SCOPE, &item.folder);
+			self.scroll_to_open.set(true);
+		}
+
 		ui.horizontal(|ui| {
-			ui.label(RichText::new("Library").size(15.0).family(semibold()));
+			ui.label(RichText::new("Library").size(16.0).family(display()));
 			ui.label(RichText::new(items.len().to_string()).color(p.text_weak));
+			if items.is_empty() {
+				return;
+			}
+			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+				ui.spacing_mut().item_spacing.x = 0.0;
+				if widgets::icon_button(ui, icons::ARROWS_IN_LINE_VERTICAL, "Collapse all folders")
+					.clicked()
+				{
+					self.pending.replace(Some(FolderCommand::All(false)));
+				}
+				if widgets::icon_button(ui, icons::ARROWS_OUT_LINE_VERTICAL, "Expand all folders")
+					.clicked()
+				{
+					self.pending.replace(Some(FolderCommand::All(true)));
+				}
+				let reveal = ui
+					.add_enabled_ui(open_stem.is_some(), |ui| {
+						widgets::icon_button(ui, icons::CROSSHAIR_SIMPLE, "Reveal the open model")
+					})
+					.inner;
+				if reveal.clicked() {
+					self.reveal = true;
+				}
+			});
 		});
 		if items.is_empty() {
 			ui.add_space(8.0);
@@ -172,7 +218,7 @@ impl Browser {
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
 				let tree = std::mem::take(&mut self.tree);
-				self.folder(ui, ws, &tree, "ws", open_stem, &mut actions);
+				self.folder(ui, ws, &tree, "", open_stem, &mut actions);
 				self.tree = tree;
 			});
 		actions
@@ -204,8 +250,8 @@ impl Browser {
 				.filter(|&i| items[i].has_failure())
 				.collect();
 			let done = all.iter().filter(|&&i| items[i].is_done()).count();
-			let path = format!("{id_path}/{name}");
-			let id = ui.make_persistent_id(&path);
+			let path = tree::child_path(id_path, name);
+			let id = tree::folder_id(SCOPE, &path);
 			let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
 				ui.ctx(),
 				id,
@@ -257,6 +303,29 @@ impl Browser {
 						}
 						ui.separator();
 						if ui
+							.button(format!(
+								"{}  Expand all inside",
+								icons::ARROWS_OUT_LINE_VERTICAL
+							))
+							.clicked()
+						{
+							self.pending
+								.replace(Some(FolderCommand::Subtree(path.clone(), true)));
+							ui.close();
+						}
+						if ui
+							.button(format!(
+								"{}  Collapse all inside",
+								icons::ARROWS_IN_LINE_VERTICAL
+							))
+							.clicked()
+						{
+							self.pending
+								.replace(Some(FolderCommand::Subtree(path.clone(), false)));
+							ui.close();
+						}
+						ui.separator();
+						if ui
 							.button(format!("Remove folder ({} models)", all.len()))
 							.clicked()
 						{
@@ -283,6 +352,9 @@ impl Browser {
 			let is_open = open_stem == Some(item.stem.as_str());
 			{
 				let response = item_row(ui, &p, item, is_open);
+				if is_open && self.scroll_to_open.replace(false) {
+					response.scroll_to_me(Some(egui::Align::Center));
+				}
 				let mut hover = format!("Mesh {}: {}", item.mesh_id, describe(&item.mesh));
 				for (kind, map) in &item.maps {
 					hover.push_str(&format!(

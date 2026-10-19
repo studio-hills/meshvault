@@ -1,4 +1,5 @@
-//! Desktop viewer for Roblox mesh, union graphics and union physics files.
+//! Meshvault: a desktop viewer for Roblox mesh, union graphics and union
+//! physics files, with workspaces for bulk downloading a game's models.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -25,11 +26,11 @@ use app::App;
 use gpu::GpuRenderer;
 
 fn main() -> eframe::Result {
-	// rbx_mesh_gui [workspace folder] [mesh, image or export .json ...]
+	// meshvault [workspace folder] [mesh, image or export .json ...]
 	let initial: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 	let options = eframe::NativeOptions {
 		viewport: egui::ViewportBuilder::default()
-			.with_title("rbx_mesh")
+			.with_title("Meshvault")
 			.with_inner_size([1280.0, 800.0])
 			.with_min_inner_size([760.0, 480.0])
 			.with_drag_and_drop(true),
@@ -39,7 +40,7 @@ fn main() -> eframe::Result {
 		..Default::default()
 	};
 	eframe::run_native(
-		"rbx_mesh",
+		"Meshvault",
 		options,
 		Box::new(move |cc| {
 			let renderer = cc.wgpu_render_state.as_ref().map(GpuRenderer::new);

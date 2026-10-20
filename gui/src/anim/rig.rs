@@ -3,9 +3,11 @@
 //!
 //! Motor6D: `Part1.world = Part0.world * C0 * Transform * C1⁻¹`.
 //! Bone:    `Bone.world  = Parent.world * Bone.CFrame * Transform`.
-//! Parts that are not any joint's `Part1` stay at their exported CFrame.
+//! Welds follow the Motor6D formula with no Transform. Joints are solved
+//! outward from each assembly's root, from whichever end is already
+//! placed; parts no joint reaches stay at their exported CFrame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use super::clip::{Clip, TargetKey};
 use super::math::{CFrame, V3};
@@ -31,6 +33,9 @@ pub struct Motor {
 	/// `Motor6D.Transform` when the model was exported (schema 2), or
 	/// identity. The rest pose shows it; clips replace it.
 	pub captured: CFrame,
+	/// A Motor6D or AnimationConstraint, which clips drive; a weld only
+	/// holds its parts together.
+	pub animated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,8 +86,9 @@ pub struct Rig {
 	pub parts: Vec<RigPart>,
 	pub motors: Vec<Motor>,
 	pub bones: Vec<RigBone>,
-	/// Motors in an order where every Part0 is solved before its Part1.
-	motor_order: Vec<usize>,
+	/// Motors in solving order, each with whether it places its Part1 from
+	/// its Part0 (or, for a joint pointing back at the root, the reverse).
+	motor_order: Vec<(usize, bool)>,
 	/// Bones in an order where parents come first.
 	bone_order: Vec<usize>,
 	/// Problems found while building, for the inspector.
@@ -140,6 +146,10 @@ impl Rig {
 						.transform
 						.as_ref()
 						.map_or(CFrame::IDENTITY, CFrame::from_components),
+					animated: matches!(
+						j.kind.as_deref(),
+						None | Some("Motor6D" | "AnimationConstraint")
+					),
 				}),
 				_ => rig.warnings.push(format!(
 					"Joint {} links a part that was not exported",
@@ -173,45 +183,76 @@ impl Rig {
 		rig
 	}
 
-	/// Orders motors by the depth of their Part1 in the joint tree.
-	fn solve_order(&mut self) -> Vec<usize> {
-		let mut driver: HashMap<usize, usize> = HashMap::new();
+	/// Orders the joints outward from each assembly's root, so each is
+	/// solved from whichever of its parts is placed first. The animation
+	/// root (a part that drives animated joints but none drives, like
+	/// HumanoidRootPart) is the root where there is one. Welds may point
+	/// back towards it: an accessory's weld runs from its Handle to the Head.
+	fn solve_order(&mut self) -> Vec<(usize, bool)> {
+		let n = self.parts.len();
+		let mut joints_of: Vec<Vec<usize>> = vec![Vec::new(); n];
+		let (mut drives_animated, mut driven_animated, mut driven) =
+			(vec![false; n], vec![false; n], vec![false; n]);
 		for (i, m) in self.motors.iter().enumerate() {
-			if driver.insert(m.part1, i).is_some() {
-				self.warnings.push(format!(
-					"Part {} is driven by more than one joint; using the last",
-					self.parts[m.part1].path
-				));
+			joints_of[m.part0].push(i);
+			if m.part1 != m.part0 {
+				joints_of[m.part1].push(i);
+			}
+			driven[m.part1] = true;
+			if m.animated {
+				drives_animated[m.part0] = true;
+				driven_animated[m.part1] = true;
 			}
 		}
-		let depth = |mut part: usize| -> Option<usize> {
-			let mut d = 0;
-			while let Some(&m) = driver.get(&part) {
-				part = self.motors[m].part0;
-				d += 1;
-				if d > self.motors.len() {
-					return None; // a cycle
-				}
+		let mut roots: Vec<usize> = (0..n).collect();
+		// stable: among equals, the export's order
+		roots.sort_by_key(|&p| {
+			if drives_animated[p] && !driven_animated[p] {
+				0
+			} else if !driven[p] {
+				1
+			} else {
+				2
 			}
-			Some(d)
-		};
-		let mut order: Vec<(usize, usize)> = Vec::new();
-		let mut cyclic = false;
-		for (i, m) in self.motors.iter().enumerate() {
-			if driver.get(&m.part1) != Some(&i) {
+		});
+		let mut placed = vec![false; n];
+		let mut used = vec![false; self.motors.len()];
+		let mut order = Vec::new();
+		let mut looped = false;
+		for root in roots {
+			if placed[root] || joints_of[root].is_empty() {
 				continue;
 			}
-			match depth(m.part1) {
-				Some(d) => order.push((d, i)),
-				None => cyclic = true,
+			placed[root] = true;
+			let mut queue = VecDeque::from([root]);
+			while let Some(part) = queue.pop_front() {
+				for &j in &joints_of[part] {
+					if std::mem::replace(&mut used[j], true) {
+						continue;
+					}
+					let m = &self.motors[j];
+					let (other, forward) = if m.part0 == part {
+						(m.part1, true)
+					} else {
+						(m.part0, false)
+					};
+					if placed[other] {
+						looped = true;
+						continue;
+					}
+					placed[other] = true;
+					order.push((j, forward));
+					queue.push_back(other);
+				}
 			}
 		}
-		if cyclic {
-			self.warnings
-				.push("Some joints form a loop and are ignored".into());
+		if looped {
+			self.warnings.push(
+				"Some joints connect parts that other joints already connect, and are ignored"
+					.into(),
+			);
 		}
-		order.sort();
-		order.into_iter().map(|(_, i)| i).collect()
+		order
 	}
 
 	fn bone_solve_order(&self) -> Vec<usize> {
@@ -245,8 +286,8 @@ impl Rig {
 			let is_root_part = || {
 				self.parts.iter().enumerate().any(|(i, p)| {
 					p.name == track.target.name
-						&& self.motors.iter().any(|m| m.part0 == i)
-						&& !self.motors.iter().any(|m| m.part1 == i)
+						&& self.motors.iter().any(|m| m.animated && m.part0 == i)
+						&& !self.motors.iter().any(|m| m.animated && m.part1 == i)
 				})
 			};
 			if target.is_none() && !is_root_part() {
@@ -273,7 +314,8 @@ impl Rig {
 			.motors
 			.iter()
 			.enumerate()
-			.filter(|(_, m)| self.parts[m.part1].name == key.name)
+			// welds are not animated, even when named like a body part
+			.filter(|(_, m)| m.animated && self.parts[m.part1].name == key.name)
 			.map(|(i, m)| (Target::Motor(i), self.parts[m.part0].name.as_str()))
 			.collect();
 		pick(motors).or_else(|| {
@@ -350,10 +392,17 @@ impl Rig {
 	/// `motor_t` / `bone_t` are local animated transforms (identity when empty).
 	fn solve(&self, motor_t: &[CFrame], bone_t: &[CFrame]) -> Posed {
 		let mut parts: Vec<CFrame> = self.parts.iter().map(|p| p.rest).collect();
-		for &i in &self.motor_order {
+		for &(i, forward) in &self.motor_order {
 			let m = &self.motors[i];
 			let t = motor_t.get(i).copied().unwrap_or(CFrame::IDENTITY);
-			parts[m.part1] = parts[m.part0].mul(&m.c0).mul(&t).mul(&m.c1.inverse());
+			if forward {
+				parts[m.part1] = parts[m.part0].mul(&m.c0).mul(&t).mul(&m.c1.inverse());
+			} else {
+				parts[m.part0] = parts[m.part1]
+					.mul(&m.c1)
+					.mul(&t.inverse())
+					.mul(&m.c0.inverse());
+			}
 		}
 		let mut bones = vec![CFrame::IDENTITY; self.bones.len()];
 		for &i in &self.bone_order {
@@ -439,6 +488,7 @@ mod tests {
 				c0: at(0.0, 1.0, 0.0),
 				c1: at(0.0, 1.0, 0.0),
 				transform: None,
+				kind: None,
 			}],
 			bones: vec![
 				BoneInfo {
@@ -577,6 +627,60 @@ mod tests {
 		assert!(posed.parts[0].approx_eq(&rig.parts[0].rest, 1e-6));
 		// the tail bends 90° about Z: the tip, 1 stud along Z from the tail, stays put along Z
 		assert!(posed.bones[1].pos[2] > 1.9);
+	}
+
+	/// An accessory's weld runs from its Handle to the body part (Part0 is
+	/// the Handle), the other way to the Motor6Ds: it is solved backwards
+	/// from the arm, follows the arm's animation, and no clip drives it.
+	#[test]
+	fn welded_accessories_follow_their_part() {
+		let mut m = model();
+		m.parts
+			.push(part("W/M/Hat/Handle", "Handle", at(0.0, 0.5, 0.0)));
+		m.joints.push(MotorJoint {
+			name: "AccessoryWeld".into(),
+			path: "W/M/Hat/Handle/AccessoryWeld".into(),
+			part0: "W/M/Hat/Handle".into(),
+			part1: "W/M/Meshes/Arm".into(),
+			// the handle sits 1.5 studs below the arm's centre
+			c0: at(0.0, 0.0, 0.0),
+			c1: at(0.0, -1.5, 0.0),
+			transform: None,
+			kind: Some("Weld".into()),
+		});
+		let rig = Rig::build(&m);
+		assert!(rig.warnings.is_empty(), "{:?}", rig.warnings);
+		assert!(
+			rig.rest_error() < 1e-5,
+			"the weld holds the handle where it was exported"
+		);
+		// swing the arm half a turn about Z around its hinge: the handle goes with it
+		let clip = Clip::from_record(&AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![Keyframe {
+				time: 0.0,
+				poses: vec![under(
+					"Root",
+					vec![
+						rotate_pose("Meshes/Arm", std::f32::consts::PI),
+						// a pose for the handle under the arm: welds are not animated
+						rotate_pose("Handle", 1.0),
+					],
+				)],
+				markers: vec![],
+			}],
+			..Default::default()
+		})
+		.unwrap();
+		let binding = rig.bind(&clip);
+		assert_eq!(binding.matched(), 1);
+		assert_eq!(binding.unmatched, ["Handle"]);
+		let posed = rig.pose(&clip, &binding, 0.0);
+		let (arm, handle) = (posed.parts[1], posed.parts[2]);
+		// the arm's centre moved from y = 2 to y = 4, and the handle from 0.5 to 5.5
+		assert!((arm.pos[1] - 4.0).abs() < 1e-4, "{:?}", arm.pos);
+		assert!((handle.pos[1] - 5.5).abs() < 1e-4, "{:?}", handle.pos);
 	}
 
 	/// Like Roblox, a pose only drives a joint under its parent's name: the

@@ -372,7 +372,7 @@ local function exportRig(model)
                 Name=inst.Name, Path=fullpath(inst),
                 Part0=inst.Part0 and fullpath(inst.Part0) or "",
                 Part1=inst.Part1 and fullpath(inst.Part1) or "",
-                C0=cfdata(inst.C0), C1=cfdata(inst.C1),
+                C0=cfdata(inst.C0), C1=cfdata(inst.C1), Kind="Motor6D",
             })
         elseif inst:IsA("AnimationConstraint") then
             local a0, a1 = inst.Attachment0, inst.Attachment1
@@ -383,6 +383,39 @@ local function exportRig(model)
                     Name=inst.Name, Path=fullpath(inst),
                     Part0=fullpath(part0), Part1=fullpath(part1),
                     C0=cfdata(a0.CFrame), C1=cfdata(a1.CFrame),
+                    Kind=inst.ClassName,
+                })
+            end
+        elseif inst:IsA("JointInstance") then
+            -- Weld, ManualWeld, Snap, Glue, Motor: Part1 is held at Part0 * C0 * C1^-1
+            if inst.Part0 and inst.Part1 then
+                table.insert(m.Joints, {
+                    Name=inst.Name, Path=fullpath(inst),
+                    Part0=fullpath(inst.Part0), Part1=fullpath(inst.Part1),
+                    C0=cfdata(inst.C0), C1=cfdata(inst.C1),
+                    Kind=inst.ClassName,
+                })
+            end
+        elseif inst:IsA("WeldConstraint") then
+            -- keeps the parts as they are: Part1 at Part0 times their current offset
+            if inst.Part0 and inst.Part1 and inst.Enabled then
+                table.insert(m.Joints, {
+                    Name=inst.Name, Path=fullpath(inst),
+                    Part0=fullpath(inst.Part0), Part1=fullpath(inst.Part1),
+                    C0=cfdata(inst.Part0.CFrame:ToObjectSpace(inst.Part1.CFrame)), C1=cfdata(CFrame.identity),
+                    Kind=inst.ClassName,
+                })
+            end
+        elseif inst:IsA("RigidConstraint") then
+            local a0, a1 = inst.Attachment0, inst.Attachment1
+            local part0 = a0 and a0.Parent
+            local part1 = a1 and a1.Parent
+            if inst.Enabled and part0 and part1 and part0:IsA("BasePart") and part1:IsA("BasePart") then
+                table.insert(m.Joints, {
+                    Name=inst.Name, Path=fullpath(inst),
+                    Part0=fullpath(part0), Part1=fullpath(part1),
+                    C0=cfdata(a0.CFrame), C1=cfdata(a1.CFrame),
+                    Kind=inst.ClassName,
                 })
             end
         elseif inst:IsA("Bone") then

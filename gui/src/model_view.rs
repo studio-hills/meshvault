@@ -1113,6 +1113,7 @@ mod tests {
 				c0: cf([0.0, -0.5, 0.0]),
 				c1: cf([0.0, 0.5, 0.0]),
 				transform: None,
+				kind: None,
 			}],
 			bones: vec![BoneInfo {
 				name: "Tip".into(),

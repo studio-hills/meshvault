@@ -112,6 +112,9 @@ mod real_export {
 			time: f32,
 			joints: Pose,
 			bones: Pose,
+			/// Every part relative to the root part, by its path in the model.
+			#[serde(default)]
+			parts: Pose,
 		}
 		#[derive(serde::Deserialize)]
 		#[serde(rename_all = "PascalCase")]
@@ -122,8 +125,11 @@ mod real_export {
 		#[derive(serde::Deserialize)]
 		#[serde(rename_all = "PascalCase")]
 		struct StudioModel {
-			rest: (Pose, Pose),
+			/// Joints, bones (and parts) before any clip plays.
+			rest: Vec<Pose>,
 			clips: BTreeMap<String, StudioClip>,
+			#[serde(default)]
+			root_part: Option<String>,
 		}
 		#[derive(serde::Deserialize)]
 		#[serde(rename_all = "PascalCase")]
@@ -181,7 +187,7 @@ mod real_export {
 			let scale = model.scale.unwrap_or(1.0);
 			let mut rest = Worst::default();
 			for (i, m) in rig.motors.iter().enumerate() {
-				if let Some(t) = theirs.rest.0.0.get(&m.name) {
+				if let Some(t) = theirs.rest.first().and_then(|j| j.0.get(&m.name)) {
 					rest.add(&rig.motors[i].captured, t, m.name.clone());
 				}
 			}
@@ -200,14 +206,24 @@ mod real_export {
 				};
 				let binding = rig.bind(&clip);
 				let mut worst = Worst::default();
+				// where the parts end up, relative to the root part: checks the
+				// whole solve, welds included
+				let mut placed = Worst::default();
+				let root = theirs.root_part.as_ref().and_then(|r| {
+					rig.parts
+						.iter()
+						.position(|p| p.path.ends_with(&format!("/{r}")))
+				});
 				for s in &clip_samples.samples {
 					// what the viewer applies: sampled tracks, identity elsewhere
 					let mut motors = vec![CFrame::IDENTITY; rig.motors.len()];
 					let mut bones = vec![CFrame::IDENTITY; rig.bones.len()];
+					let mut scaled = Vec::new();
 					for ((_, mut t), target) in clip.sample(s.time).zip(&binding.targets) {
 						for v in &mut t.pos {
 							*v *= scale;
 						}
+						scaled.push(t);
 						match target {
 							Some(Target::Motor(i)) => motors[*i] = t,
 							Some(Target::Bone(i)) => bones[*i] = t,
@@ -240,6 +256,22 @@ mod real_export {
 							worst.add(&bones[i], t, format!("{} at {:.2}s", b.name, s.time));
 						}
 					}
+					if let Some(root) = root {
+						let posed = rig.pose_from(&binding, &scaled);
+						let from_root = posed.parts[root].inverse();
+						for (path, theirs) in &s.parts.0 {
+							let Some(i) = rig
+								.parts
+								.iter()
+								.position(|p| p.path.ends_with(&format!("/{path}")))
+							else {
+								continue;
+							};
+							let ours = from_root.mul(&posed.parts[i]);
+							show(path, &ours, theirs);
+							placed.add(&ours, theirs, format!("{path} at {:.2}s", s.time));
+						}
+					}
 				}
 				println!(
 					"  {clip_name}: length {:.3}s (Studio {:.3}s), bound {}/{}, {}",
@@ -249,6 +281,9 @@ mod real_export {
 					clip.tracks.len(),
 					worst.line()
 				);
+				if root.is_some() {
+					println!("    parts: {}", placed.line());
+				}
 			}
 		}
 	}

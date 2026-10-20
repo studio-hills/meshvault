@@ -82,6 +82,12 @@ pub struct MotorJoint {
 	/// in at that moment, not part of any clip.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub transform: Option<CFrame12>,
+	/// The joint's class (exporters from 2026-10 on): "Motor6D",
+	/// "AnimationConstraint", or a weld ("Weld", "WeldConstraint",
+	/// "RigidConstraint", ...) that only holds its parts together. Absent
+	/// means a Motor6D.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -402,6 +402,18 @@ local function exportRig(model)
                 C0=cfdata(inst.C0), C1=cfdata(inst.C1),
                 Transform=cfdata(inst.Transform),
             })
+        elseif inst:IsA("AnimationConstraint") then
+            local a0, a1 = inst.Attachment0, inst.Attachment1
+            local part0 = a0 and a0.Parent
+            local part1 = a1 and a1.Parent
+            if part0 and part1 and part0:IsA("BasePart") and part1:IsA("BasePart") then
+                table.insert(m.Joints, {
+                    Name=inst.Name, Path=fullpath(inst),
+                    Part0=fullpath(part0), Part1=fullpath(part1),
+                    C0=cfdata(a0.CFrame), C1=cfdata(a1.CFrame),
+                    Transform=cfdata(inst.Transform),
+                })
+            end
         elseif inst:IsA("Bone") then
             table.insert(m.Bones, {
                 Name=inst.Name, Path=fullpath(inst),

@@ -434,6 +434,8 @@ mod tests {
 			assert!(source.contains("return issues"));
 			// a clip that never loads must not stall the export
 			assert!(source.contains("local ok, clip = loadClip(animationId)"));
+			// current avatars' limbs are AnimationConstraints
+			assert!(source.contains("inst:IsA(\"AnimationConstraint\")"));
 			assert!(source.contains(&format!("SchemaVersion={v}")));
 			assert!(source.trim_end().ends_with("end"));
 		}

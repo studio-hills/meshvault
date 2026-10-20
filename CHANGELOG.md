@@ -8,6 +8,7 @@
 - Meshvault reads versioned (schema 1) exports and plays their animated models, with Motor6D and bone rigs, KeyframeSequence and CurveAnimation clips, and skinned meshes
 - Meshvault reads schema 2 exports: model scale, primitive part shapes and colours, SpecialMesh scale and offset, and captured joint poses
 - Meshvault serves its Studio exporter (`GET /export.luau`, schema 2 by default, `?schema=1` for the older one) and receives the exports it sends, so exporting is one Command Bar line and nothing is copied out of the Output window. Its "Export from Roblox Studio" dialog has the line, and Meshvault warns when the link's port is taken
+- The served exporter exports AnimationConstraint joints (current avatars), so those rigs animate
 - The served exporter gives up on an animation that has not loaded after 20 seconds (a locally registered clip from another Studio session never loads) and reports it, instead of stopping the export without a word
 
 ### Changed

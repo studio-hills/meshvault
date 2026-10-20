@@ -577,9 +577,17 @@ impl ModelView {
 		let rest = rig.rest();
 		let rest_error = rig.rest_error();
 		if rest_error > 0.01 {
-			warnings.push(format!(
-				"The joints place parts up to {rest_error:.2} studs from where they were exported, so the model was probably captured mid-animation. Clips play from the joints' rest pose."
-			));
+			// schema 2 records each joint's pose, so a difference left over is in
+			// the saved scene itself
+			warnings.push(if model.joints.iter().any(|j| j.transform.is_some()) {
+				format!(
+					"The joints place parts up to {rest_error:.2} studs from where they were saved: the parts and their joints do not quite meet in the place (common with AnimationConstraint avatars, which Roblox pulls together once the game runs). Meshvault places them by the joints, as the running game does."
+				)
+			} else {
+				format!(
+					"The joints place parts up to {rest_error:.2} studs from where they were exported, so the model was probably captured mid-animation. Clips play from the joints' rest pose."
+				)
+			});
 		}
 
 		let mut assets: HashMap<u32, Result<Arc<MeshAsset>, String>> = HashMap::new();

@@ -97,7 +97,7 @@ pub fn load(ctx: &egui::Context, path: &Path, bytes: &[u8]) -> Result<Texture, S
 }
 
 /// The maps applied to the mesh in the viewer.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Material {
 	pub maps: BTreeMap<Slot, Texture>,
 	/// Slots switched off in the UI (to compare with and without a map).

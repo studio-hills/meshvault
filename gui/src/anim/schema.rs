@@ -21,6 +21,33 @@ pub struct AnimatedModel {
 	pub joints: Vec<MotorJoint>,
 	pub bones: Vec<BoneInfo>,
 	pub animations: Vec<AnimationClip>,
+	/// The model's classic clothing (exporters from 2026-10 on).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub clothing: Option<ClothingInfo>,
+}
+
+/// A character's Shirt, Pants and ShirtGraphic: template images in the
+/// classic 585 x 559 layout, each tinted by its Color3.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct ClothingInfo {
+	pub shirt_template: Option<String>,
+	pub shirt_color: Option<[f32; 3]>,
+	pub pants_template: Option<String>,
+	pub pants_color: Option<[f32; 3]>,
+	/// A T-shirt: one image over the front of the torso.
+	pub graphic: Option<String>,
+	pub graphic_color: Option<[f32; 3]>,
+}
+
+impl ClothingInfo {
+	/// The clothing's images, as content ids.
+	pub fn images(&self) -> impl Iterator<Item = &str> {
+		[&self.shirt_template, &self.pants_template, &self.graphic]
+			.into_iter()
+			.flatten()
+			.map(String::as_str)
+	}
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

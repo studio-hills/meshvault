@@ -378,6 +378,23 @@ local function materialVariantOf(part)
 end
 local function exportRig(model)
     local m = {Name=model.Name, Path=fullpath(model), Scale=model:GetScale(), Parts={}, Joints={}, Bones={}, Animations={}}
+    do
+        local clothing = {}
+        local function colour(c) return {c.R, c.G, c.B} end
+        local shirt = model:FindFirstChildOfClass("Shirt")
+        if shirt and nonempty(shirt.ShirtTemplate) then
+            clothing.ShirtTemplate, clothing.ShirtColor = shirt.ShirtTemplate, colour(shirt.Color3)
+        end
+        local pants = model:FindFirstChildOfClass("Pants")
+        if pants and nonempty(pants.PantsTemplate) then
+            clothing.PantsTemplate, clothing.PantsColor = pants.PantsTemplate, colour(pants.Color3)
+        end
+        local graphic = model:FindFirstChildOfClass("ShirtGraphic")
+        if graphic and nonempty(graphic.Graphic) then
+            clothing.Graphic, clothing.GraphicColor = graphic.Graphic, colour(graphic.Color3)
+        end
+        if next(clothing) then m.Clothing = clothing end
+    end
     local animSeen = {}
     for _, inst in ipairs(model:GetDescendants()) do
         if isExcluded(inst) then continue end

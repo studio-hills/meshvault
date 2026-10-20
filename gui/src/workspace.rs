@@ -489,6 +489,7 @@ impl Workspace {
 					.flat_map(|v| v.maps().map(|(_, id)| id));
 				p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
 			})
+			.chain(model.clothing.iter().flat_map(|c| c.images()))
 			.filter_map(export::parse_asset_id)
 			.map(|id| {
 				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);

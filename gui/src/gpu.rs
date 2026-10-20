@@ -56,6 +56,10 @@ pub struct Uniforms {
 	/// The model's lights (see `viewport::light_uniforms`), and how many.
 	pub lights: [[f32; 4]; crate::viewport::MAX_LIGHTS * 3],
 	pub light_count: [f32; 4],
+	/// Clothing draws: the template region (x, y, width, height, 0..1) of
+	/// each box face (Right, Top, Back, Left, Bottom, Front), then the box's
+	/// centre and half size in the body section's space.
+	pub clothing: [[f32; 4]; 8],
 }
 
 pub struct GpuRenderer {

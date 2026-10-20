@@ -17,6 +17,7 @@
 - Meshvault's window is frameless, with its own title bar and caption buttons, and keeps rounded corners on Windows 11
 - Exports record keyframe clips' face control poses, and Meshvault plays facial animation on FACS heads from them and from curve clips' face control curves (bone movements; rotations not yet)
 - Exports record the lights on each part and its attachments, and Meshvault lights the model with them
+- Exports record a model's classic clothing (Shirt, Pants, ShirtGraphic and their colours), and Meshvault dresses the body in it as Studio does
 - Exports record each part's MaterialVariant (its maps and studs per tile), and Meshvault tiles it over the part as Studio does
 - Exports record each part's Decals and Textures, and Meshvault downloads their images and draws them on their faces as Studio does (no longer standing a mesh part's decal in for its texture)
 - Exports record each part's SurfaceAppearance tint and alpha mode, and Meshvault draws all four alpha modes as Studio does

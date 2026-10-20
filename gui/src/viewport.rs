@@ -183,6 +183,19 @@ pub struct DecalDraw {
 	/// A MaterialVariant rather than a decal: its maps tile over every face
 	/// (`tiles`), tinted by the part's colour.
 	pub variant: bool,
+	/// Clothing rather than a decal: `part_from_mesh` then places the mesh
+	/// in its body section's box, whose faces take these template regions.
+	pub clothing: Option<ClothingDraw>,
+}
+
+/// How a body section's box wears a clothing template.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClothingDraw {
+	/// Each face's template region (x, y, width, height in 0..1), in
+	/// `Enum.NormalId` order; a zero width leaves the face bare.
+	pub regions: [[f32; 4]; 6],
+	pub centre: V3,
+	pub half: V3,
 }
 
 /// How a Roblox part's surface is drawn, beyond its colour and maps.
@@ -590,7 +603,9 @@ fn draw_gpu(
 			(
 				transpose(d.part_from_mesh),
 				[
-					if d.variant {
+					if d.clothing.is_some() {
+						4.0
+					} else if d.variant {
 						3.0
 					} else if d.tiles.is_some() {
 						2.0
@@ -604,6 +619,13 @@ fn draw_gpu(
 				[d.size[0], d.size[1], d.size[2], 0.0],
 				d.tiles.unwrap_or([1.0, 1.0, 0.0, 0.0]),
 				[colour[0], colour[1], colour[2], 1.0],
+				d.clothing.map_or([[0.0; 4]; 8], |c| {
+					let mut packed = [[0.0; 4]; 8];
+					packed[..6].copy_from_slice(&c.regions);
+					packed[6] = [c.centre[0], c.centre[1], c.centre[2], 0.0];
+					packed[7] = [c.half[0], c.half[1], c.half[2], 0.0];
+					packed
+				}),
 			)
 		});
 		let uniforms = Uniforms {
@@ -620,14 +642,17 @@ fn draw_gpu(
 				[linear[0], linear[1], linear[2], s.alpha_mode as u8 as f32]
 			},
 			..match decal {
-				Some((part_from_mesh, decal, decal_size, decal_tile, decal_colour)) => Uniforms {
-					part_from_mesh,
-					decal,
-					decal_size,
-					decal_tile,
-					decal_colour,
-					..uniforms
-				},
+				Some((part_from_mesh, decal, decal_size, decal_tile, decal_colour, clothing)) => {
+					Uniforms {
+						part_from_mesh,
+						decal,
+						decal_size,
+						decal_tile,
+						decal_colour,
+						clothing,
+						..uniforms
+					}
+				}
 				None => uniforms,
 			}
 		};

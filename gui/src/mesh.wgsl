@@ -27,7 +27,8 @@ struct Uniforms {
 	tint: vec4<f32>,
 	// decal draws: mesh to part space
 	part_from_mesh: mat4x4<f32>,
-	// x: 0 no decal, 1 Decal, 2 Texture, 3 MaterialVariant; y: face (Enum.NormalId);
+	// x: 0 no decal, 1 Decal, 2 Texture, 3 MaterialVariant, 4 clothing;
+	// y: face (Enum.NormalId);
 	// z: transparency
 	decal: vec4<f32>,
 	// xyz: the part's size in studs
@@ -41,6 +42,9 @@ struct Uniforms {
 	lights: array<vec4<f32>, 24>,
 	// x: how many lights
 	light_count: vec4<f32>,
+	// clothing: each box face's template region (x, y, w, h), then the
+	// box's centre and half size
+	clothing: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -148,19 +152,34 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	// the surface's own normal in part space, for geometry without normals;
 	// it faces the camera, like the face normal below
 	let local_face = cross(dpdx(in.local), -dpdy(in.local));
-	let variant = u.decal.x > 2.5;
+	let variant = u.decal.x > 2.5 && u.decal.x < 3.5;
+	let clothing = u.decal.x > 3.5;
 	// where a decal's image lands: measured from the face's top-left corner.
 	// A MaterialVariant tiles on whichever box face the surface turns to.
 	var face = i32(u.decal.y);
-	if (variant) {
+	if (variant || clothing) {
 		face = box_face(select(local_face, in.local_normal, dot(in.local_normal, in.local_normal) > 1e-8));
 	}
-	let axes = decal_axes(face);
-	let size = u.decal_size.xyz;
+	var axes = decal_axes(face);
+	// a clothing template unfolds the box with the bottom below the front
+	if (clothing && face == 4) {
+		axes = mat3x3<f32>(vec3(-1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, -1.0, 0.0));
+	}
+	var size = u.decal_size.xyz;
+	var at = in.local;
+	if (clothing) {
+		// the body section's box, which the part is one piece of
+		size = u.clothing[7].xyz * 2.0;
+		at = in.local - u.clothing[6].xyz;
+	}
 	let face_size = vec2<f32>(abs(dot(size, axes[0])), abs(dot(size, axes[1])));
-	let from_corner = vec2<f32>(dot(in.local, axes[0]), dot(in.local, axes[1])) + face_size * 0.5;
+	let from_corner = vec2<f32>(dot(at, axes[0]), dot(at, axes[1])) + face_size * 0.5;
 	var decal_uv = from_corner / max(face_size, vec2<f32>(1e-6));
-	if (u.decal.x > 1.5) {
+	if (clothing) {
+		// the face's region of the template
+		let region = u.clothing[face];
+		decal_uv = region.xy + clamp(decal_uv, vec2<f32>(0.0), vec2<f32>(1.0)) * region.zw;
+	} else if (u.decal.x > 1.5) {
 		// a Texture (or a MaterialVariant) tiles from the corner, moved by its offset
 		decal_uv = (from_corner + u.decal_tile.zw) / max(u.decal_tile.xy, vec2<f32>(1e-6));
 	}
@@ -217,7 +236,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 		}
 	}
 
-	if (variant) {
+	if (clothing) {
+		// clothing over the body, tinted by its Color3; faces without a region stay bare
+		albedo = decal_s.rgb * u.decal_colour.rgb;
+		alpha = decal_s.a;
+		cut = u.clothing[face].z <= 0.0;
+	} else if (variant) {
 		// a MaterialVariant: its colour map tinted by the part's colour, opaque
 		if (u.flags.x != 0u) {
 			albedo = base_s.rgb * in.color;

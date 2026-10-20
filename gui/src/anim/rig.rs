@@ -344,6 +344,12 @@ impl Rig {
 		self.solve(&captured, &[])
 	}
 
+	/// The pose with every joint at rest (no Transform), as a character is
+	/// built: what its clothing is laid out on.
+	pub fn joint_rest(&self) -> Posed {
+		self.solve(&[], &[])
+	}
+
 	/// Solves world transforms from a clip sample at `time`.
 	#[cfg(test)]
 	pub fn pose(&self, clip: &Clip, binding: &Binding, time: f32) -> Posed {
@@ -505,6 +511,7 @@ mod tests {
 				},
 			],
 			animations: vec![],
+			clothing: None,
 		}
 	}
 

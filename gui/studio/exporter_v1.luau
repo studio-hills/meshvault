@@ -279,13 +279,40 @@ local function exportCurveClip(clip)
     return channels, duration
 end
 
+local CLIP_TIMEOUT = 20
+local function loadClip(animationId)
+    local done, ok, clip = false, false, nil
+    task.spawn(function()
+        ok, clip = pcall(function()
+            return AnimationClipProvider:GetAnimationClipAsync(animationId)
+        end)
+        done = true
+    end)
+    local waitStarted, told = os.clock(), false
+    while not done do
+        local waited = os.clock() - waitStarted
+        if waited > CLIP_TIMEOUT then
+            local why = ("it did not load within %d seconds"):format(CLIP_TIMEOUT)
+            if not animationId:find("^rbxassetid://") and not animationId:find("^%d+$") then
+                -- RegisterAnimationClip ids are content hashes, valid in the session that made them
+                why ..= ". It is a locally registered clip: register it again (RegisterAnimationClip) "
+                    .. "in this Studio session, and if it still will not load, restart Studio"
+            end
+            return false, why
+        end
+        if waited > 3 and not told then
+            told = true
+            log("  still loading the animation " .. animationId .. "...")
+        end
+        task.wait(0.1)
+    end
+    return ok, clip
+end
 local function getClip(animationId)
     if clipCache[animationId] then return clipCache[animationId] end
     local item = { Status = "Unavailable", Duration = 0, Keyframes = {}, Curves = {} }
     clipCache[animationId] = item
-    local ok, clip = pcall(function()
-        return AnimationClipProvider:GetAnimationClipAsync(animationId)
-    end)
+    local ok, clip = loadClip(animationId)
     if not ok or not clip then
         issue("AnimationUnavailable", "could not load the animation " .. animationId .. ": " .. tostring(clip), { AnimationId = animationId })
         return item

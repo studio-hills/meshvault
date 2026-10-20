@@ -320,26 +320,30 @@ fn sample_poses(keys: &[PoseKey], time: f32) -> CFrame {
 	}
 }
 
-/// Roblox's `PoseEasingStyle`. The legacy Cubic, Elastic and Bounce styles
-/// have their In/Out directions swapped relative to TweenService; CubicV2
-/// was added with the conventional meaning.
+/// Roblox's `PoseEasingStyle`, as measured in Studio. The legacy Cubic style
+/// has its In/Out directions swapped relative to TweenService (CubicV2 was
+/// added with the conventional meaning); Elastic and Bounce are not swapped.
+/// Constant jumps: "In" to the next pose at once, "Out" only when it is
+/// reached, "InOut" halfway.
 pub fn pose_ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
 	let t = t.clamp(0.0, 1.0);
 	match style {
 		EasingStyle::Linear | EasingStyle::Other => t,
-		EasingStyle::Constant => 0.0,
-		EasingStyle::Cubic | EasingStyle::Elastic | EasingStyle::Bounce => {
+		EasingStyle::Constant => {
+			let jumped = match direction {
+				EasingDirection::In => t > 0.0,
+				EasingDirection::InOut => t >= 0.5,
+				_ => false,
+			};
+			if jumped { 1.0 } else { 0.0 }
+		}
+		EasingStyle::Cubic => {
 			let flipped = match direction {
 				EasingDirection::In => EasingDirection::Out,
 				EasingDirection::Out => EasingDirection::In,
 				other => other,
 			};
-			let style = if style == EasingStyle::Cubic {
-				EasingStyle::CubicV2
-			} else {
-				style
-			};
-			ease(style, flipped, t)
+			ease(EasingStyle::CubicV2, flipped, t)
 		}
 		_ => ease(style, direction, t),
 	}
@@ -381,6 +385,27 @@ pub fn ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
 	match direction {
 		EasingDirection::In | EasingDirection::Other => f(t),
 		EasingDirection::Out => 1.0 - f(1.0 - t),
+		// Elastic's InOut is not made of its In curve: it has a longer period
+		EasingDirection::InOut if style == EasingStyle::Elastic => {
+			use std::f32::consts::PI;
+			if t == 0.0 || t == 1.0 {
+				return t;
+			}
+			let wave = ((20.0 * t - 11.125) * (2.0 * PI / 4.5)).sin();
+			if t < 0.5 {
+				-(2f32.powf(20.0 * t - 10.0) * wave) / 2.0
+			} else {
+				2f32.powf(-20.0 * t + 10.0) * wave / 2.0 + 1.0
+			}
+		}
+		// Roblox's Bounce InOut plays the In curve twice, the second time from halfway
+		EasingDirection::InOut if style == EasingStyle::Bounce => {
+			if t < 0.5 {
+				f(2.0 * t) / 2.0
+			} else {
+				0.5 + f(2.0 * t - 1.0) / 2.0
+			}
+		}
 		EasingDirection::InOut => {
 			if t < 0.5 {
 				f(2.0 * t) / 2.0
@@ -519,8 +544,9 @@ mod tests {
 			pose_ease(EasingStyle::Linear, EasingDirection::In, 0.3),
 			0.3
 		);
+		// Constant "Out" holds the pose until the next one is reached
 		assert_eq!(
-			pose_ease(EasingStyle::Constant, EasingDirection::In, 0.9),
+			pose_ease(EasingStyle::Constant, EasingDirection::Out, 0.9),
 			0.0
 		);
 		for style in [
@@ -547,6 +573,48 @@ mod tests {
 			pose_ease(EasingStyle::Cubic, EasingDirection::In, 0.3),
 			ease(EasingStyle::CubicV2, EasingDirection::Out, 0.3)
 		);
+	}
+
+	/// Roblox's pose easing, measured in Studio: a joint moved by a two-key
+	/// clip with each style and direction, at t = 0.05, 0.10 … 0.95.
+	#[test]
+	fn pose_easing_matches_studio() {
+		#[rustfmt::skip]
+		const STUDIO: &[(&str, &str, [f32; 19])] = &[
+			("Linear", "In", [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]),
+			("Linear", "Out", [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]),
+			("Linear", "InOut", [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]),
+			("Constant", "In", [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+			("Constant", "Out", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+			("Constant", "InOut", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+			("Cubic", "In", [0.1426, 0.271, 0.3859, 0.488, 0.5781, 0.657, 0.7254, 0.784, 0.8336, 0.875, 0.9089, 0.936, 0.9571, 0.973, 0.9844, 0.992, 0.9966, 0.999, 0.9999]),
+			("Cubic", "Out", [0.0001, 0.001, 0.0034, 0.008, 0.0156, 0.027, 0.0429, 0.064, 0.0911, 0.125, 0.1664, 0.216, 0.2746, 0.343, 0.4219, 0.512, 0.6141, 0.729, 0.8574]),
+			("Cubic", "InOut", [0.0005, 0.004, 0.0135, 0.032, 0.0625, 0.108, 0.1715, 0.256, 0.3645, 0.5, 0.6355, 0.744, 0.8285, 0.892, 0.9375, 0.968, 0.9865, 0.996, 0.9995]),
+			("CubicV2", "In", [0.0001, 0.001, 0.0034, 0.008, 0.0156, 0.027, 0.0429, 0.064, 0.0911, 0.125, 0.1664, 0.216, 0.2746, 0.343, 0.4219, 0.512, 0.6141, 0.729, 0.8574]),
+			("CubicV2", "Out", [0.1426, 0.271, 0.3859, 0.488, 0.5781, 0.657, 0.7254, 0.784, 0.8336, 0.875, 0.9089, 0.936, 0.9571, 0.973, 0.9844, 0.992, 0.9966, 0.999, 0.9999]),
+			("CubicV2", "InOut", [0.0005, 0.004, 0.0135, 0.032, 0.0625, 0.108, 0.1715, 0.256, 0.3645, 0.5, 0.6355, 0.744, 0.8285, 0.892, 0.9375, 0.968, 0.9865, 0.996, 0.9995]),
+			("Elastic", "In", [0.0007, 0.002, 0.0014, -0.002, -0.0055, -0.0039, 0.0055, 0.0156, 0.011, -0.0156, -0.0442, -0.0313, 0.0442, 0.125, 0.0884, -0.125, -0.3536, -0.25, 0.3536]),
+			("Elastic", "Out", [0.6464, 1.25, 1.3536, 1.125, 0.9116, 0.875, 0.9558, 1.0313, 1.0442, 1.0156, 0.989, 0.9844, 0.9945, 1.0039, 1.0055, 1.002, 0.9986, 0.998, 0.9993]),
+			("Elastic", "InOut", [0.001, 0.0003, -0.0037, -0.0039, 0.012, 0.0239, -0.0313, -0.1175, 0.0434, 0.5, 0.9566, 1.1175, 1.0313, 0.9761, 0.988, 1.0039, 1.0037, 0.9997, 0.999]),
+			("Bounce", "In", [0.0155, 0.0119, 0.0548, 0.06, 0.0273, 0.0694, 0.1673, 0.2275, 0.2498, 0.2344, 0.1811, 0.09, 0.0736, 0.3194, 0.5273, 0.6975, 0.8298, 0.9244, 0.9811]),
+			("Bounce", "Out", [0.0189, 0.0756, 0.1702, 0.3025, 0.4727, 0.6806, 0.9264, 0.91, 0.8189, 0.7656, 0.7502, 0.7725, 0.8327, 0.9306, 0.9727, 0.94, 0.9452, 0.9881, 0.9845]),
+			("Bounce", "InOut", [0.0059, 0.03, 0.0347, 0.1137, 0.1172, 0.045, 0.1597, 0.3487, 0.4622, 0.5, 0.5059, 0.53, 0.5347, 0.6137, 0.6172, 0.545, 0.6597, 0.8487, 0.9622]),
+		];
+		fn parse<T: serde::de::DeserializeOwned>(name: &str) -> T {
+			serde_json::from_value(serde_json::Value::String(name.into())).unwrap()
+		}
+		for (style, direction, expected) in STUDIO {
+			let (style, direction): (EasingStyle, EasingDirection) =
+				(parse(style), parse(direction));
+			for (i, want) in expected.iter().enumerate() {
+				let t = (i + 1) as f32 * 0.05;
+				let got = pose_ease(style, direction, t);
+				assert!(
+					(got - want).abs() < 2e-3,
+					"{style:?} {direction:?} at {t:.2}: Meshvault {got:.4}, Studio {want:.4}"
+				);
+			}
+		}
 	}
 
 	#[test]

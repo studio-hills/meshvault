@@ -257,18 +257,17 @@ impl Rig {
 		binding
 	}
 
+	/// Roblox's Animator drives a joint only when both names match: the pose
+	/// is named after the Motor6D's Part1 (or the Bone) and its parent pose
+	/// after Part0 (or the Bone's parent). A pose under the wrong parent, or
+	/// at the top of a keyframe, moves nothing, so it is unmatched here too.
 	fn find_target(&self, key: &TargetKey) -> Option<Target> {
+		let parent = key.parent.as_deref()?;
 		let pick = |candidates: Vec<(Target, &str)>| -> Option<Target> {
-			match candidates.len() {
-				0 => None,
-				1 => Some(candidates[0].0),
-				_ => key
-					.parent
-					.as_deref()
-					.and_then(|parent| candidates.iter().find(|(_, p)| *p == parent))
-					.or(candidates.first())
-					.map(|(t, _)| *t),
-			}
+			candidates
+				.iter()
+				.find(|(_, p)| *p == parent)
+				.map(|(t, _)| *t)
 		};
 		let motors = self
 			.motors
@@ -471,6 +470,15 @@ mod tests {
 		}
 	}
 
+	/// `children` under a placeholder pose for `name`, as Roblox nests them.
+	fn under(name: &str, children: Vec<Pose>) -> Pose {
+		Pose {
+			weight: 0.0,
+			children,
+			..rotate_pose(name, 0.0)
+		}
+	}
+
 	#[test]
 	fn rest_pose_matches_exported_cframes() {
 		let rig = Rig::build(&model());
@@ -508,7 +516,10 @@ mod tests {
 			duration: 1.0,
 			keyframes: vec![Keyframe {
 				time: 0.0,
-				poses: vec![rotate_pose("Root", 0.0), rotate_pose("Meshes/Arm", 0.0)],
+				poses: vec![Pose {
+					children: vec![rotate_pose("Meshes/Arm", 0.0)],
+					..rotate_pose("Root", 0.0)
+				}],
 				markers: vec![],
 			}],
 			..Default::default()
@@ -532,15 +543,21 @@ mod tests {
 			keyframes: vec![
 				Keyframe {
 					time: 0.0,
-					poses: vec![rotate_pose("Meshes/Arm", 0.0), rotate_pose("Tail", 0.0)],
+					poses: vec![under(
+						"Root",
+						vec![rotate_pose("Meshes/Arm", 0.0), rotate_pose("Tail", 0.0)],
+					)],
 					markers: vec![],
 				},
 				Keyframe {
 					time: 1.0,
-					poses: vec![
-						rotate_pose("Meshes/Arm", half_turn),
-						rotate_pose("Tail", half_turn / 2.0),
-					],
+					poses: vec![under(
+						"Root",
+						vec![
+							rotate_pose("Meshes/Arm", half_turn),
+							rotate_pose("Tail", half_turn / 2.0),
+						],
+					)],
 					markers: vec![],
 				},
 			],
@@ -560,6 +577,38 @@ mod tests {
 		assert!(posed.parts[0].approx_eq(&rig.parts[0].rest, 1e-6));
 		// the tail bends 90° about Z: the tip, 1 stud along Z from the tail, stays put along Z
 		assert!(posed.bones[1].pos[2] > 1.9);
+	}
+
+	/// Like Roblox, a pose only drives a joint under its parent's name: the
+	/// right name under another parent, or at the top level, moves nothing.
+	#[test]
+	fn poses_match_by_parent_and_name() {
+		let rig = Rig::build(&model());
+		let clip = |poses: Vec<Pose>| {
+			Clip::from_record(&AnimationClip {
+				status: ClipStatus::KeyframeSequence,
+				duration: 1.0,
+				keyframes: vec![Keyframe {
+					time: 0.0,
+					poses,
+					markers: vec![],
+				}],
+				..Default::default()
+			})
+			.unwrap()
+		};
+		let tracks = || vec![rotate_pose("Meshes/Arm", 0.0), rotate_pose("Tail", 0.0)];
+		assert_eq!(rig.bind(&clip(vec![under("Root", tracks())])).matched(), 2);
+		let elsewhere = rig.bind(&clip(vec![under("Other", tracks())]));
+		assert_eq!(elsewhere.matched(), 0);
+		assert_eq!(elsewhere.unmatched, ["Meshes/Arm", "Tail"]);
+		assert_eq!(rig.bind(&clip(tracks())).matched(), 0);
+		// a bone's parent may be another bone
+		let tip = clip(vec![under(
+			"Root",
+			vec![under("Tail", vec![rotate_pose("Tip", 0.0)])],
+		)]);
+		assert_eq!(rig.bind(&tip).targets, [Some(Target::Bone(1))]);
 	}
 
 	#[test]

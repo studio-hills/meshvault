@@ -78,4 +78,178 @@ mod real_export {
 			"most rigs should solve to their exported pose"
 		);
 	}
+
+	/// Compares playback with Roblox's own: `MESHVAULT_STUDIO_SAMPLES` holds
+	/// every Motor6D.Transform and Bone.Transform that Studio's Animator set
+	/// at fixed clip times, for models of the export in `MESHVAULT_EXPORT`:
+	/// `{"Models": {name: {"Scale", "Rest": [joints, bones], "Clips": {name:
+	/// {"Length", "Samples": [{"Time", "Joints": {name: cframe}, "Bones"}]}}}}}`.
+	/// Each is replayed the way the viewer plays it and the differences printed.
+	#[test]
+	#[ignore]
+	fn matches_studio_samples() {
+		use super::math::CFrame;
+		use super::rig::Target;
+		use std::collections::{BTreeMap, HashMap};
+
+		#[derive(serde::Deserialize)]
+		#[serde(rename_all = "PascalCase")]
+		struct Doc {
+			models: Vec<AnimatedModel>,
+		}
+		/// Studio writes an empty table as `[]`, so anything but an object is no pose.
+		#[derive(Default)]
+		struct Pose(HashMap<String, [f32; 12]>);
+		impl<'de> serde::Deserialize<'de> for Pose {
+			fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+				let value = serde_json::Value::deserialize(d)?;
+				Ok(Pose(serde_json::from_value(value).unwrap_or_default()))
+			}
+		}
+		#[derive(serde::Deserialize)]
+		#[serde(rename_all = "PascalCase")]
+		struct Sample {
+			time: f32,
+			joints: Pose,
+			bones: Pose,
+		}
+		#[derive(serde::Deserialize)]
+		#[serde(rename_all = "PascalCase")]
+		struct StudioClip {
+			length: f32,
+			samples: Vec<Sample>,
+		}
+		#[derive(serde::Deserialize)]
+		#[serde(rename_all = "PascalCase")]
+		struct StudioModel {
+			rest: (Pose, Pose),
+			clips: BTreeMap<String, StudioClip>,
+		}
+		#[derive(serde::Deserialize)]
+		#[serde(rename_all = "PascalCase")]
+		struct Samples {
+			models: BTreeMap<String, StudioModel>,
+		}
+		let (Ok(export), Ok(samples)) = (
+			std::env::var("MESHVAULT_EXPORT"),
+			std::env::var("MESHVAULT_STUDIO_SAMPLES"),
+		) else {
+			return;
+		};
+		let doc: Doc = serde_json::from_slice(&std::fs::read(export).unwrap()).unwrap();
+		let studio: Samples = serde_json::from_slice(&std::fs::read(samples).unwrap()).unwrap();
+
+		// the largest rotation difference (matrix entries) and position difference (studs)
+		#[derive(Default)]
+		struct Worst {
+			rot: (f32, String),
+			pos: (f32, String),
+		}
+		impl Worst {
+			fn add(&mut self, ours: &CFrame, theirs: &[f32; 12], what: String) {
+				let theirs = CFrame::from_components(theirs);
+				let rot = (0..3)
+					.flat_map(|r| (0..3).map(move |c| (r, c)))
+					.map(|(r, c)| (ours.rot[r][c] - theirs.rot[r][c]).abs())
+					.fold(0.0, f32::max);
+				let pos = (0..3)
+					.map(|k| (ours.pos[k] - theirs.pos[k]).powi(2))
+					.sum::<f32>()
+					.sqrt();
+				if rot > self.rot.0 {
+					self.rot = (rot, what.clone());
+				}
+				if pos > self.pos.0 {
+					self.pos = (pos, what);
+				}
+			}
+			fn line(&self) -> String {
+				format!(
+					"rotation {:.4} ({}), position {:.4} ({})",
+					self.rot.0, self.rot.1, self.pos.0, self.pos.1
+				)
+			}
+		}
+
+		for (name, theirs) in &studio.models {
+			let Some(model) = doc.models.iter().find(|m| &m.name == name) else {
+				println!("{name}: not in the export");
+				continue;
+			};
+			let rig = Rig::build(model);
+			// the viewer scales animated translations by Model.Scale (schema 2)
+			let scale = model.scale.unwrap_or(1.0);
+			let mut rest = Worst::default();
+			for (i, m) in rig.motors.iter().enumerate() {
+				if let Some(t) = theirs.rest.0.0.get(&m.name) {
+					rest.add(&rig.motors[i].captured, t, m.name.clone());
+				}
+			}
+			println!("{name}: captured pose {}", rest.line());
+			for (clip_name, clip_samples) in &theirs.clips {
+				let Some(record) = model.animations.iter().find(|a| &a.name == clip_name) else {
+					println!("  {clip_name}: not in the export");
+					continue;
+				};
+				let clip = match Clip::from_record(record) {
+					Ok(clip) => clip,
+					Err(why) => {
+						println!("  {clip_name}: {why}");
+						continue;
+					}
+				};
+				let binding = rig.bind(&clip);
+				let mut worst = Worst::default();
+				for s in &clip_samples.samples {
+					// what the viewer applies: sampled tracks, identity elsewhere
+					let mut motors = vec![CFrame::IDENTITY; rig.motors.len()];
+					let mut bones = vec![CFrame::IDENTITY; rig.bones.len()];
+					for ((_, mut t), target) in clip.sample(s.time).zip(&binding.targets) {
+						for v in &mut t.pos {
+							*v *= scale;
+						}
+						match target {
+							Some(Target::Motor(i)) => motors[*i] = t,
+							Some(Target::Bone(i)) => bones[*i] = t,
+							None => {}
+						}
+					}
+					// MESHVAULT_DETAIL=<target name> prints that joint or bone at every sample
+					let detail = std::env::var("MESHVAULT_DETAIL").ok();
+					let show = |what: &str, ours: &CFrame, theirs: &[f32; 12]| {
+						if detail.as_deref() == Some(what) {
+							println!(
+								"    {clip_name} {what} at {:.3}s
+      ours   {:?}
+      Studio {:?}",
+								s.time,
+								ours.components().map(|v| (v * 1e4).round() / 1e4),
+								theirs
+							);
+						}
+					};
+					for (i, m) in rig.motors.iter().enumerate() {
+						if let Some(t) = s.joints.0.get(&m.name) {
+							show(&m.name, &motors[i], t);
+							worst.add(&motors[i], t, format!("{} at {:.2}s", m.name, s.time));
+						}
+					}
+					for (i, b) in rig.bones.iter().enumerate() {
+						if let Some(t) = s.bones.0.get(&b.name) {
+							show(&b.name, &bones[i], t);
+							worst.add(&bones[i], t, format!("{} at {:.2}s", b.name, s.time));
+						}
+					}
+				}
+				println!(
+					"  {clip_name}: length {:.3}s (Studio {:.3}s), bound {}/{}, {}",
+					clip.duration,
+					clip_samples.length,
+					binding.matched(),
+					clip.tracks.len(),
+					worst.line()
+				);
+			}
+		}
+	}
 }

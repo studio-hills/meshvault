@@ -5,7 +5,7 @@ use eframe::egui::{
 	self, Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Order, RichText, Stroke, Vec2,
 };
 
-use super::theme::{ROW, palette, semibold};
+use super::theme::{CONTROL_RADIUS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
@@ -77,11 +77,12 @@ impl App {
 				Frame::NONE
 					.fill(p.panel.gamma_multiply(0.94))
 					.stroke(Stroke::new(1.0, p.border))
-					.corner_radius(CornerRadius::same(10))
-					.inner_margin(Margin::symmetric(8, 4))
+					// concentric with the controls: radius = control radius + padding
+					.corner_radius(CornerRadius::same(CONTROL_RADIUS + 4))
+					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)
 					.show(ui, |ui| {
-						ui.set_width(width - 16.0);
+						ui.set_width(width - 8.0);
 						ui.spacing_mut().interact_size.y = 30.0;
 						ui.horizontal(|ui| transport(ui, &p, model));
 					});

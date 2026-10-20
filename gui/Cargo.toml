@@ -20,6 +20,10 @@ flate2 = "1.1.10"
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 dirs = "7.0.0"
 bytemuck = { version = "1", features = ["derive"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }

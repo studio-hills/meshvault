@@ -34,6 +34,8 @@ fn main() -> eframe::Result {
 	let options = eframe::NativeOptions {
 		viewport: egui::ViewportBuilder::default()
 			.with_title("Meshvault")
+			// Meshvault draws its own title bar (see ui::window)
+			.with_decorations(false)
 			.with_inner_size([1280.0, 800.0])
 			.with_min_inner_size([760.0, 480.0])
 			.with_drag_and_drop(true),
@@ -46,6 +48,7 @@ fn main() -> eframe::Result {
 		"Meshvault",
 		options,
 		Box::new(move |cc| {
+			ui::window::round_corners(cc);
 			let renderer = cc.wgpu_render_state.as_ref().map(GpuRenderer::new);
 			let adapter = cc
 				.wgpu_render_state

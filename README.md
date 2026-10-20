@@ -104,6 +104,7 @@ cargo run --release -p meshvault -- meshes/sphere.mesh
 ```
 
 - Three-pane layout: a library of workspace models, the 3D viewport with a floating toolbar, and an inspector for the model's stats, material and properties; both side panels can be hidden
+- A frameless window with Meshvault's own title bar: drag its empty space to move the window, double-click it to maximize, and use the minimize, maximize and close buttons at its right end; the edges resize it, and Windows 11 keeps its corners rounded
 - Dark and light themes, notifications for long-running work, and keyboard shortcuts (press `?` in the app for the list)
 - Open files with the Open button (Ctrl+O), drag and drop, or pass a path on the command line
 - Switch between LODs for mesh v3+ files (including v6/v7); toggle individual convex hulls for union physics files

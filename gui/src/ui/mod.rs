@@ -13,6 +13,7 @@ mod toasts;
 pub mod tree;
 mod welcome;
 pub mod widgets;
+pub mod window;
 
 pub use dialogs::{Confirm, ConfirmAction};
 pub use studio::{StudioDialog, unavailable_text};

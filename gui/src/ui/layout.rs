@@ -23,6 +23,7 @@ impl eframe::App for App {
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
 		let p = palette(&ctx);
+		super::window::resize_grips(&ctx);
 
 		egui::Panel::top("top_bar")
 			.frame(
@@ -64,8 +65,13 @@ impl eframe::App for App {
 }
 
 impl App {
+	/// The top bar is also the window's title bar: its empty space moves the
+	/// window, and the caption buttons sit at its right end.
 	fn top_bar(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
+		// the whole bar, margins included
+		let bar = ui.max_rect().expand2(Vec2::new(12.0, 8.0));
+		super::window::title_bar_drag(ui, bar);
 		ui.horizontal(|ui| {
 			ui.set_min_height(CONTROL);
 			ui.label(RichText::new(icons::CUBE).size(22.0).color(p.accent));
@@ -115,6 +121,8 @@ impl App {
 			}
 
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				super::window::caption_buttons(ui);
+				ui.separator();
 				// a square menu button, matching the icon buttons beside it
 				ui.scope(|ui| {
 					ui.spacing_mut().button_padding.x = 10.0;

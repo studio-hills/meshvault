@@ -140,6 +140,27 @@ pub struct ScenePart<'a> {
 	/// The vertices moved since the last draw (skinning), so they are uploaded again.
 	pub moved: bool,
 	pub surface: Surface,
+	/// Set when this draws a decal over its part's geometry; `material`
+	/// then holds the decal's image.
+	pub decal: Option<DecalDraw>,
+}
+
+/// A Decal or Texture drawn on one face of its part: the part's geometry
+/// again, with the image projected onto the face as Roblox does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecalDraw {
+	/// Row-major mesh-to-part transform: positions in the part's own studs.
+	pub part_from_mesh: [[f32; 4]; 4],
+	/// The part's size.
+	pub size: V3,
+	/// `Enum.NormalId` value: Right, Top, Back, Left, Bottom, Front.
+	pub face: u8,
+	/// A Texture: studs per tile (U, V) and offset in studs (U, V). A Decal
+	/// stretches over the whole face.
+	pub tiles: Option<[f32; 4]>,
+	/// `Color3` (sRGB 0..1) and `Transparency`.
+	pub colour: [f32; 3],
+	pub transparency: f32,
 }
 
 /// How a Roblox part's surface is drawn, beyond its colour and maps.
@@ -491,6 +512,11 @@ fn draw_gpu(
 		flags: [0; 4],
 		surface: [1.0, 0.0, 0.0, 0.0],
 		tint: [1.0, 1.0, 1.0, 0.0],
+		part_from_mesh: IDENTITY,
+		decal: [0.0; 4],
+		decal_size: [1.0, 1.0, 1.0, 0.0],
+		decal_tile: [1.0, 1.0, 0.0, 0.0],
+		decal_colour: [1.0; 4],
 	};
 	// see-through parts are drawn after the rest, the farthest first
 	let distance = |part: &ScenePart| {
@@ -499,9 +525,29 @@ fn draw_gpu(
 	};
 	let mut order: Vec<&ScenePart> = parts.iter().collect();
 	order.sort_by(|a, b| distance(b).total_cmp(&distance(a)));
+	// decals are part of the surface; the wireframe alone shows none
+	let wire_only = settings.shading == Shading::Wireframe;
 	let draws = order.into_iter().filter_map(|part| {
+		if wire_only && part.decal.is_some() {
+			return None;
+		}
 		let scene = part.scene.as_ref()?;
 		let s = part.surface;
+		let decal = part.decal.map(|d| {
+			let colour = d.colour.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)));
+			(
+				transpose(d.part_from_mesh),
+				[
+					if d.tiles.is_some() { 2.0 } else { 1.0 },
+					d.face as f32,
+					d.transparency.clamp(0.0, 1.0),
+					0.0,
+				],
+				[d.size[0], d.size[1], d.size[2], 0.0],
+				d.tiles.unwrap_or([1.0, 1.0, 0.0, 0.0]),
+				[colour[0], colour[1], colour[2], 1.0],
+			)
+		});
 		let uniforms = Uniforms {
 			model: transpose(part.transform),
 			normal_model: transpose(normal_matrix(part.transform)),
@@ -515,7 +561,17 @@ fn draw_gpu(
 				let linear = s.tint.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)));
 				[linear[0], linear[1], linear[2], s.alpha_mode as u8 as f32]
 			},
-			..uniforms
+			..match decal {
+				Some((part_from_mesh, decal, decal_size, decal_tile, decal_colour)) => Uniforms {
+					part_from_mesh,
+					decal,
+					decal_size,
+					decal_tile,
+					decal_colour,
+					..uniforms
+				},
+				None => uniforms,
+			}
 		};
 		Some((scene, part.groups, uniforms))
 	});
@@ -566,7 +622,8 @@ fn draw_cpu(
 		_ => None,
 	};
 	let mut tris = Vec::new();
-	for part in parts {
+	// the software renderer draws no decals
+	for part in parts.iter().filter(|p| p.decal.is_none()) {
 		let geometry = part.geometry;
 		let view: Vec<V3> = geometry
 			.positions

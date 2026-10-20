@@ -45,13 +45,21 @@ pub struct Uniforms {
 	/// SurfaceAppearance: linear tint of the colour map, and the alpha mode
 	/// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque).
 	pub tint: [f32; 4],
+	/// Decal draws: mesh to part space (column-major), then mode (0 none,
+	/// 1 Decal, 2 Texture), face, transparency; the part's size; studs per
+	/// tile and offset (U, V, U, V); and the linear tint.
+	pub part_from_mesh: [[f32; 4]; 4],
+	pub decal: [f32; 4],
+	pub decal_size: [f32; 4],
+	pub decal_tile: [f32; 4],
+	pub decal_colour: [f32; 4],
 }
 
 pub struct GpuRenderer {
 	device: wgpu::Device,
 	queue: wgpu::Queue,
-	/// [opaque, see-through][no culling, back-face culling]
-	pipelines: [[wgpu::RenderPipeline; 2]; 2],
+	/// [opaque, see-through, decal][no culling, back-face culling]
+	pipelines: [[wgpu::RenderPipeline; 2]; 3],
 	layout: wgpu::BindGroupLayout,
 	sampler: wgpu::Sampler,
 	/// Bound to slots without a map.
@@ -143,8 +151,9 @@ impl GpuRenderer {
 		});
 		let target_format = render_state.target_format;
 		// see-through parts blend over what is behind them and leave the depth
-		// buffer alone, so they are drawn last, from the back to the front
-		let pipeline = |see_through: bool, cull_mode| {
+		// buffer alone, so they are drawn last, from the back to the front;
+		// decals blend over their part's own surface, at the same depth
+		let pipeline = |see_through: bool, decal: bool, cull_mode| {
 			device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 				label: Some("rbx_mesh pipeline"),
 				layout: Some(&pipeline_layout),
@@ -170,7 +179,11 @@ impl GpuRenderer {
 				depth_stencil: Some(wgpu::DepthStencilState {
 					format: DEPTH_FORMAT,
 					depth_write_enabled: Some(!see_through),
-					depth_compare: Some(wgpu::CompareFunction::Less),
+					depth_compare: Some(if decal {
+						wgpu::CompareFunction::LessEqual
+					} else {
+						wgpu::CompareFunction::Less
+					}),
 					stencil: wgpu::StencilState::default(),
 					bias: wgpu::DepthBiasState::default(),
 				}),
@@ -193,12 +206,13 @@ impl GpuRenderer {
 				cache: None,
 			})
 		};
-		let pipelines = [false, true].map(|see_through| {
-			[
-				pipeline(see_through, None),
-				pipeline(see_through, Some(wgpu::Face::Back)),
-			]
-		});
+		let pipelines =
+			[(false, false), (true, false), (true, true)].map(|(see_through, decal)| {
+				[
+					pipeline(see_through, decal, None),
+					pipeline(see_through, decal, Some(wgpu::Face::Back)),
+				]
+			});
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("rbx_mesh sampler"),
 			address_mode_u: wgpu::AddressMode::Repeat,
@@ -354,7 +368,13 @@ impl GpuRenderer {
 				uniforms.flags = scene.flags;
 				uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
 				Draw {
-					see_through: uniforms.surface[0] < 1.0,
+					pass: if uniforms.decal[0] > 0.0 {
+						Pass::Decal
+					} else if uniforms.surface[0] < 1.0 {
+						Pass::SeeThrough
+					} else {
+						Pass::Opaque
+					},
 					bind_group: scene.bind_group.clone(),
 					vertices: scene.vertices.clone(),
 					uniform_buffer: scene.uniforms.clone(),
@@ -367,10 +387,7 @@ impl GpuRenderer {
 			})
 			.collect();
 		MeshCallback {
-			pipelines: [
-				self.pipelines[0][cull as usize].clone(),
-				self.pipelines[1][cull as usize].clone(),
-			],
+			pipelines: self.pipelines.each_ref().map(|p| p[cull as usize].clone()),
 			draws,
 		}
 	}
@@ -463,8 +480,17 @@ fn upload_texture(
 	texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// Drawn in this order: opaque surfaces, the decals on them, then
+/// see-through surfaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+	Opaque,
+	Decal,
+	SeeThrough,
+}
+
 struct Draw {
-	see_through: bool,
+	pass: Pass,
 	bind_group: wgpu::BindGroup,
 	vertices: wgpu::Buffer,
 	uniform_buffer: wgpu::Buffer,
@@ -473,8 +499,8 @@ struct Draw {
 }
 
 pub struct MeshCallback {
-	/// [opaque, see-through]
-	pipelines: [wgpu::RenderPipeline; 2],
+	/// [opaque, see-through, decal]
+	pipelines: [wgpu::RenderPipeline; 3],
 	draws: Vec<Draw>,
 }
 
@@ -499,9 +525,9 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		render_pass: &mut wgpu::RenderPass<'static>,
 		_resources: &egui_wgpu::CallbackResources,
 	) {
-		for see_through in [false, true] {
-			render_pass.set_pipeline(&self.pipelines[see_through as usize]);
-			for draw in self.draws.iter().filter(|d| d.see_through == see_through) {
+		for (pass, pipeline) in [(Pass::Opaque, 0), (Pass::Decal, 2), (Pass::SeeThrough, 1)] {
+			render_pass.set_pipeline(&self.pipelines[pipeline]);
+			for draw in self.draws.iter().filter(|d| d.pass == pass) {
 				render_pass.set_bind_group(0, &draw.bind_group, &[]);
 				render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
 				for range in &draw.ranges {

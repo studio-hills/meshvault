@@ -17,6 +17,7 @@ const WHITE_ROWS: usize = 4;
 /// Largest side kept in memory; bigger images are scaled down.
 const MAX_SIDE: u32 = 4096;
 
+#[derive(Clone)]
 pub struct Texture {
 	pub handle: egui::TextureHandle,
 	pub path: PathBuf,

@@ -22,7 +22,7 @@ use crate::geometry::{self, Geometry, GroupKind, Primitive, Skin};
 use crate::gpu::GpuScene;
 use crate::maps::Slot;
 use crate::texture::{self, Material};
-use crate::viewport::{self, AlphaMode, Camera, ScenePart, Surface};
+use crate::viewport::{self, AlphaMode, Camera, DecalDraw, ScenePart, Surface};
 
 /// The files of one mesh a model uses, found in the workspace.
 pub struct MeshSource {
@@ -234,6 +234,31 @@ pub struct PartView {
 	pub appearance: Option<String>,
 	pub skin: Option<PartSkin>,
 	gpu: Option<GpuScene>,
+	/// Decals and Textures drawn over the part, lowest ZIndex first.
+	decals: Vec<PartDecal>,
+}
+
+/// A Decal or Texture of a part, with its image loaded.
+struct PartDecal {
+	face: u8,
+	tiles: Option<[f32; 4]>,
+	colour: [f32; 3],
+	transparency: f32,
+	/// The image, as the colour map.
+	material: Material,
+	gpu: Option<GpuScene>,
+}
+
+/// `Enum.NormalId` value of a face name.
+fn face_index(name: &str) -> u8 {
+	match name {
+		"Right" => 0,
+		"Top" => 1,
+		"Back" => 2,
+		"Left" => 3,
+		"Bottom" => 4,
+		_ => 5,
+	}
 }
 
 /// What moves a bone a mesh was bound to.
@@ -573,6 +598,7 @@ impl ModelView {
 		index: usize,
 		model: &AnimatedModel,
 		sources: &HashMap<u32, MeshSource>,
+		images: &HashMap<u64, PathBuf>,
 	) -> Self {
 		let mut warnings = Vec::new();
 		let rig = Rig::build(model);
@@ -594,6 +620,9 @@ impl ModelView {
 		}
 
 		let mut assets: HashMap<u32, Result<Arc<MeshAsset>, String>> = HashMap::new();
+		// decal images, each loaded once
+		let mut decal_images: HashMap<u64, Option<texture::Texture>> = HashMap::new();
+		let mut decals_missing = 0;
 		let mut parts = Vec::with_capacity(rig.parts.len());
 		let mut missing = 0;
 		for (i, part) in rig.parts.iter().enumerate() {
@@ -669,6 +698,49 @@ impl ModelView {
 				},
 				_ => None,
 			};
+			let mut decals: Vec<(i32, PartDecal)> = Vec::new();
+			for d in &record.decals {
+				let image = crate::export::parse_asset_id(&d.texture).and_then(|id| {
+					decal_images
+						.entry(id)
+						.or_insert_with(|| {
+							let path = images.get(&id)?;
+							let bytes = std::fs::read(path).ok()?;
+							texture::load(ctx, path, &bytes).ok()
+						})
+						.clone()
+				});
+				let Some(image) = image else {
+					decals_missing += 1;
+					continue;
+				};
+				let mut material = Material::default();
+				material.set(Slot::Base, image);
+				let tiles = d.studs_per_tile_u.map(|u| {
+					[
+						u,
+						d.studs_per_tile_v.unwrap_or(u),
+						d.offset_studs_u.unwrap_or(0.0),
+						d.offset_studs_v.unwrap_or(0.0),
+					]
+				});
+				decals.push((
+					d.z_index,
+					PartDecal {
+						face: face_index(&d.face),
+						tiles: if d.class_name == "Texture" {
+							tiles
+						} else {
+							None
+						},
+						colour: d.color,
+						transparency: d.transparency,
+						material,
+						gpu: None,
+					},
+				));
+			}
+			decals.sort_by_key(|(z, _)| *z);
 			parts.push(PartView {
 				index: i,
 				shape,
@@ -682,7 +754,13 @@ impl ModelView {
 				appearance: appearance(record),
 				skin,
 				gpu: None,
+				decals: decals.into_iter().map(|(_, d)| d).collect(),
 			});
+		}
+		if decals_missing > 0 {
+			warnings.push(format!(
+				"{decals_missing} decals are not drawn: their images are not downloaded yet."
+			));
 		}
 		let approximated: Vec<&str> = parts
 			.iter()
@@ -985,12 +1063,14 @@ impl ModelView {
 	pub fn scene_parts<'a>(&'a mut self, plain: Option<&'a Material>) -> Vec<ScenePart<'a>> {
 		self.update_pose();
 		let posed = &self.posed;
+		let rig = &self.rig;
 		let show_blocks = self.show_blocks;
 		self.parts
 			.iter_mut()
 			.filter(|p| p.visible)
-			.filter_map(|part| {
-				let world = posed.parts[part.index];
+			.flat_map(|part| {
+				let part_world = posed.parts[part.index];
+				let size = rig.parts[part.index].size;
 				let PartView {
 					shape,
 					skin,
@@ -1000,54 +1080,85 @@ impl ModelView {
 					offset,
 					colour,
 					surface,
+					decals,
 					..
 				} = part;
 				// SpecialMesh.Offset moves the mesh in the part's own space
-				let world = world.mul(&CFrame::from_position(*offset));
-				match shape {
+				let in_part = CFrame::from_position(*offset);
+				let world = part_world.mul(&in_part);
+				// what is drawn: geometry, groups, mesh to world, mesh to part,
+				// whether the vertices moved, and the material
+				let drawn: Option<(&Geometry, &[usize], _, _, bool, &Material)> = match shape {
 					PartShape::Mesh(asset) => {
 						let material = plain.unwrap_or(&asset.material);
 						Some(match skin {
-							Some(skin) => {
-								let moved = std::mem::take(&mut skin.moved);
-								ScenePart {
-									geometry: &skin.geometry,
-									groups: &asset.groups,
-									transform: viewport::IDENTITY,
-									material,
-									colour_groups: false,
-									colour: *colour,
-									scene: gpu,
-									moved,
-									surface: *surface,
-								}
-							}
-							None => ScenePart {
-								geometry: &asset.geometry,
-								groups: &asset.groups,
-								transform: placement(&world, *scale, *centre),
+							// skinned vertices are already in world space
+							Some(skin) => (
+								&skin.geometry,
+								asset.groups.as_slice(),
+								viewport::IDENTITY,
+								part_world.inverse().to_matrix([1.0; 3]),
+								std::mem::take(&mut skin.moved),
 								material,
-								colour_groups: false,
-								colour: *colour,
-								scene: gpu,
-								moved: false,
-								surface: *surface,
-							},
+							),
+							None => (
+								&asset.geometry,
+								asset.groups.as_slice(),
+								placement(&world, *scale, *centre),
+								placement(&in_part, *scale, *centre),
+								false,
+								material,
+							),
 						})
 					}
-					PartShape::Primitive(kind) if show_blocks => Some(ScenePart {
-						geometry: kind.geometry(),
-						groups: &[0],
-						transform: placement(&world, *scale, [0.0; 3]),
-						material: plain.unwrap_or_else(|| empty_material()),
+					PartShape::Primitive(kind) if show_blocks => Some((
+						kind.geometry(),
+						&[0][..],
+						placement(&world, *scale, [0.0; 3]),
+						placement(&in_part, *scale, [0.0; 3]),
+						false,
+						plain.unwrap_or_else(|| empty_material()),
+					)),
+					_ => None,
+				};
+				let Some((geometry, groups, transform, part_from_mesh, moved, material)) = drawn
+				else {
+					return Vec::new();
+				};
+				let mut drawn = vec![ScenePart {
+					geometry,
+					groups,
+					transform,
+					material,
+					colour_groups: false,
+					colour: *colour,
+					scene: gpu,
+					moved,
+					surface: *surface,
+					decal: None,
+				}];
+				for d in decals.iter_mut() {
+					drawn.push(ScenePart {
+						geometry,
+						groups,
+						transform,
+						material: &d.material,
 						colour_groups: false,
 						colour: *colour,
-						scene: gpu,
-						moved: false,
+						scene: &mut d.gpu,
+						moved,
 						surface: *surface,
-					}),
-					_ => None,
+						decal: Some(DecalDraw {
+							part_from_mesh,
+							size,
+							face: d.face,
+							tiles: d.tiles,
+							colour: d.colour,
+							transparency: d.transparency,
+						}),
+					});
 				}
+				drawn
 			})
 			.collect()
 	}
@@ -1233,7 +1344,7 @@ mod tests {
 		let ctx = egui::Context::default();
 		let mut frames = 0;
 		for (i, model) in export.models.iter().enumerate() {
-			let mut view = ModelView::load(&ctx, i, model, &HashMap::new());
+			let mut view = ModelView::load(&ctx, i, model, &HashMap::new(), &HashMap::new());
 			for c in 0..view.clips.len() {
 				if view.clips[c].clip.is_err() {
 					continue;

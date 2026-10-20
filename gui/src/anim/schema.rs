@@ -59,6 +59,31 @@ pub struct ModelPart {
 	/// 2026-10 on); absent without one.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub surface_appearance: Option<SurfaceAppearanceInfo>,
+	/// The part's Decals and Textures (exporters from 2026-10 on).
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub decals: Vec<DecalInfo>,
+}
+
+/// A Decal, or a Texture (a Decal that tiles), on one face of a part.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct DecalInfo {
+	/// "Decal" or "Texture".
+	pub class_name: String,
+	/// Content id of the image (or of a Decal asset, resolved on download).
+	pub texture: String,
+	/// `Enum.NormalId` name: "Front", "Back", "Left", "Right", "Top", "Bottom".
+	pub face: String,
+	/// `Color3`, each channel 0..1: tints the image.
+	pub color: [f32; 3],
+	pub transparency: f32,
+	#[serde(rename = "ZIndex")]
+	pub z_index: i32,
+	/// Textures only: the size of one tile, and how far the tiles are moved.
+	pub studs_per_tile_u: Option<f32>,
+	pub studs_per_tile_v: Option<f32>,
+	pub offset_studs_u: Option<f32>,
+	pub offset_studs_v: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

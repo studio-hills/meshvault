@@ -130,19 +130,6 @@ local function getMaps(inst)
         tex = nonempty(inst.TextureId)
     end
     tex = nonempty(maps.ColorMap) or tex
-    if not tex then
-        local owners = {inst}
-        if inst:IsA("SpecialMesh") and inst.Parent then table.insert(owners, inst.Parent) end
-        for _, owner in ipairs(owners) do
-            for _, ch in ipairs(owner:GetChildren()) do
-                if ch:IsA("Decal") or ch:IsA("Texture") then
-                    tex = nonempty(ch.Texture)
-                    if tex then break end
-                end
-            end
-            if tex then break end
-        end
-    end
     return tex or "", maps
 end
 local function meshIdOf(inst)
@@ -373,6 +360,22 @@ local function exportRig(model)
                     Offset = v3(sm.Offset),
                 }
             end
+            local decals = {}
+            for _, ch in ipairs(inst:GetChildren()) do
+                if ch:IsA("Decal") and nonempty(ch.Texture) then
+                    local tint = ch.Color3
+                    local decal = {
+                        ClassName = ch.ClassName, Texture = ch.Texture, Face = ch.Face.Name,
+                        Color = {tint.R, tint.G, tint.B}, Transparency = ch.Transparency, ZIndex = ch.ZIndex,
+                    }
+                    if ch:IsA("Texture") then
+                        decal.StudsPerTileU, decal.StudsPerTileV = ch.StudsPerTileU, ch.StudsPerTileV
+                        decal.OffsetStudsU, decal.OffsetStudsV = ch.OffsetStudsU, ch.OffsetStudsV
+                    end
+                    table.insert(decals, decal)
+                end
+            end
+            if #decals == 0 then decals = nil end
             local surfaceAppearance = nil
             local appearance = inst:FindFirstChildOfClass("SurfaceAppearance")
             if appearance then
@@ -403,6 +406,7 @@ local function exportRig(model)
                 Reflectance=inst.Reflectance,
                 SpecialMesh=specialMesh,
                 SurfaceAppearance=surfaceAppearance,
+                Decals=decals,
             })
         elseif inst:IsA("Motor6D") then
             table.insert(m.Joints, {

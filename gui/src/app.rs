@@ -517,6 +517,7 @@ impl App {
 	pub fn retry_failed(&mut self) {
 		if let Some(ws) = &mut self.workspace {
 			ws.retry(0..ws.items().len());
+			ws.retry_images();
 		}
 		self.start_downloads();
 	}
@@ -527,9 +528,10 @@ impl App {
 			.as_ref()
 			.map(|ws| {
 				let items = ws.items();
+				let (images_pending, images_failed) = ws.image_counts();
 				(
-					items.iter().filter(|i| i.has_pending()).count(),
-					items.iter().filter(|i| i.has_failure()).count(),
+					items.iter().filter(|i| i.has_pending()).count() + images_pending,
+					items.iter().filter(|i| i.has_failure()).count() + images_failed,
 				)
 			})
 			.unwrap_or((0, 0))
@@ -656,6 +658,15 @@ impl App {
 				(mesh_ref, source)
 			})
 			.collect();
+		// decal images that are downloaded
+		let images: HashMap<u64, PathBuf> = item
+			.images
+			.iter()
+			.filter_map(|(&id, state)| match state {
+				AssetState::Done { path } => Some((id, ws.root.join(path))),
+				_ => None,
+			})
+			.collect();
 		let file = ws.root.join(&item.file);
 		let name = item.name.clone();
 		let (tx, rx) = std::sync::mpsc::channel();
@@ -671,7 +682,7 @@ impl App {
 						.next()
 						.ok_or_else(|| format!("{} holds no model", file.display()))
 				})
-				.map(|model| ModelView::load(&ctx, index, &model, &sources));
+				.map(|model| ModelView::load(&ctx, index, &model, &sources, &images));
 			let _ = tx.send(result);
 			ctx.request_repaint();
 		});

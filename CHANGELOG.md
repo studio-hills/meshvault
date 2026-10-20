@@ -15,6 +15,7 @@
 
 - Meshvault binds clip poses as Roblox does, by name and parent name, so poses under another parent or at the top of a keyframe no longer move joints Roblox leaves still (the root bones of many pets and fish)
 - Meshvault's window is frameless, with its own title bar and caption buttons, and keeps rounded corners on Windows 11
+- Exports record each part's Decals and Textures, and Meshvault downloads their images and draws them on their faces as Studio does (no longer standing a mesh part's decal in for its texture)
 - Exports record each part's SurfaceAppearance tint and alpha mode, and Meshvault draws all four alpha modes as Studio does
 - Meshvault renders parts closer to Studio: partial transparency, Neon glow and reflectance; trusses as their lattice; SpecialMesh heads at Studio's size and rounded shape
 - Pose easing matches Studio: Elastic and Bounce are no longer reversed, Elastic and Bounce InOut use Roblox's curves, and Constant jumps where Roblox does

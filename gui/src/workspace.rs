@@ -25,6 +25,13 @@ pub const MANIFEST: &str = "workspace.json";
 pub const MODELS_DIR: &str = "Models";
 pub const RIGS_DIR: &str = "Rigs";
 pub const CACHE_DIR: &str = ".cache";
+/// Images models use directly (decals), one file per asset.
+pub const IMAGES_DIR: &str = "Images";
+
+/// Where an image a model uses is stored, without its extension.
+pub fn image_stem(asset_id: u64) -> String {
+	format!("{IMAGES_DIR}/{asset_id}")
+}
 /// 3 added animated models.
 const MANIFEST_VERSION: u32 = 3;
 
@@ -84,6 +91,8 @@ impl Item {
 		let state = match kind {
 			AssetKind::Mesh => &self.mesh,
 			AssetKind::Map(k) => &self.maps.get(&k)?.state,
+			// images belong to models, not items
+			AssetKind::Image => return None,
 		};
 		match state {
 			AssetState::Done { path } => Some(path.as_str()),
@@ -107,6 +116,10 @@ pub struct ModelItem {
 	pub parts: usize,
 	pub clips: usize,
 	pub playable_clips: usize,
+	/// Images the model's parts use directly (decals), by asset id, stored
+	/// once each under `Images/`.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub images: BTreeMap<u64, AssetState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -132,15 +145,17 @@ pub struct Workspace {
 pub enum AssetKind {
 	Mesh,
 	Map(MapKind),
+	/// An image a model uses directly (a decal); its stem is [`image_stem`].
+	Image,
 }
 
 impl AssetKind {
 	pub fn is_image(self) -> bool {
-		matches!(self, AssetKind::Map(_))
+		matches!(self, AssetKind::Map(_) | AssetKind::Image)
 	}
 	pub fn file_suffix(self) -> &'static str {
 		match self {
-			AssetKind::Mesh => "",
+			AssetKind::Mesh | AssetKind::Image => "",
 			AssetKind::Map(k) => k.file_suffix(),
 		}
 	}
@@ -460,6 +475,20 @@ impl Workspace {
 			),
 		};
 		write_rig(&self.root.join(&file), model, meshes)?;
+		// decal images: kept as they were when re-imported, otherwise to download
+		let previous = existing
+			.map(|i| self.manifest.models[i].images.clone())
+			.unwrap_or_default();
+		let images = model
+			.parts
+			.iter()
+			.flat_map(|p| &p.decals)
+			.filter_map(|d| export::parse_asset_id(&d.texture))
+			.map(|id| {
+				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);
+				(id, state)
+			})
+			.collect();
 		let item = ModelItem {
 			name: model.name.clone(),
 			path: model.path.clone(),
@@ -476,6 +505,7 @@ impl Workspace {
 				.iter()
 				.filter(|a| a.status.is_playable())
 				.count(),
+			images,
 		};
 		self.dirty = true;
 		self.generation += 1;
@@ -532,12 +562,36 @@ impl Workspace {
 				}
 			}
 		}
+		let mut images: Vec<u64> = self
+			.manifest
+			.models
+			.iter()
+			.flat_map(|m| &m.images)
+			.filter(|(_, state)| **state == AssetState::Pending)
+			.map(|(&id, _)| id)
+			.collect();
+		images.sort_unstable();
+		images.dedup();
+		for id in images {
+			push(id, &image_stem(id), AssetKind::Image);
+		}
 		jobs
 	}
 
 	/// Updates an item's download state. Items removed while their
 	/// download was running are ignored.
 	pub fn set_state(&mut self, stem: &str, kind: AssetKind, state: AssetState) {
+		if kind == AssetKind::Image {
+			// every model using the image
+			let id = stem.rsplit('/').next().and_then(|s| s.parse::<u64>().ok());
+			for model in &mut self.manifest.models {
+				if let Some(slot) = id.and_then(|id| model.images.get_mut(&id)) {
+					*slot = state.clone();
+					self.dirty = true;
+				}
+			}
+			return;
+		}
 		let Some(item) = self.manifest.items.iter_mut().find(|i| i.stem == stem) else {
 			return;
 		};
@@ -547,8 +601,39 @@ impl Workspace {
 				Some(map) => map.state = state,
 				None => return,
 			},
+			AssetKind::Image => return,
 		}
 		self.dirty = true;
+	}
+
+	/// Marks every failed decal image as pending so it is retried.
+	pub fn retry_images(&mut self) {
+		for model in &mut self.manifest.models {
+			for state in model.images.values_mut() {
+				if matches!(state, AssetState::Failed { .. }) {
+					*state = AssetState::Pending;
+					self.dirty = true;
+				}
+			}
+		}
+	}
+
+	/// (pending, failed) decal images, each asset counted once.
+	pub fn image_counts(&self) -> (usize, usize) {
+		let mut states: BTreeMap<u64, &AssetState> = BTreeMap::new();
+		for (id, state) in self.manifest.models.iter().flat_map(|m| &m.images) {
+			states.insert(*id, state);
+		}
+		(
+			states
+				.values()
+				.filter(|s| ***s == AssetState::Pending)
+				.count(),
+			states
+				.values()
+				.filter(|s| matches!(***s, AssetState::Failed { .. }))
+				.count(),
+		)
 	}
 
 	/// Marks failed downloads as pending so they are retried.
@@ -743,6 +828,61 @@ mod tests {
 		ws.remove_models(&[0]);
 		assert!(ws.models().is_empty());
 		assert!(!dir.join("Rigs/Workspace/Animals/Wolf.rig.json").exists());
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
+
+	/// Decal images are downloaded once per asset into `Images/`, for every
+	/// model using them, and kept when the model is imported again.
+	#[test]
+	fn decal_images_are_downloaded_for_models() {
+		use crate::anim::schema::{DecalInfo, ModelPart};
+		let dir = temp_dir("decals");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let decal = |texture: &str| DecalInfo {
+			class_name: "Decal".into(),
+			texture: texture.into(),
+			face: "Front".into(),
+			..Default::default()
+		};
+		let model = |name: &str| AnimatedModel {
+			name: name.into(),
+			path: format!("Workspace/{name}"),
+			parts: vec![ModelPart {
+				name: "Sign".into(),
+				decals: vec![decal("rbxassetid://77"), decal("rbxassetid://88")],
+				..Default::default()
+			}],
+			..Default::default()
+		};
+		ws.add_model(&model("A"), &[]).unwrap();
+		ws.add_model(&model("B"), &[]).unwrap();
+		// one job per image, for both models
+		let jobs = ws.pending_jobs();
+		assert_eq!(jobs.len(), 2);
+		assert!(jobs.iter().all(|j| j.wants_image()));
+		assert_eq!(
+			jobs[0].targets,
+			[("Images/77".to_string(), AssetKind::Image)]
+		);
+		assert_eq!(ws.image_counts(), (2, 0));
+		let done = AssetState::Done {
+			path: "Images/77.png".into(),
+		};
+		ws.set_state("Images/77", AssetKind::Image, done.clone());
+		ws.set_state(
+			"Images/88",
+			AssetKind::Image,
+			AssetState::Failed {
+				error: "gone".into(),
+			},
+		);
+		assert!(ws.models().iter().all(|m| m.images[&77] == done));
+		assert_eq!(ws.image_counts(), (0, 1));
+		ws.retry_images();
+		assert_eq!(ws.image_counts(), (1, 0));
+		// importing again keeps what was downloaded
+		ws.add_model(&model("A"), &[]).unwrap();
+		assert_eq!(ws.models()[0].images[&77], done);
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 

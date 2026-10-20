@@ -25,6 +25,16 @@ struct Uniforms {
 	// SurfaceAppearance: rgb tints the colour map; w is the alpha mode
 	// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque)
 	tint: vec4<f32>,
+	// decal draws: mesh to part space
+	part_from_mesh: mat4x4<f32>,
+	// x: 0 no decal, 1 Decal, 2 Texture; y: face (Enum.NormalId); z: transparency
+	decal: vec4<f32>,
+	// xyz: the part's size in studs
+	decal_size: vec4<f32>,
+	// Textures: studs per tile U, V and offset studs U, V
+	decal_tile: vec4<f32>,
+	// rgb: linear tint (Color3)
+	decal_colour: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -49,6 +59,9 @@ struct VsOut {
 	@location(2) uv: vec2<f32>,
 	@location(3) bary: vec3<f32>,
 	@location(4) color: vec3<f32>,
+	// the position and normal in the part's own space, for decals
+	@location(5) local: vec3<f32>,
+	@location(6) local_normal: vec3<f32>,
 };
 
 @vertex
@@ -62,10 +75,28 @@ fn vs_main(v: VsIn) -> VsOut {
 	out.uv = v.uv;
 	out.bary = v.bary;
 	out.color = v.color;
+	out.local = (u.part_from_mesh * vec4<f32>(v.pos, 1.0)).xyz;
+	out.local_normal = (u.part_from_mesh * vec4<f32>(v.normal, 0.0)).xyz;
 	return out;
 }
 
+// A face's image axes in part space (measured in Studio): right, down, and
+// the face's outward normal, for Enum.NormalId Right, Top, Back, Left,
+// Bottom, Front. Seen from outside, side faces read upright with +Y up.
+fn decal_axes(face: i32) -> mat3x3<f32> {
+	switch face {
+		case 0: { return mat3x3<f32>(vec3(0.0, 0.0, -1.0), vec3(0.0, -1.0, 0.0), vec3(1.0, 0.0, 0.0)); }
+		case 1: { return mat3x3<f32>(vec3(-1.0, 0.0, 0.0), vec3(0.0, 0.0, -1.0), vec3(0.0, 1.0, 0.0)); }
+		case 2: { return mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0)); }
+		case 3: { return mat3x3<f32>(vec3(0.0, 0.0, 1.0), vec3(0.0, -1.0, 0.0), vec3(-1.0, 0.0, 0.0)); }
+		case 4: { return mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, -1.0), vec3(0.0, -1.0, 0.0)); }
+		default: { return mat3x3<f32>(vec3(-1.0, 0.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, -1.0)); }
+	}
+}
+
 const PI: f32 = 3.14159265;
+// cosine of the steepest angle a surface may turn from a decal and still take it
+const DECAL_FACING: f32 = 0.55;
 
 // Cook-Torrance GGX specular + Lambert diffuse for one directional light.
 fn shade_light(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>,
@@ -94,8 +125,20 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+	// where a decal's image lands: measured from the face's top-left corner
+	let axes = decal_axes(i32(u.decal.y));
+	let size = u.decal_size.xyz;
+	let face_size = vec2<f32>(abs(dot(size, axes[0])), abs(dot(size, axes[1])));
+	let from_corner = vec2<f32>(dot(in.local, axes[0]), dot(in.local, axes[1])) + face_size * 0.5;
+	var decal_uv = from_corner / max(face_size, vec2<f32>(1e-6));
+	if (u.decal.x > 1.5) {
+		// a Texture tiles from the corner, moved by its offset
+		decal_uv = (from_corner + u.decal_tile.zw) / max(u.decal_tile.xy, vec2<f32>(1e-6));
+	}
+
 	// Sample and take derivatives first: both need uniform control flow.
 	let base_s = textureSample(base_tex, samp, in.uv);
+	let decal_s = textureSample(base_tex, samp, decal_uv);
 	let normal_s = textureSample(normal_tex, samp, in.uv).xyz;
 	let rough_s = textureSample(rough_tex, samp, in.uv).r;
 	let metal_s = textureSample(metal_tex, samp, in.uv).r;
@@ -107,6 +150,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	let duv1 = dpdx(in.uv);
 	let duv2 = -dpdy(in.uv);
 	let bary_width = fwidth(in.bary);
+	// the surface's own normal in part space, for geometry without normals;
+	// it faces the camera, like the face normal below
+	let local_face = cross(dpdx(in.local), -dpdy(in.local));
 
 	var n: vec3<f32>;
 	if (dot(in.normal, in.normal) < 1e-8) {
@@ -123,6 +169,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	// the colour map, by its SurfaceAppearance alpha mode (as measured in Studio)
 	var albedo = in.color;
 	var cut = false;
+	var alpha = u.surface.x;
 	if (u.flags.x != 0u) {
 		let tinted = base_s.rgb * u.tint.rgb;
 		let mode = u.tint.w;
@@ -139,6 +186,18 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 		} else {
 			albedo = tinted;
 		}
+	}
+
+	if (u.decal.x > 0.5) {
+		// a decal: its image over the part's own face only
+		albedo = decal_s.rgb * u.decal_colour.rgb;
+		alpha = decal_s.a * (1.0 - u.decal.z);
+		let outside = any(decal_uv < vec2<f32>(0.0)) || any(decal_uv > vec2<f32>(1.0));
+		// Roblox decides per triangle (its own normal, not the smoothed one), and
+		// leaves surfaces turned more than about CUTOFF away from the decal bare
+		let facing = dot(local_face, local_face) > 1e-12
+			&& dot(normalize(local_face), axes[2]) > DECAL_FACING;
+		cut = !facing || (u.decal.x < 1.5 && outside);
 	}
 
 	if (u.flags.y != 0u) {
@@ -203,5 +262,5 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	if (u.params.y > 0.5) {
 		color = pow(color, vec3<f32>(1.0 / 2.2));
 	}
-	return vec4<f32>(color, u.surface.x);
+	return vec4<f32>(color, alpha);
 }

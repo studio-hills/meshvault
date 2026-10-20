@@ -332,12 +332,15 @@ fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 		if widgets::icon_toggle(ui, icons::REPEAT, "Loop", model.looping).clicked() {
 			model.looping = !model.looping;
 		}
+		// room between the controls and the seeker with its time
+		ui.add_space(12.0);
 		ui.label(
 			RichText::new(time_text)
 				.size(12.0)
 				.color(p.text_weak)
 				.family(semibold()),
 		);
+		ui.add_space(4.0);
 		// the scrubber takes the remaining width
 		ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
 			let width = ui.available_width().max(60.0);

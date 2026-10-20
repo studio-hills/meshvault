@@ -22,6 +22,9 @@ struct Uniforms {
 	// x: opacity (1 - Transparency), y: 1 for Neon, z: Reflectance,
 	// w: 1 for metal materials, whose reflections take the part's colour
 	surface: vec4<f32>,
+	// SurfaceAppearance: rgb tints the colour map; w is the alpha mode
+	// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque)
+	tint: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -117,10 +120,25 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 		}
 	}
 
-	// SurfaceAppearance "Overlay": the colour map's alpha blends over the part colour
+	// the colour map, by its SurfaceAppearance alpha mode (as measured in Studio)
 	var albedo = in.color;
+	var cut = false;
 	if (u.flags.x != 0u) {
-		albedo = mix(in.color, base_s.rgb, base_s.a);
+		let tinted = base_s.rgb * u.tint.rgb;
+		let mode = u.tint.w;
+		if (mode < 0.5) {
+			// Overlay: the map over the part colour by its alpha
+			albedo = mix(in.color, tinted, base_s.a);
+		} else if (mode < 1.5) {
+			// Transparency: cut away below half alpha
+			albedo = tinted;
+			cut = base_s.a < 0.5;
+		} else if (mode < 2.5) {
+			// TintMask: alpha says where the tint applies
+			albedo = base_s.rgb * mix(vec3<f32>(1.0), u.tint.rgb, base_s.a);
+		} else {
+			albedo = tinted;
+		}
 	}
 
 	if (u.flags.y != 0u) {
@@ -164,6 +182,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	// Neon glows in its own colour whatever the light, untouched by tone mapping
 	if (u.surface.y > 0.5) {
 		color = min(albedo * 1.25, vec3<f32>(1.0));
+	}
+
+	if (cut) {
+		discard;
 	}
 
 	// wireframe from barycentric coordinates, about one pixel wide

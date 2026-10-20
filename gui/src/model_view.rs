@@ -22,7 +22,7 @@ use crate::geometry::{self, Geometry, GroupKind, Primitive, Skin};
 use crate::gpu::GpuScene;
 use crate::maps::Slot;
 use crate::texture::{self, Material};
-use crate::viewport::{self, Camera, ScenePart, Surface};
+use crate::viewport::{self, AlphaMode, Camera, ScenePart, Surface};
 
 /// The files of one mesh a model uses, found in the workspace.
 pub struct MeshSource {
@@ -197,6 +197,14 @@ fn surface_of(part: &ModelPart) -> Surface {
 			part.material.as_deref(),
 			Some("Metal" | "DiamondPlate" | "CorrodedMetal" | "Foil")
 		),
+		tint: part
+			.surface_appearance
+			.as_ref()
+			.map_or([1.0; 3], |s| s.color),
+		alpha_mode: part
+			.surface_appearance
+			.as_ref()
+			.map_or(AlphaMode::Overlay, |s| AlphaMode::from_name(&s.alpha_mode)),
 	}
 }
 

@@ -153,6 +153,9 @@ pub struct Surface {
 	pub reflectance: f32,
 	/// A metal material: reflections take the part's colour.
 	pub metal: bool,
+	/// `SurfaceAppearance.Color`, which tints the colour map (sRGB 0..1).
+	pub tint: [f32; 3],
+	pub alpha_mode: AlphaMode,
 }
 
 impl Surface {
@@ -161,7 +164,34 @@ impl Surface {
 		neon: false,
 		reflectance: 0.0,
 		metal: false,
+		tint: [1.0; 3],
+		alpha_mode: AlphaMode::Overlay,
 	};
+}
+
+/// What a colour map's alpha means (`SurfaceAppearance.AlphaMode`), as
+/// measured in Studio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlphaMode {
+	/// The map is laid over the part's colour by its alpha.
+	Overlay,
+	/// Alpha below one half cuts the surface away; the rest is opaque.
+	Transparency,
+	/// Alpha says where the tint applies; the part's colour is not used.
+	TintMask,
+	/// Alpha is ignored.
+	Opaque,
+}
+
+impl AlphaMode {
+	pub fn from_name(name: &str) -> AlphaMode {
+		match name {
+			"Transparency" => AlphaMode::Transparency,
+			"TintMask" => AlphaMode::TintMask,
+			"Opaque" => AlphaMode::Opaque,
+			_ => AlphaMode::Overlay,
+		}
+	}
 }
 
 const BASE: Color32 = Color32::from_rgb(170, 185, 205);
@@ -170,6 +200,14 @@ const BASE: Color32 = Color32::from_rgb(170, 185, 205);
 pub const PART_COLOUR: Color32 = Color32::from_rgb(163, 162, 165);
 const WIRE: Color32 = Color32::from_rgba_premultiplied(20, 24, 30, 200);
 const WIRE_ONLY: Color32 = Color32::from_rgb(140, 200, 255);
+
+fn srgb_channel_to_linear(c: f32) -> f32 {
+	if c <= 0.04045 {
+		c / 12.92
+	} else {
+		((c + 0.055) / 1.055).powf(2.4)
+	}
+}
 
 fn group_colour(i: usize) -> Color32 {
 	// golden-ratio hue walk gives well separated colours for neighbouring hulls
@@ -452,6 +490,7 @@ fn draw_gpu(
 		params: [wire_mode, 0.0, 0.6, 0.0],
 		flags: [0; 4],
 		surface: [1.0, 0.0, 0.0, 0.0],
+		tint: [1.0, 1.0, 1.0, 0.0],
 	};
 	// see-through parts are drawn after the rest, the farthest first
 	let distance = |part: &ScenePart| {
@@ -472,6 +511,10 @@ fn draw_gpu(
 				s.reflectance,
 				s.metal as u8 as f32,
 			],
+			tint: {
+				let linear = s.tint.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)));
+				[linear[0], linear[1], linear[2], s.alpha_mode as u8 as f32]
+			},
 			..uniforms
 		};
 		Some((scene, part.groups, uniforms))

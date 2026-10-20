@@ -55,6 +55,19 @@ pub struct ModelPart {
 	/// Absent when the part has no SpecialMesh (schema 2).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub special_mesh: Option<SpecialMeshInfo>,
+	/// The part's SurfaceAppearance settings beyond its maps (exporters from
+	/// 2026-10 on); absent without one.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub surface_appearance: Option<SurfaceAppearanceInfo>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct SurfaceAppearanceInfo {
+	/// `SurfaceAppearance.Color`, each channel 0..1: tints the colour map.
+	pub color: [f32; 3],
+	/// `Enum.AlphaMode` name: "Overlay", "Transparency", "TintMask" or "Opaque".
+	pub alpha_mode: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

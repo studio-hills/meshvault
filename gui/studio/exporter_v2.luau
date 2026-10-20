@@ -373,6 +373,15 @@ local function exportRig(model)
                     Offset = v3(sm.Offset),
                 }
             end
+            local surfaceAppearance = nil
+            local appearance = inst:FindFirstChildOfClass("SurfaceAppearance")
+            if appearance then
+                local tint = appearance.Color
+                surfaceAppearance = {
+                    Color = {tint.R, tint.G, tint.B},
+                    AlphaMode = appearance.AlphaMode.Name,
+                }
+            end
             local shape = ""
             if inst:IsA("Part") then
                 shape = inst.Shape.Name
@@ -393,6 +402,7 @@ local function exportRig(model)
                 Transparency=inst.Transparency,
                 Reflectance=inst.Reflectance,
                 SpecialMesh=specialMesh,
+                SurfaceAppearance=surfaceAppearance,
             })
         elseif inst:IsA("Motor6D") then
             table.insert(m.Joints, {

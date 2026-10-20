@@ -42,6 +42,9 @@ pub struct Uniforms {
 	/// How a Roblox part's surface looks: opacity (1 − Transparency),
 	/// 1 for Neon, Reflectance, 1 for metal materials.
 	pub surface: [f32; 4],
+	/// SurfaceAppearance: linear tint of the colour map, and the alpha mode
+	/// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque).
+	pub tint: [f32; 4],
 }
 
 pub struct GpuRenderer {

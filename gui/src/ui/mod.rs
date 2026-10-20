@@ -6,6 +6,7 @@ pub mod icons;
 mod inspector;
 mod layout;
 mod model;
+mod switch;
 pub mod theme;
 mod toasts;
 pub mod tree;

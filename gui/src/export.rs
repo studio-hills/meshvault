@@ -65,8 +65,6 @@ pub struct Entry {
 }
 
 pub struct Export {
-	/// `SchemaVersion`, or 0 for the original array layout.
-	pub version: u32,
 	pub entries: Vec<Entry>,
 	/// Animated models (schema 1).
 	pub models: Vec<AnimatedModel>,
@@ -137,7 +135,7 @@ pub fn parse(text: &str) -> Result<Export, String> {
 	if json.starts_with('[') {
 		let raw: Vec<RawEntry> =
 			serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
-		return Ok(convert(0, raw, Vec::new()));
+		return Ok(convert(raw, Vec::new()));
 	}
 	let header: Header =
 		serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
@@ -154,10 +152,10 @@ pub fn parse(text: &str) -> Result<Export, String> {
 	}
 	let doc: DocumentV1 = serde_json::from_str(json)
 		.map_err(|e| format!("Not a valid schema {version} export: {e}"))?;
-	Ok(convert(SCHEMA_VERSION, doc.meshes, doc.models))
+	Ok(convert(doc.meshes, doc.models))
 }
 
-fn convert(version: u32, raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
+fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
 	let mut entries = Vec::with_capacity(raw.len());
 	let mut skipped = Vec::new();
 	let mut warnings = Vec::new();
@@ -203,7 +201,6 @@ fn convert(version: u32, raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Expo
 		});
 	}
 	Export {
-		version,
 		entries,
 		models,
 		skipped,
@@ -417,7 +414,7 @@ mod tests {
 				"Animations":[{"Name":"Idle","AnimationId":"rbxassetid://5","Status":"Unavailable",
 					"Duration":0,"Loop":false,"Priority":"","Keyframes":[],"Curves":[]}]}]}"#;
 		let export = parse(json).unwrap();
-		assert_eq!(export.version, 1);
+		assert_eq!(export.models.len(), 1);
 		assert_eq!(export.entries.len(), 1);
 		assert_eq!(export.entries[0].source_id, Some(1));
 		assert_eq!(
@@ -444,7 +441,7 @@ mod tests {
 	#[test]
 	fn joins_studio_chunks() {
 		let text = "=== JSON CHUNK 1/2 ===\r\n{\"SchemaVersion\":1,\"Mes\r\n=== JSON CHUNK 2/2 ===\nhes\":[],\"Models\":[]}\n";
-		assert_eq!(parse(text).unwrap().version, 1);
+		assert!(parse(text).unwrap().models.is_empty());
 	}
 
 	/// The v2 export: every key present, empty strings for missing maps.

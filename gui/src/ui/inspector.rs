@@ -16,6 +16,8 @@ impl App {
 			return;
 		}
 		let p = palette(ui.ctx());
+		let counterparts = self.counterparts();
+		let mut switch = None;
 		let mut pick = None;
 		let mut remove_map = None;
 		egui::ScrollArea::vertical()
@@ -28,12 +30,15 @@ impl App {
 				ui.add(
 					egui::Label::new(RichText::new(doc.name()).size(16.0).family(display())).wrap(),
 				);
-				ui.horizontal_wrapped(|ui| {
-					widgets::badge(ui, &doc.loaded.format, p.accent);
-					if self.open_stem.is_some() {
-						widgets::badge(ui, "Workspace", p.text_weak);
-					}
-				});
+				let mut subtitle = doc.loaded.format.clone();
+				if self.open_stem.is_some() {
+					subtitle.push_str(" · in workspace");
+				}
+				ui.label(RichText::new(subtitle).size(12.0).color(p.text_weak));
+				ui.add_space(6.0);
+				if let Some(s) = super::switch::view_switch(ui, false, &counterparts) {
+					switch = Some(s);
+				}
 				ui.add_space(6.0);
 				widgets::card(ui, |ui| {
 					ui.columns(3, |cols| {
@@ -173,6 +178,9 @@ impl App {
 					widgets::properties(ui, "inspector_properties_grid", &rows);
 				});
 			});
+		if let Some(s) = switch {
+			self.apply_switch(s);
+		}
 		if let Some(slot) = pick {
 			self.pick_map(slot);
 		}

@@ -126,7 +126,8 @@ impl App {
 				let has_doc = self.doc.is_some() || self.model.is_some();
 				let inspector = ui
 					.add_enabled_ui(has_doc, |ui| {
-						widgets::icon_toggle(
+						// the icon draws its panel on the left; the inspector is on the right
+						widgets::icon_toggle_flipped(
 							ui,
 							icons::SIDEBAR_SIMPLE,
 							"Inspector  (Ctrl+Shift+B)",

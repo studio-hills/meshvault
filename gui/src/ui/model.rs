@@ -90,6 +90,8 @@ impl App {
 
 	pub(super) fn model_inspector(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
+		let counterparts = self.counterparts();
+		let mut switch = None;
 		let Some(model) = &mut self.model else { return };
 		egui::ScrollArea::vertical()
 			.auto_shrink([false, false])
@@ -98,14 +100,16 @@ impl App {
 					egui::Label::new(RichText::new(&model.name).size(16.0).family(display()))
 						.wrap(),
 				);
-				ui.horizontal_wrapped(|ui| {
-					widgets::badge(ui, "Animated model", p.accent);
-					widgets::badge(ui, "Workspace", p.text_weak);
-				});
 				ui.add(
-					egui::Label::new(RichText::new(&model.path).size(11.5).color(p.text_weak))
-						.wrap(),
+					egui::Label::new(
+						RichText::new(format!("Animated model · {}", model.path))
+							.size(12.0)
+							.color(p.text_weak),
+					)
+					.wrap(),
 				);
+				ui.add_space(6.0);
+				switch = super::switch::view_switch(ui, true, &counterparts);
 				ui.add_space(6.0);
 				widgets::card(ui, |ui| {
 					ui.columns(3, |cols| {
@@ -231,6 +235,9 @@ impl App {
 					part_list(ui, &p, model)
 				});
 			});
+		if let Some(s) = switch {
+			self.apply_switch(s);
+		}
 	}
 }
 

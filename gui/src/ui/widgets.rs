@@ -37,15 +37,28 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
 
 /// An icon button that shows an "on" state with the accent colour.
 pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
-	icon_widget(ui, icon, tooltip, on, false)
+	icon_widget(ui, icon, tooltip, on, false, false)
+}
+
+/// [`icon_toggle`] with the icon turned half a turn, e.g. to point a
+/// left-sidebar icon at a panel on the right.
+pub fn icon_toggle_flipped(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
+	icon_widget(ui, icon, tooltip, on, false, true)
 }
 
 /// An icon button for a destructive action: it turns red on hover.
 pub fn danger_icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
-	icon_widget(ui, icon, tooltip, false, true)
+	icon_widget(ui, icon, tooltip, false, true, false)
 }
 
-fn icon_widget(ui: &mut Ui, icon: &str, tooltip: &str, on: bool, danger: bool) -> Response {
+fn icon_widget(
+	ui: &mut Ui,
+	icon: &str,
+	tooltip: &str,
+	on: bool,
+	danger: bool,
+	flipped: bool,
+) -> Response {
 	let p = palette(ui.ctx());
 	let size = Vec2::splat(ui.spacing().interact_size.y);
 	let (rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -74,13 +87,17 @@ fn icon_widget(ui: &mut Ui, icon: &str, tooltip: &str, on: bool, danger: bool) -
 	};
 	ui.painter()
 		.rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
-	ui.painter().text(
-		rect.center(),
-		Align2::CENTER_CENTER,
-		icon,
+	let galley = ui.painter().layout_no_wrap(
+		icon.to_string(),
 		FontId::proportional((size.y * 0.45).round()),
 		colour,
 	);
+	let pos = rect.center() - galley.size() / 2.0;
+	let mut shape = egui::epaint::TextShape::new(pos, galley, colour);
+	if flipped {
+		shape = shape.with_angle_and_anchor(std::f32::consts::PI, Align2::CENTER_CENTER);
+	}
+	ui.painter().add(shape);
 	response.on_hover_text(tooltip)
 }
 

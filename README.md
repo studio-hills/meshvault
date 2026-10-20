@@ -155,6 +155,17 @@ It exports what is selected in Studio: a model, or anything inside one (a part, 
 
 The exporter reports each step in the Output window, every line starting with `[Meshvault]`: what it exports (and which model a selection stands for), each model with its parts, joints, bones and clips, the totals, and the sending. Problems are warnings that say what to do: clips that could not be loaded, models or meshes it had to skip, Meshvault not running, a play test in progress. One bad instance skips only itself. An unexpected error prints its stack trace with the exporter's schema and Meshvault's version for reporting, and the run ends with a count of warnings.
 
+The function also returns those problems, as a list that is empty when all went well, so a script can act on them:
+
+```lua
+local issues = loadstring(s)()()
+for _, issue in issues do
+	print(issue.Kind, issue.Message, issue.Path or issue.AnimationId)
+end
+```
+
+`Kind` is one of `PlayMode`, `AnimationUnavailable`, `CurveAnimationFailed`, `MeshSkipped`, `ModelSkipped` (with the instance's `Path`), `NothingToExport`, `SendFailed`, `HttpEnabledNotRestored` or `Error` (an unexpected error, with its stack trace in `Message`). The animation kinds carry the `AnimationId`.
+
 Everything travels over `http://localhost:34875`: `GET /export.luau` serves the exporter, and `POST /export` takes the export in 2 MB pieces. The line turns `HttpService.HttpEnabled` on only while it talks to Meshvault and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers on exports, which a web page cannot send. Only one program can use the port: if it is taken (usually by another Meshvault), Meshvault warns at startup, the status bar reads "Studio link unavailable", and exporting from Studio is off until the port is free and Meshvault restarts. The exporters live in `gui/studio/` and are built into the app.
 
 ### Animated models

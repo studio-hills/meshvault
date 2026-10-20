@@ -430,6 +430,8 @@ mod tests {
 		for v in SCHEMAS {
 			let source = exporter(v).unwrap();
 			assert!(source.contains("return function(options)"));
+			// the problems are returned to the caller, an empty list when none
+			assert!(source.contains("return issues"));
 			assert!(source.contains(&format!("SchemaVersion={v}")));
 			assert!(source.trim_end().ends_with("end"));
 		}

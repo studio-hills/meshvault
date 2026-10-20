@@ -10,19 +10,25 @@
 --             (default: { Workspace } when exporting the whole game, otherwise nothing)
 --
 -- Every line it writes to the Output window starts with [Meshvault]; problems are warnings.
+-- It returns the problems as a list (empty when there were none), e.g.
+--   local issues = loadstring(source)()()
+--   for _, i in issues do print(i.Kind, i.Message) end
 
 local SCHEMA = 2
 local MESHVAULT_VERSION = "__MESHVAULT_VERSION__"
 local TAG = "[Meshvault]"
 local MAX_MODEL_LINES = 25
 
--- what went wrong along the way, for the summary at the end
+-- What went wrong along the way: each is warned as it happens, and the function returns
+-- them all, as { Kind = "...", Message = "...", Path = "..."?, AnimationId = "..."? }.
 local issues = {}
 local function log(text)
     print(TAG .. " " .. text)
 end
-local function issue(text)
-    table.insert(issues, text)
+local function issue(kind, text, details)
+    local entry = { Kind = kind, Message = text }
+    for k, v in pairs(details or {}) do entry[k] = v end
+    table.insert(issues, entry)
     warn(TAG .. " " .. text)
 end
 
@@ -55,7 +61,7 @@ end
 local excludedRoots = options.exclude
     or ((options.roots or useSelection) and {} or { game:GetService("Workspace") })
 if game:GetService("RunService"):IsRunning() then
-    issue("the game is running (Play mode): joints are exported in their current animated pose, "
+    issue("PlayMode", "the game is running (Play mode): joints are exported in their current animated pose, "
         .. "and Meshvault cannot be reached from a running game. Stop the test and run the line in Edit mode")
 end
 if options.roots or useSelection then
@@ -281,7 +287,7 @@ local function getClip(animationId)
         return AnimationClipProvider:GetAnimationClipAsync(animationId)
     end)
     if not ok or not clip then
-        issue("could not load the animation " .. animationId .. ": " .. tostring(clip))
+        issue("AnimationUnavailable", "could not load the animation " .. animationId .. ": " .. tostring(clip), { AnimationId = animationId })
         return item
     end
     if clip:IsA("KeyframeSequence") then
@@ -311,7 +317,7 @@ local function getClip(animationId)
             item.Duration = duration
         else
             item.Status = "CurveAnimationExportFailed"
-            issue("could not read the CurveAnimation " .. animationId .. ": " .. tostring(exportedCurves))
+            issue("CurveAnimationFailed", "could not read the CurveAnimation " .. animationId .. ": " .. tostring(exportedCurves), { AnimationId = animationId })
         end
     else
         item.Status = "UnsupportedClipType"
@@ -395,7 +401,8 @@ local modelLines = 0
 local function addModel(model)
     local ok, m = pcall(exportRig, model)
     if not ok then
-        issue(("skipped the model %s: %s"):format(model:GetFullName(), tostring(m)))
+        issue("ModelSkipped", ("skipped the model %s: %s"):format(model:GetFullName(), tostring(m)),
+            { Path = model:GetFullName() })
         return
     end
     table.insert(models, m)
@@ -434,7 +441,8 @@ for _, root in ipairs(roots) do
                 -- one odd instance should not stop the whole export
                 local ok, err = pcall(getOrAddMesh, inst)
                 if not ok then
-                    issue(("skipped the mesh of %s: %s"):format(inst:GetFullName(), tostring(err)))
+                    issue("MeshSkipped", ("skipped the mesh of %s: %s"):format(inst:GetFullName(), tostring(err)),
+                        { Path = inst:GetFullName() })
                 end
             end
             if inst:IsA("Animation") then
@@ -466,7 +474,7 @@ log(("found %s, %s and %s%s in %.1fs"):format(
     count(#models, "model"), count(#meshes, "mesh", "meshes"), count(clipsOk, "clip"), clipsFailed > 0 and (" (" .. clipsFailed .. " could not be read)") or "",
     os.clock() - started))
 if #meshes == 0 and #models == 0 then
-    issue("nothing to export: no meshes or animated models in "
+    issue("NothingToExport", "nothing to export: no meshes or animated models in "
         .. ((options.roots or useSelection) and "what was picked" or "the game outside Workspace")
         .. ". Select a model (or anything inside one) in the Explorer and run the line again")
     return
@@ -539,7 +547,7 @@ local function sendToMeshvault(text)
     end)
     local restored = pcall(function() HttpService.HttpEnabled = wasEnabled end)
     if not restored then
-        issue("could not switch HttpService.HttpEnabled back to " .. tostring(wasEnabled)
+        issue("HttpEnabledNotRestored", "could not switch HttpService.HttpEnabled back to " .. tostring(wasEnabled)
             .. "; check it in Game Settings > Security")
     end
     return ok, ok and reply or err
@@ -550,7 +558,7 @@ if sent then
     log(("done in %.1fs. Meshvault received the export: %s. Finish the import in Meshvault")
         :format(os.clock() - started, tostring(result)))
 else
-    issue("could not send the export to Meshvault: " .. tostring(result))
+    issue("SendFailed", "could not send the export to Meshvault: " .. tostring(result))
     log("printing the export here instead: copy the chunks below into a .json file and import it in Meshvault")
     local CHUNK_SIZE = 12000
     local count = math.max(1, math.ceil(#json / CHUNK_SIZE))
@@ -568,10 +576,12 @@ return function(options)
         return debug.traceback(tostring(e), 2)
     end, options or {})
     if not ok then
-        issue("the export stopped with an error: " .. tostring(err))
+        issue("Error", "the export stopped with an error: " .. tostring(err))
         warn(TAG .. " please report this, with the lines above, to Meshvault's developers "
             .. "(exporter schema " .. SCHEMA .. ", Meshvault " .. MESHVAULT_VERSION .. ")")
     elseif #issues > 0 then
         warn(("%s finished with %d warning(s); see above"):format(TAG, #issues))
     end
+    -- empty when all went well
+    return issues
 end

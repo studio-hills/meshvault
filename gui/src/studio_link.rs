@@ -56,7 +56,7 @@ pub fn studio_command(schema: u32) -> String {
 	format!(
 		"local h=game:GetService(\"HttpService\") local e=h.HttpEnabled h.HttpEnabled=true \
 		 local ok,s=pcall(h.GetAsync,h,\"http://localhost:{PORT}/export.luau{query}\") h.HttpEnabled=e \
-		 assert(ok,\"Meshvault is not running, or its Studio link is off: \"..tostring(s)) loadstring(s)()()"
+		 assert(ok,\"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): \"..tostring(s)) loadstring(s)()()"
 	)
 }
 

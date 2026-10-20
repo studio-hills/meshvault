@@ -12,13 +12,30 @@ return function(options)
 options = options or {}
 local selection = game:GetService("Selection"):Get()
 local useSelection = options.roots == nil and #selection > 0
-local roots = options.roots or (useSelection and selection) or { game }
+local roots = options.roots or { game }
+if useSelection then
+    -- something selected inside a model (a part, its Animator, a joint) stands for the model
+    roots = {}
+    local picked = {}
+    for _, inst in ipairs(selection) do
+        local root = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model") or inst
+        if not picked[root] then
+            picked[root] = true
+            table.insert(roots, root)
+        end
+    end
+end
 local excludedRoots = options.exclude
     or ((options.roots or useSelection) and {} or { game:GetService("Workspace") })
-if useSelection then
-    print("Meshvault: exporting the " .. #selection .. " selected instance(s)")
+if options.roots or useSelection then
+    local names = {}
+    for i, root in ipairs(roots) do
+        if i > 3 then table.insert(names, "and " .. (#roots - 3) .. " more") break end
+        table.insert(names, root:GetFullName())
+    end
+    print("Meshvault: exporting " .. table.concat(names, ", "))
 else
-    print("Meshvault: exporting " .. (options.roots and #roots .. " root(s)" or "the whole game except Workspace"))
+    print("Meshvault: exporting the whole game except Workspace")
 end
 local excludedSet = {}
 for _, excluded in ipairs(excludedRoots) do
@@ -318,7 +335,9 @@ end
 -- GetDescendants still enumerates the tree, but excluded branches are not exported.
 for _, root in ipairs(roots) do
     if root and not isExcluded(root) then
-        for _, inst in ipairs(root:GetDescendants()) do
+        local list = root:GetDescendants()
+        table.insert(list, 1, root)
+        for _, inst in ipairs(list) do
             if isExcluded(inst) then continue end
             if meshIdOf(inst) then getOrAddMesh(inst) end
             if inst:IsA("Animation") then
@@ -329,6 +348,12 @@ for _, root in ipairs(roots) do
                 end
             end
         end
+    end
+end
+for _, root in ipairs(roots) do
+    if root:IsA("Model") and not modelSeen[root] and not isExcluded(root) then
+        modelSeen[root] = true
+        table.insert(models, exportRig(root))
     end
 end
 local payload = {SchemaVersion=1, Meshes=meshes, Models=models}
@@ -365,6 +390,12 @@ local function sendToMeshvault(text)
     return ok, err
 end
 
+if #meshes == 0 and #models == 0 then
+    warn("Meshvault: nothing to export: no meshes or animated models in "
+        .. ((options.roots or useSelection) and "what was picked" or "the game outside Workspace")
+        .. ". Select a model (or anything inside one) in the Explorer and run the line again.")
+    return
+end
 local sent, sendError = sendToMeshvault(json)
 if sent then
     print(("Meshvault: sent %.1f MB. It opens in Meshvault for import."):format(#json / 1048576))

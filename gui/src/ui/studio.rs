@@ -131,8 +131,8 @@ impl App {
 				step(
 					ui,
 					3,
-					"The export arrives here. It covers the instances selected in Studio, or, \
-					 with nothing selected, the whole game except Workspace.",
+					"The export arrives here. Selecting a model, or anything inside one, exports \
+					 that model; with nothing selected, it exports the whole game except Workspace.",
 				);
 				ui.add_space(4.0);
 				ui.label(

@@ -766,7 +766,8 @@ pub enum Primitive {
 	CylinderY,
 	/// Full height at the back (+Z), sloping down to the front (-Z).
 	Wedge,
-	/// A pyramid with its peak over the back right corner (+X, +Z).
+	/// A pyramid with its peak over the front right corner (+X, -Z): the
+	/// top is at height `min(x, -z)`, measured in Roblox Studio.
 	CornerWedge,
 }
 
@@ -933,14 +934,14 @@ fn unit_corner_wedge() -> Geometry {
 			[h, -h, -h],
 			[h, -h, h],
 			[-h, -h, h],
-			[h, h, h],
+			[h, h, -h],
 		],
 		&[
 			&[0, 1, 2, 3], // bottom
-			&[2, 4, 3],    // back
-			&[1, 4, 2],    // right
-			&[0, 4, 1],    // front slope
+			&[0, 4, 1],    // front, upright
+			&[1, 4, 2],    // right, upright
 			&[0, 3, 4],    // left slope
+			&[3, 2, 4],    // back slope
 		],
 	)
 }
@@ -1166,6 +1167,15 @@ mod uv_tests {
 		// a cylinder part runs along X
 		let (lo, hi) = Primitive::CylinderX.geometry().bounds().unwrap();
 		assert!((hi[0] - lo[0] - 1.0).abs() < 1e-6 && (hi[1] - lo[1] - 1.0).abs() < 1e-3);
+		// a corner wedge peaks over its front right corner, as measured in Studio
+		let peak = Primitive::CornerWedge
+			.geometry()
+			.positions
+			.iter()
+			.copied()
+			.max_by(|a, b| a[1].total_cmp(&b[1]))
+			.unwrap();
+		assert_eq!(peak, [0.5, 0.5, -0.5]);
 	}
 
 	#[test]

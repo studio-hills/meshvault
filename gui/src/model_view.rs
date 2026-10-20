@@ -93,10 +93,22 @@ fn look(part: &ModelPart) -> Look {
 		];
 		return match s.mesh_type.as_str() {
 			"FileMesh" => Look::Missing("its SpecialMesh's file mesh was not exported".into()),
-			"Brick" | "Torso" => primitive(Primitive::Block, scaled, s.offset, None),
+			"Brick" => primitive(Primitive::Block, scaled, s.offset, None),
+			"Torso" => primitive(
+				Primitive::Block,
+				scaled,
+				s.offset,
+				Some("a SpecialMesh torso (drawn as a box)"),
+			),
 			"Sphere" => primitive(Primitive::Ball, scaled, s.offset, None),
-			"Cylinder" => primitive(Primitive::CylinderY, scaled, s.offset, None),
+			// like a cylinder part (checked in Studio): along X, as wide as the
+			// smaller of the other two sides
+			"Cylinder" => {
+				let d = scaled[1].min(scaled[2]);
+				primitive(Primitive::CylinderX, [scaled[0], d, d], s.offset, None)
+			}
 			"Wedge" => primitive(Primitive::Wedge, scaled, s.offset, None),
+			"CornerWedge" => primitive(Primitive::CornerWedge, scaled, s.offset, None),
 			"Head" => primitive(
 				Primitive::CylinderY,
 				scaled,
@@ -1254,6 +1266,12 @@ mod tests {
 				approximate: None
 			}
 		);
+		// a SpecialMesh cylinder lies along X like a cylinder part
+		p.special_mesh.as_mut().unwrap().mesh_type = "Cylinder".into();
+		let Look::Primitive { kind, size, .. } = look(&p) else {
+			panic!()
+		};
+		assert_eq!((kind, size), (Primitive::CylinderX, [2.0, 1.0, 1.0]));
 		// a SpecialMesh file mesh keeps its own scale instead of fitting
 		p.mesh_ref = 3;
 		p.special_mesh.as_mut().unwrap().mesh_type = "FileMesh".into();

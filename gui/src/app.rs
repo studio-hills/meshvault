@@ -718,10 +718,11 @@ impl App {
 			self.studio_progress = None;
 			// the export is here, so the instructions are no longer needed
 			self.studio_dialog = None;
-			let dir = Config::default_workspaces_dir().join("Exports");
-			let path = dir.join(crate::studio_link::file_name(&received.name));
-			let saved =
-				std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &received.json));
+			let path = received.path.clone();
+			let saved = path
+				.parent()
+				.map_or(Ok(()), std::fs::create_dir_all)
+				.and_then(|_| std::fs::write(&path, &received.json));
 			match saved {
 				Ok(()) => {
 					self.toasts.success(format!(

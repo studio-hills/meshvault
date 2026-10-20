@@ -35,13 +35,18 @@ const EXPORTERS: [(u32, &str); 2] = [
 pub const LATEST_SCHEMA: u32 = 2;
 pub const SCHEMAS: [u32; 2] = [1, 2];
 
-/// The exporter for a schema version, ready to run: its send address filled in.
+/// The exporter for a schema version, ready to run: its send address and
+/// Meshvault's version (for bug reports) filled in.
 pub fn exporter(schema: u32) -> Option<String> {
 	let source = EXPORTERS.iter().find(|(v, _)| *v == schema)?.1;
-	Some(source.replace(
-		"__MESHVAULT_URL__",
-		&format!("http://localhost:{PORT}/export"),
-	))
+	Some(
+		source
+			.replace(
+				"__MESHVAULT_URL__",
+				&format!("http://localhost:{PORT}/export"),
+			)
+			.replace("__MESHVAULT_VERSION__", env!("CARGO_PKG_VERSION")),
+	)
 }
 
 /// The line to paste into Studio's Command Bar: it fetches the exporter
@@ -64,6 +69,8 @@ pub fn studio_command(schema: u32) -> String {
 pub struct Received {
 	pub name: String,
 	pub json: Vec<u8>,
+	/// Where the app is to save it.
+	pub path: std::path::PathBuf,
 }
 
 pub enum Event {
@@ -248,8 +255,17 @@ fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<E
 		("GET", "/") => Reply::text(200, "Meshvault Studio link"),
 		("POST", "/export") => match receive_piece(request, pending) {
 			Ok(Some(done)) => {
+				// the exporter prints this, so Studio users know where it went. Studio's
+				// Output shows only the last part of a path, so the folder is in words
+				let reply = format!(
+					"saving it as {} in Documents › Meshvault › Exports",
+					done.path
+						.file_name()
+						.map(|n| n.to_string_lossy())
+						.unwrap_or_default()
+				);
 				let _ = tx.send(Event::Received(done));
-				Reply::text(200, "done")
+				Reply::text(200, &reply)
 			}
 			Ok(None) => {
 				// how far the exports still arriving have got
@@ -311,13 +327,16 @@ fn receive_piece(
 	let done = pending.remove(id).expect("present");
 	let json = done.chunks.into_iter().flatten().flatten().collect();
 	Ok(Some(Received {
+		path: crate::config::Config::default_workspaces_dir()
+			.join("Exports")
+			.join(file_name(&done.name)),
 		name: done.name,
 		json,
 	}))
 }
 
 /// A file name for a received export: its name (made safe) and the time.
-pub fn file_name(name: &str) -> String {
+fn file_name(name: &str) -> String {
 	let stamp = std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.map_or(0, |d| d.as_secs());
@@ -377,9 +396,9 @@ mod tests {
 		let (port, rx) = start();
 		// out of order, and another export interleaved
 		assert!(post(port, "a", "2/3", "\"Models\":[],").contains("ok"));
-		assert!(post(port, "b", "1/1", "{}").contains("done"));
+		assert!(post(port, "b", "1/1", "{}").contains("saving it as"));
 		assert!(post(port, "a", "1/3", "{\"SchemaVersion\":2,").contains("ok"));
-		assert!(post(port, "a", "3/3", "\"Meshes\":[]}").contains("done"));
+		assert!(post(port, "a", "3/3", "\"Meshes\":[]}").contains("saving it as"));
 		assert_eq!(received(&rx).json, b"{}");
 		let second = received(&rx);
 		assert_eq!(second.name, "Test Place");
@@ -398,7 +417,8 @@ mod tests {
 		assert!(latest.starts_with("HTTP/1.1 200"));
 		assert!(latest.contains("SchemaVersion=2"));
 		assert!(latest.contains(&format!("http://localhost:{PORT}/export")));
-		assert!(!latest.contains("__MESHVAULT_URL__"));
+		assert!(!latest.contains("__MESHVAULT_"));
+		assert!(latest.contains(env!("CARGO_PKG_VERSION")));
 		let v1 = request(port, "GET /export.luau?schema=1 HTTP/1.1", "");
 		assert!(v1.contains("SchemaVersion=1"));
 		let unknown = request(port, "GET /export.luau?schema=9 HTTP/1.1", "");

@@ -46,20 +46,8 @@ impl App {
 			})
 		};
 		model.camera = camera;
-		let caption = format!("{}  ·  {} triangles", model.name, model.triangle_count());
 		self.viewport_toolbar(ui.ctx(), rect);
 		self.transport_bar(ui.ctx(), rect);
-		let painter = ui.ctx().layer_painter(egui::LayerId::new(
-			Order::Middle,
-			Id::unique("model_caption"),
-		));
-		painter.text(
-			rect.left_top() + Vec2::new(14.0, 64.0),
-			egui::Align2::LEFT_TOP,
-			caption,
-			egui::FontId::proportional(12.0),
-			p.text_weak,
-		);
 	}
 
 	/// Play controls over the bottom of the viewport.
@@ -113,13 +101,18 @@ impl App {
 					&subtitle,
 					&model.path,
 				);
-				widgets::card(ui, |ui| {
-					ui.columns(3, |cols| {
-						widgets::stat(&mut cols[0], &model.parts.len().to_string(), "parts");
-						widgets::stat(&mut cols[1], &model.rig.motors.len().to_string(), "joints");
-						widgets::stat(&mut cols[2], &model.rig.bones.len().to_string(), "bones");
-					});
-				});
+				widgets::stat_strip(
+					ui,
+					&[
+						(model.parts.len().to_string(), "parts"),
+						(model.rig.motors.len().to_string(), "joints"),
+						(model.rig.bones.len().to_string(), "bones"),
+						(
+							super::inspector::format_count(model.triangle_count()),
+							"triangles",
+						),
+					],
+				);
 				ui.add_space(10.0);
 
 				if !model.warnings.is_empty() {
@@ -440,14 +433,12 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 			model.parts.iter_mut().for_each(|p| p.visible = false);
 		}
 	});
-	egui::ScrollArea::vertical()
-		.id_salt("model_part_list")
-		.content_margin(egui::Margin {
-			right: 10,
-			..egui::Margin::ZERO
-		})
-		.max_height(320.0)
-		.show(ui, |ui| {
+	widgets::scroll_in_margin(
+		ui,
+		egui::ScrollArea::vertical()
+			.id_salt("model_part_list")
+			.max_height(320.0),
+		|ui| {
 			ui.spacing_mut().interact_size.y = ROW;
 			let ModelView { parts, rig, .. } = model;
 			for part in parts.iter_mut() {
@@ -489,5 +480,6 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 					});
 				});
 			}
-		});
+		},
+	);
 }

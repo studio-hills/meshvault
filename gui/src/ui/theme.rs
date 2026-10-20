@@ -220,8 +220,10 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	s.interact_size = Vec2::new(CONTROL, CONTROL);
 	s.window_margin = Margin::same(16);
 	s.menu_margin = Margin::symmetric(8, 8);
-	// scroll bars stay out of the way: a faint 2px line shows there is more
-	// to scroll, widening to a full bar on hover or while scrolling. They
+	// scroll bars stay out of the way: hidden until the pointer is over
+	// their column, then a faint 2px line that widens to a full bar on hover
+	// or while scrolling. The edge that hides content fades out, so more to
+	// scroll still shows without a bar. They
 	// float and take no space; panels put them in their right margin (see
 	// `widgets::scroll_in_margin`), so content never shifts or sits under
 	// them. The edge that hides content fades out.
@@ -233,9 +235,9 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 		bar_inner_margin: 2.0,
 		bar_outer_margin: 3.0,
 		dormant_background_opacity: 0.0,
-		dormant_handle_opacity: 0.55,
+		dormant_handle_opacity: 0.0,
 		active_background_opacity: 0.0,
-		active_handle_opacity: 0.6,
+		active_handle_opacity: 0.55,
 		interact_background_opacity: 0.3,
 		interact_handle_opacity: 0.9,
 		..egui::style::ScrollStyle::solid()

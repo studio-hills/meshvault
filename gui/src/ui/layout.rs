@@ -405,14 +405,7 @@ impl App {
 			self.gpu.as_deref(),
 			&home,
 		);
-		let name = doc.name();
-		let tris = groups
-			.iter()
-			.filter_map(|&g| doc.loaded.geometry.groups.get(g))
-			.map(|r| r.len())
-			.sum::<usize>();
 		self.viewport_toolbar(ui.ctx(), rect);
-		self.viewport_caption(ui.ctx(), rect, &name, tris);
 	}
 
 	pub(super) fn view_settings(&self, p: &super::theme::Palette) -> ViewSettings {
@@ -484,22 +477,6 @@ impl App {
 						});
 					});
 			});
-	}
-
-	/// The model name and triangle count over the bottom-left of the viewport.
-	fn viewport_caption(&self, ctx: &egui::Context, rect: egui::Rect, name: &str, tris: usize) {
-		let p = palette(ctx);
-		let painter = ctx.layer_painter(egui::LayerId::new(
-			Order::Middle,
-			Id::unique("viewport_caption"),
-		));
-		let pos = rect.left_bottom() + Vec2::new(14.0, -14.0);
-		let galley = painter.layout_no_wrap(
-			format!("{name}  ·  {tris} triangles"),
-			FontId::proportional(12.0),
-			p.text_weak,
-		);
-		painter.galley(pos - Vec2::new(0.0, galley.size().y), galley, p.text_weak);
 	}
 
 	fn handle_dropped_files(&mut self, ctx: &egui::Context) {

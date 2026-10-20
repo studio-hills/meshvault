@@ -34,26 +34,26 @@ impl App {
 				let path = doc.path.display().to_string();
 				switch =
 					super::switch::header(ui, false, &counterparts, &doc.name(), &subtitle, &path);
-				widgets::card(ui, |ui| {
-					ui.columns(3, |cols| {
-						widgets::stat(
-							&mut cols[0],
-							&format_count(geometry.positions.len()),
-							"vertices",
-						);
-						widgets::stat(
-							&mut cols[1],
-							&format_count(geometry.triangles.len()),
-							"triangles",
-						);
-						let (n, what) = match geometry.group_kind {
-							GroupKind::Lod => (geometry.groups.len(), "LODs"),
-							GroupKind::Hull => (geometry.groups.len(), "hulls"),
-							GroupKind::Whole => (doc.material.maps.len(), "maps"),
-						};
-						widgets::stat(&mut cols[2], &n.to_string(), what);
-					});
-				});
+				let (n, what) = match geometry.group_kind {
+					GroupKind::Lod => (geometry.groups.len(), "LODs"),
+					GroupKind::Hull => (geometry.groups.len(), "hulls"),
+					GroupKind::Whole => (doc.material.maps.len(), "maps"),
+				};
+				// what is drawn: the shown LOD or hulls
+				let shown: usize = doc
+					.visible_groups()
+					.iter()
+					.filter_map(|&g| geometry.groups.get(g))
+					.map(|r| r.len())
+					.sum();
+				widgets::stat_strip(
+					ui,
+					&[
+						(format_count(geometry.positions.len()), "vertices"),
+						(format_count(shown), "triangles"),
+						(n.to_string(), what),
+					],
+				);
 				if let Some(note) = &doc.loaded.note {
 					ui.add_space(6.0);
 					ui.horizontal_wrapped(|ui| {
@@ -137,14 +137,12 @@ impl App {
 									doc.hull_visible.fill(false);
 								}
 							});
-							egui::ScrollArea::vertical()
-								.id_salt("hull_list")
-								.content_margin(egui::Margin {
-									right: 10,
-									..egui::Margin::ZERO
-								})
-								.max_height(260.0)
-								.show(ui, |ui| {
+							widgets::scroll_in_margin(
+								ui,
+								egui::ScrollArea::vertical()
+									.id_salt("hull_list")
+									.max_height(260.0),
+								|ui| {
 									ui.spacing_mut().interact_size.y = ROW;
 									for (i, range) in groups.iter().enumerate() {
 										widgets::pointer(ui.checkbox(
@@ -152,7 +150,8 @@ impl App {
 											format!("Hull {i}  ·  {} tris", range.len()),
 										));
 									}
-								});
+								},
+							);
 						});
 					}
 					_ => {}
@@ -297,7 +296,7 @@ fn map_row(
 }
 
 /// 12345 -> "12,345"
-fn format_count(n: usize) -> String {
+pub(super) fn format_count(n: usize) -> String {
 	let s = n.to_string();
 	let mut out = String::new();
 	for (i, c) in s.chars().enumerate() {

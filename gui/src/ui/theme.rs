@@ -221,14 +221,21 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	s.window_margin = Margin::same(16);
 	s.menu_margin = Margin::symmetric(8, 8);
 	// scroll bars stay out of the way: a faint 2px line shows there is more
-	// to scroll, widening to a full bar on hover or while scrolling. The
-	// bar keeps a gutter of its own so it never covers content, and the
+	// to scroll, widening to a full bar on hover or while scrolling. Content
+	// always keeps a right gutter the bar floats in, whether or not a bar is
+	// shown, so nothing shifts when a list grows long enough to scroll. The
 	// edge that hides content fades out.
 	s.scroll = egui::style::ScrollStyle {
 		floating: true,
 		bar_width: 8.0,
 		floating_width: 2.0,
-		floating_allocated_width: 8.0,
+		floating_allocated_width: 0.0,
+		content_margin: Margin {
+			left: 0,
+			right: 14,
+			top: 0,
+			bottom: 0,
+		},
 		bar_inner_margin: 2.0,
 		bar_outer_margin: 0.0,
 		dormant_background_opacity: 0.0,

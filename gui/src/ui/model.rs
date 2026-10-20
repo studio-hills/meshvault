@@ -5,7 +5,7 @@ use eframe::egui::{
 	self, Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Order, RichText, Stroke, Vec2,
 };
 
-use super::theme::{ROW, display, palette, semibold};
+use super::theme::{ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
@@ -96,21 +96,21 @@ impl App {
 		egui::ScrollArea::vertical()
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
-				ui.add(
-					egui::Label::new(RichText::new(&model.name).size(16.0).family(display()))
-						.wrap(),
+				// the folder holding the model; the whole path is on hover
+				let folder = model.path.rsplit('/').nth(1).unwrap_or_default();
+				let subtitle = if folder.is_empty() {
+					"Animated model".to_string()
+				} else {
+					format!("Animated model · {folder}")
+				};
+				switch = super::switch::header(
+					ui,
+					true,
+					&counterparts,
+					&model.name,
+					&subtitle,
+					&model.path,
 				);
-				ui.add(
-					egui::Label::new(
-						RichText::new(format!("Animated model · {}", model.path))
-							.size(12.0)
-							.color(p.text_weak),
-					)
-					.wrap(),
-				);
-				ui.add_space(6.0);
-				switch = super::switch::view_switch(ui, true, &counterparts);
-				ui.add_space(6.0);
 				widgets::card(ui, |ui| {
 					ui.columns(3, |cols| {
 						widgets::stat(&mut cols[0], &model.parts.len().to_string(), "parts");

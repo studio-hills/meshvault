@@ -208,6 +208,11 @@ impl App {
 			}
 			return;
 		}
+		// a mesh of the open workspace opens as its item, with its maps
+		if let Some(index) = self.workspace_item_at(&path) {
+			self.open_item(index);
+			return;
+		}
 		if self.load_mesh(path, bytes) {
 			self.open_stem = None;
 			let found = self
@@ -666,6 +671,17 @@ impl App {
 	}
 
 	/// The open workspace's model stored at `path`, if it is one.
+	/// The open workspace's item whose mesh is the file at `path`.
+	fn workspace_item_at(&self, path: &Path) -> Option<usize> {
+		let ws = self.workspace.as_ref()?;
+		let path = path.canonicalize().ok()?;
+		ws.items().iter().position(|i| {
+			i.done_path(AssetKind::Mesh)
+				.and_then(|p| ws.root.join(p).canonicalize().ok())
+				.is_some_and(|p| p == path)
+		})
+	}
+
 	fn workspace_model_at(&self, path: &Path) -> Option<usize> {
 		let ws = self.workspace.as_ref()?;
 		let path = path.canonicalize().ok()?;

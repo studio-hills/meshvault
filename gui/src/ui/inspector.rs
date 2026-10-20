@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
-use super::theme::{ROW, display, palette, semibold};
+use super::theme::{ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::app::{App, format_bytes};
 use crate::geometry::GroupKind;
@@ -26,20 +26,13 @@ impl App {
 				let Some(doc) = &mut self.doc else { return };
 				let geometry = &doc.loaded.geometry;
 
-				// header
-				ui.add(
-					egui::Label::new(RichText::new(doc.name()).size(16.0).family(display())).wrap(),
-				);
 				let mut subtitle = doc.loaded.format.clone();
 				if self.open_stem.is_some() {
 					subtitle.push_str(" · in workspace");
 				}
-				ui.label(RichText::new(subtitle).size(12.0).color(p.text_weak));
-				ui.add_space(6.0);
-				if let Some(s) = super::switch::view_switch(ui, false, &counterparts) {
-					switch = Some(s);
-				}
-				ui.add_space(6.0);
+				let path = doc.path.display().to_string();
+				switch =
+					super::switch::header(ui, false, &counterparts, &doc.name(), &subtitle, &path);
 				widgets::card(ui, |ui| {
 					ui.columns(3, |cols| {
 						widgets::stat(

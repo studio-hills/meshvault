@@ -68,7 +68,41 @@ impl App {
 	}
 }
 
-/// A two-part control: "Animated model" and "Mesh", with the open one
+/// The top of the inspector, laid out the same for a model and a mesh so
+/// nothing moves when switching between them: the switch (when there is
+/// something to switch to), then the name and a one-line subtitle, both
+/// cut short with the full text on hover.
+pub(super) fn header(
+	ui: &mut egui::Ui,
+	on_model: bool,
+	c: &Counterparts,
+	title: &str,
+	subtitle: &str,
+	subtitle_hover: &str,
+) -> Option<Switch> {
+	let p = palette(ui.ctx());
+	let switch = view_switch(ui, on_model, c);
+	if !c.models.is_empty() && !c.meshes.is_empty() {
+		ui.add_space(10.0);
+	}
+	ui.add(
+		egui::Label::new(
+			egui::RichText::new(title)
+				.size(16.0)
+				.family(super::theme::display()),
+		)
+		.truncate(),
+	)
+	.on_hover_text(title);
+	ui.add(
+		egui::Label::new(egui::RichText::new(subtitle).size(12.0).color(p.text_weak)).truncate(),
+	)
+	.on_hover_text(subtitle_hover);
+	ui.add_space(8.0);
+	switch
+}
+
+/// A two-part control: "Animated" and "Mesh", with the open one
 /// highlighted. When the other side has several choices (a model built
 /// from several meshes, or a mesh several models use) it opens a list.
 /// Shown only when both sides exist.
@@ -91,14 +125,20 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 			let half = ((ui.available_width() - 2.0) / 2.0).floor();
 			ui.horizontal(|ui| {
 				let sides = [
-					(true, icons::PERSON_SIMPLE_RUN, "Animated model", &c.models),
-					(false, icons::CUBE, "Mesh", &c.meshes),
+					(
+						true,
+						icons::PERSON_SIMPLE_RUN,
+						"Animated",
+						"Animated",
+						&c.models,
+					),
+					(false, icons::CUBE, "Mesh", "Meshes", &c.meshes),
 				];
-				for (is_model, icon, label, targets) in sides {
+				for (is_model, icon, label, plural, targets) in sides {
 					let current = is_model == on_model;
 					let label = match (current, targets.len()) {
 						(false, n) if n > 1 => {
-							format!("{icon}  {label}s ({n})  {}", icons::CARET_DOWN)
+							format!("{icon}  {plural} ({n})  {}", icons::CARET_DOWN)
 						}
 						_ => format!("{icon}  {label}"),
 					};

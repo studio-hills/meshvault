@@ -2,8 +2,10 @@
 //!
 //! - the original array (schema 0):
 //!   `[{Name, MeshId, Folder, TextureId?, ColorMap?, NormalMap?, RoughnessMap?, MetalnessMap?}, ...]`
-//! - schema version 1: `{SchemaVersion: 1, Meshes: [{Id, ...the same fields}], Models: [...]}`,
+//! - schema versions 1 and 2: `{SchemaVersion, Meshes: [{Id, ...the same fields}], Models: [...]}`,
 //!   where `Models` holds rigs and animation clips that refer to meshes by `Id`.
+//!   Version 2 adds model scale, part appearance, SpecialMesh and joint
+//!   transforms; both read into the same types.
 //!
 //! Missing fields and empty strings both mean "none".
 
@@ -14,8 +16,8 @@ use serde::Deserialize;
 use crate::anim::schema::AnimatedModel;
 use crate::maps::MapKind;
 
-/// The newest `SchemaVersion` this build understands.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The newest `SchemaVersion` this build understands, and the one it writes.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -103,7 +105,7 @@ struct Header {
 }
 
 #[derive(Deserialize)]
-struct DocumentV1 {
+struct Document {
 	#[serde(rename = "Meshes")]
 	meshes: Vec<RawEntry>,
 	#[serde(rename = "Models")]
@@ -145,12 +147,12 @@ pub fn parse(text: &str) -> Result<Export, String> {
 			.as_u64()
 			.ok_or_else(|| format!("Unrecognised SchemaVersion {v}"))?,
 	};
-	if version != u64::from(SCHEMA_VERSION) {
+	if !(1..=u64::from(SCHEMA_VERSION)).contains(&version) {
 		return Err(format!(
-			"This export uses schema version {version}, which this version of Meshvault cannot read (it reads versions 0 and {SCHEMA_VERSION})."
+			"This export uses schema version {version}, which this version of Meshvault cannot read (it reads versions 0 to {SCHEMA_VERSION})."
 		));
 	}
-	let doc: DocumentV1 = serde_json::from_str(json)
+	let doc: Document = serde_json::from_str(json)
 		.map_err(|e| format!("Not a valid schema {version} export: {e}"))?;
 	Ok(convert(doc.meshes, doc.models))
 }
@@ -425,6 +427,40 @@ mod tests {
 		assert_eq!(export.models.len(), 1);
 		assert_eq!(export.models[0].parts[0].mesh_ref, 1);
 		assert_eq!(export.models[0].parts[0].cframe[1], 3.0);
+	}
+
+	/// Schema 2 adds model scale, part appearance, SpecialMesh and joint
+	/// transforms; Roblox's encoder leaves out a nil SpecialMesh entirely.
+	#[test]
+	fn parses_schema_2() {
+		let json = r#"{"SchemaVersion":2,
+			"Meshes":[{"Id":1,"Name":"Body","MeshId":"rbxassetid://10","Folder":"RS/Wolf"}],
+			"Models":[{"Name":"Wolf","Path":"RS/Wolf","Scale":0.25,
+				"Parts":[
+					{"Path":"RS/Wolf/Body","Name":"Body","MeshRef":1,"ClassName":"MeshPart","Shape":"",
+					 "CFrame":[0,0,0,1,0,0,0,1,0,0,0,1],"Size":[1,1,1],"Color":[0.6,0.4,0.25],
+					 "BrickColor":"Reddish brown","Material":"Plastic","Transparency":0,"Reflectance":0},
+					{"Path":"RS/Wolf/Head","Name":"Head","MeshRef":0,"ClassName":"Part","Shape":"Block",
+					 "CFrame":[0,1,0,1,0,0,0,1,0,0,0,1],"Size":[2,1,1],"Color":[1,1,1],
+					 "BrickColor":"White","Material":"Plastic","Transparency":0,"Reflectance":0.5,
+					 "SpecialMesh":{"MeshType":"Head","Scale":[1.25,1.25,1.25],"Offset":[0,0.1,0]}}],
+				"Joints":[{"Name":"Neck","Path":"RS/Wolf/Head/Neck","Part0":"RS/Wolf/Body","Part1":"RS/Wolf/Head",
+					"C0":[0,0.5,0,1,0,0,0,1,0,0,0,1],"C1":[0,-0.5,0,1,0,0,0,1,0,0,0,1],
+					"Transform":[0,0,0,1,0,0,0,0,-1,0,1,0]}],
+				"Bones":[],"Animations":[]}]}"#;
+		let export = parse(json).unwrap();
+		let m = &export.models[0];
+		assert_eq!(m.scale, Some(0.25));
+		assert_eq!(m.parts[0].class_name.as_deref(), Some("MeshPart"));
+		assert_eq!(m.parts[0].color, Some([0.6, 0.4, 0.25]));
+		assert!(m.parts[0].special_mesh.is_none());
+		let special = m.parts[1].special_mesh.as_ref().unwrap();
+		assert_eq!(special.mesh_type, "Head");
+		assert_eq!(special.offset, [0.0, 0.1, 0.0]);
+		assert_eq!(m.joints[0].transform.unwrap()[8], -1.0);
+		// a version 1 record leaves them all unset
+		let v1 = parse(&json.replace("\"SchemaVersion\":2", "\"SchemaVersion\":1")).unwrap();
+		assert_eq!(v1.models.len(), 1);
 	}
 
 	#[test]

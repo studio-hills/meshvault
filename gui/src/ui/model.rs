@@ -9,6 +9,7 @@ use super::theme::{CONTROL_RADIUS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
+use crate::geometry::Primitive;
 use crate::model_view::{ModelView, PartShape};
 use crate::viewport;
 
@@ -202,16 +203,35 @@ impl App {
 					});
 				}
 
+				widgets::section(ui, "model_properties", "Properties", true, |ui| {
+					let mut rows = vec![(
+						"Scale".to_string(),
+						match model.scale {
+							Some(s) => format!("{s}"),
+							None => "Not in this export".into(),
+						},
+					)];
+					rows.push((
+						"Rest pose".to_string(),
+						if model.captured_pose {
+							"As exported (captured joints)".into()
+						} else {
+							"Joints at rest".into()
+						},
+					));
+					widgets::properties(ui, "model_properties_grid", &rows);
+				});
+
 				widgets::section(ui, "model_display", "Display", true, |ui| {
 					let blocks = model
 						.parts
 						.iter()
-						.filter(|p| p.visible && matches!(p.shape, PartShape::Block))
+						.filter(|p| p.visible && matches!(p.shape, PartShape::Primitive(_)))
 						.count();
 					if blocks > 0 {
 						widgets::pointer(ui.checkbox(
 							&mut model.show_blocks,
-							format!("Show parts without a mesh as boxes ({blocks})"),
+							format!("Show parts without a mesh file ({blocks})"),
 						));
 					}
 					if ui
@@ -455,11 +475,20 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 						),
 						None => ("mesh", p.text_weak, asset.name.clone()),
 					},
-					PartShape::Block => (
-						"box",
-						p.text_weak,
-						"No file mesh: drawn as a box of its size".to_string(),
-					),
+					PartShape::Primitive(kind) => match &part.approximate {
+						Some(why) => ("approx.", p.warning, format!("Drawn approximately: {why}")),
+						None => (
+							match kind {
+								Primitive::Block => "block",
+								Primitive::Ball => "ball",
+								Primitive::CylinderX | Primitive::CylinderY => "cylinder",
+								Primitive::Wedge => "wedge",
+								Primitive::CornerWedge => "corner wedge",
+							},
+							p.text_weak,
+							"No file mesh: a Roblox primitive shape".to_string(),
+						),
+					},
 					PartShape::Missing(why) => ("missing", p.danger, why.clone()),
 				};
 				let joint = rig
@@ -469,10 +498,14 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 					.map_or(String::new(), |m| {
 						format!("\nMoved by {} from {}", m.name, rig.parts[m.part0].name)
 					});
+				let appearance = part
+					.appearance
+					.as_ref()
+					.map_or(String::new(), |a| format!("\n{a}"));
 				ui.horizontal(|ui| {
 					let response = widgets::pointer(ui.checkbox(&mut part.visible, &rp.name));
 					response.on_hover_text(format!(
-						"{}\n{hover}{joint}\nTransparency {:.2}",
+						"{}\n{hover}{joint}{appearance}\nTransparency {:.2}",
 						rp.path, rp.transparency
 					));
 					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

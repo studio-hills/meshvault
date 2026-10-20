@@ -1,7 +1,8 @@
-//! Schema version 1 model records: parts, Motor6D joints, bones and
-//! animation clips, as written by the exporter (see the implementation
-//! guide). The same types are written back into workspaces, so a stored
-//! model file is itself a v1 model record.
+//! Model records of schema versions 1 and 2: parts, Motor6D joints, bones
+//! and animation clips, as written by the exporter (see the implementation
+//! guides). Version 2 adds the fields marked "schema 2"; they are `None`
+//! when reading version 1. The same types are written back into
+//! workspaces, so a stored model file is itself a model record.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,10 @@ pub type CFrame12 = [f32; 12];
 pub struct AnimatedModel {
 	pub name: String,
 	pub path: String,
+	/// `Model:GetScale()` (schema 2). Part sizes and CFrames already include
+	/// it; animation translations do not, and are scaled by it when played.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub scale: Option<f32>,
 	pub parts: Vec<ModelPart>,
 	pub joints: Vec<MotorJoint>,
 	pub bones: Vec<BoneInfo>,
@@ -30,6 +35,35 @@ pub struct ModelPart {
 	pub cframe: CFrame12,
 	pub size: [f32; 3],
 	pub transparency: f32,
+	/// e.g. "Part", "MeshPart", "WedgePart" (schema 2).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub class_name: Option<String>,
+	/// "Block", "Ball", "Cylinder", "Wedge", "CornerWedge", "Truss", or ""
+	/// for classes without a shape (schema 2).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub shape: Option<String>,
+	/// `BasePart.Color`, each channel 0..1 (schema 2).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub color: Option<[f32; 3]>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub brick_color: Option<String>,
+	/// `Enum.Material` name (schema 2).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub material: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub reflectance: Option<f32>,
+	/// Absent when the part has no SpecialMesh (schema 2).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub special_mesh: Option<SpecialMeshInfo>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct SpecialMeshInfo {
+	/// `Enum.MeshType` name, e.g. "FileMesh", "Head", "Sphere", "Brick".
+	pub mesh_type: String,
+	pub scale: [f32; 3],
+	pub offset: [f32; 3],
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -44,6 +78,10 @@ pub struct MotorJoint {
 	pub c0: CFrame12,
 	#[serde(rename = "C1")]
 	pub c1: CFrame12,
+	/// `Motor6D.Transform` when exported (schema 2): the pose the joint was
+	/// in at that moment, not part of any clip.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub transform: Option<CFrame12>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

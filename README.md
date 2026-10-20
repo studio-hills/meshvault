@@ -121,6 +121,7 @@ A workspace is a folder of models downloaded from Roblox, organized to mirror th
 
 - Schema 0, an array: `[{"Name", "MeshId", "Folder", "TextureId"?, "ColorMap"?, "NormalMap"?, "RoughnessMap"?, "MetalnessMap"?}, ...]`
 - Schema 1, an object: `{"SchemaVersion": 1, "Meshes": [{"Id", ...the fields above}], "Models": [...]}`, where each model carries its parts, Motor6D joints, bones and animation clips (KeyframeSequence or CurveAnimation) and refers to meshes by `Id`
+- Schema 2, the same with each model's `Scale`, each part's `ClassName`, `Shape`, `Color`, `BrickColor`, `Material`, `Reflectance` and `SpecialMesh`, and each joint's captured `Transform`
 
 Other `SchemaVersion` values are rejected.  Empty strings count as missing.  Content ids can be `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N` or `assetdelivery.roblox.com` URLs.  Studio output split into `=== JSON CHUNK i/n ===` blocks can be imported as is.
 
@@ -146,12 +147,14 @@ The app also accepts a workspace folder and an export on the command line: `mesh
 
 Schema 1 exports list animated models in the import dialog; selecting one also selects the meshes its parts use.  In the library they appear under Animated models; click one (or open its `.rig.json`) to play it:
 
-- Parts are placed by their Motor6D joints (`Part1 = Part0 * C0 * Transform * C1⁻¹`) and bones (`Parent * CFrame * Transform`); meshes are centred and scaled to each part's size, parts without a file mesh can be shown as boxes, and fully transparent parts are hidden
+- Parts are placed by their Motor6D joints (`Part1 = Part0 * C0 * Transform * C1⁻¹`) and bones (`Parent * CFrame * Transform`); MeshPart meshes are centred and scaled to each part's size, SpecialMesh file meshes keep their own units times `Scale`, plus `Offset`, and fully transparent parts are hidden
+- Parts without a file mesh are drawn as their Roblox shape (block, ball, cylinder, wedge, corner wedge, or a SpecialMesh brick, sphere or cylinder) in their part colour; anything Meshvault has no shape for (trusses, unions, SpecialMesh heads) is drawn approximately and listed in the warnings
+- Schema 2 models show the pose they were exported in (each joint's captured `Transform`), and clip translations are scaled by the model's `Scale`, as `Model:ScaleTo` does in Roblox. Schema 1 has neither, so joints start at rest and bone translations are scaled by the skinned mesh's own scale
 - Skinned meshes (mesh v4 and later) bend with their bones.  Each bone the mesh was bound to follows a Bone in the model, else a part of the same name (as R15 bodies do), else its bind pose from the mesh file.  Meshes Draco-compressed with edgebreaker stay rigid, since their vertices no longer line up with their weights
 - The transport bar plays, pauses, scrubs, loops and changes speed (Space plays or pauses), with clip markers on the track.  Clips the exporter could not read are listed with their status and cannot be played
 - The inspector lists clips, tracks that match nothing in the model, parts with visibility toggles, and warnings such as missing meshes or a rig captured mid-animation
 
-Facial animation (FACS) and live joint state are not part of the export, so face bones hold their bind pose unless a clip animates them by name.
+Facial animation (FACS) is not part of the export, so face bones hold their bind pose unless a clip animates them by name. Roblox materials other than their colour, reflectance and partial transparency are not rendered yet.
 
 #### License
 

@@ -17,8 +17,8 @@ use eframe::egui::{self, Color32};
 use crate::anim::clip::{Clip, ClipMarker};
 use crate::anim::math::{CFrame, V3};
 use crate::anim::rig::{Binding, BoneParent, Posed, Rig, Target};
-use crate::anim::schema::{AnimatedModel, ClipStatus};
-use crate::geometry::{self, Geometry, GroupKind, Skin};
+use crate::anim::schema::{AnimatedModel, ClipStatus, ModelPart};
+use crate::geometry::{self, Geometry, GroupKind, Primitive, Skin};
 use crate::gpu::GpuScene;
 use crate::maps::Slot;
 use crate::texture::{self, Material};
@@ -46,10 +46,128 @@ pub struct MeshAsset {
 
 pub enum PartShape {
 	Mesh(Arc<MeshAsset>),
-	/// A part without a file mesh, drawn as a box of its size.
-	Block,
+	/// A part without a file mesh: a block, ball, cylinder or wedge.
+	Primitive(Primitive),
 	/// Not drawn, and why.
 	Missing(String),
+}
+
+/// How a part is drawn, decided from its class, shape and SpecialMesh.
+#[derive(Clone, Debug, PartialEq)]
+enum Look {
+	/// Its file mesh. A MeshPart fits it to its size; a SpecialMesh
+	/// instead scales the mesh's own units and moves it (scale, offset).
+	Mesh {
+		special: Option<(V3, V3)>,
+	},
+	Primitive {
+		kind: Primitive,
+		size: V3,
+		offset: V3,
+		/// Set when Meshvault has no geometry for the real shape.
+		approximate: Option<String>,
+	},
+	Missing(String),
+}
+
+fn look(part: &ModelPart) -> Look {
+	let size = part.size;
+	let special = part.special_mesh.as_ref();
+	if part.mesh_ref != 0 {
+		return Look::Mesh {
+			special: special.map(|s| (s.scale, s.offset)),
+		};
+	}
+	let primitive = |kind, size, offset, approximate: Option<&str>| Look::Primitive {
+		kind,
+		size,
+		offset,
+		approximate: approximate.map(String::from),
+	};
+	if let Some(s) = special {
+		// procedural SpecialMesh types stretch to the part's size times Scale
+		let scaled = [
+			size[0] * s.scale[0],
+			size[1] * s.scale[1],
+			size[2] * s.scale[2],
+		];
+		return match s.mesh_type.as_str() {
+			"FileMesh" => Look::Missing("its SpecialMesh's file mesh was not exported".into()),
+			"Brick" | "Torso" => primitive(Primitive::Block, scaled, s.offset, None),
+			"Sphere" => primitive(Primitive::Ball, scaled, s.offset, None),
+			"Cylinder" => primitive(Primitive::CylinderY, scaled, s.offset, None),
+			"Wedge" => primitive(Primitive::Wedge, scaled, s.offset, None),
+			"Head" => primitive(
+				Primitive::CylinderY,
+				scaled,
+				s.offset,
+				Some("a SpecialMesh head (drawn as a cylinder)"),
+			),
+			other => primitive(
+				Primitive::Block,
+				scaled,
+				s.offset,
+				Some(&format!("a {other} SpecialMesh (drawn as a box)")),
+			),
+		};
+	}
+	let shape = part.shape.as_deref().unwrap_or("");
+	match (part.class_name.as_deref(), shape) {
+		// schema 1 records neither: a box is the best guess
+		(None, _) | (_, "Block") => primitive(Primitive::Block, size, [0.0; 3], None),
+		(_, "Ball") => {
+			let d = size[0].min(size[1]).min(size[2]);
+			primitive(Primitive::Ball, [d; 3], [0.0; 3], None)
+		}
+		(_, "Cylinder") => {
+			let d = size[1].min(size[2]);
+			primitive(Primitive::CylinderX, [size[0], d, d], [0.0; 3], None)
+		}
+		(_, "Wedge") | (Some("WedgePart"), _) => primitive(Primitive::Wedge, size, [0.0; 3], None),
+		(_, "CornerWedge") | (Some("CornerWedgePart"), _) => {
+			primitive(Primitive::CornerWedge, size, [0.0; 3], None)
+		}
+		(Some("MeshPart"), _) => Look::Missing("its mesh was not exported".into()),
+		(_, "Truss") | (Some("TrussPart"), _) => primitive(
+			Primitive::Block,
+			size,
+			[0.0; 3],
+			Some("a truss (drawn as a box)"),
+		),
+		(Some(class), _) => primitive(
+			Primitive::Block,
+			size,
+			[0.0; 3],
+			Some(&format!("a {class} (drawn as a box)")),
+		),
+	}
+}
+
+/// e.g. "MeshPart · Plastic · Bright violet #6B32A8".
+fn appearance(part: &ModelPart) -> Option<String> {
+	let mut bits = Vec::new();
+	bits.extend(part.class_name.clone());
+	bits.extend(part.material.clone());
+	if part.color.is_some() {
+		let hex = colour_of(part, Color32::BLACK);
+		let name = part.brick_color.clone().unwrap_or_default();
+		bits.push(
+			format!("{name} #{:02X}{:02X}{:02X}", hex.r(), hex.g(), hex.b())
+				.trim()
+				.to_string(),
+		);
+	}
+	if let Some(r) = part.reflectance.filter(|r| *r > 0.0) {
+		bits.push(format!("reflectance {r:.2}"));
+	}
+	(!bits.is_empty()).then(|| bits.join(" · "))
+}
+
+fn colour_of(part: &ModelPart, fallback: Color32) -> Color32 {
+	part.color.map_or(fallback, |c| {
+		let u = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+		Color32::from_rgb(u(c[0]), u(c[1]), u(c[2]))
+	})
 }
 
 pub struct PartView {
@@ -57,9 +175,17 @@ pub struct PartView {
 	pub index: usize,
 	pub shape: PartShape,
 	pub visible: bool,
-	/// Mesh centre and per-axis scale fitting the mesh to the part's size.
+	/// Mesh centre and per-axis scale fitting the mesh to the part's size,
+	/// then an offset in the part's space (SpecialMesh.Offset).
 	centre: V3,
 	scale: V3,
+	offset: V3,
+	/// `BasePart.Color`, shown where there is no colour map.
+	pub colour: Color32,
+	/// Why the part is drawn as an approximation, if it is.
+	pub approximate: Option<String>,
+	/// Class, material and colour, when the export has them (schema 2).
+	pub appearance: Option<String>,
 	pub skin: Option<PartSkin>,
 	gpu: Option<GpuScene>,
 }
@@ -127,7 +253,13 @@ pub struct ModelView {
 	bounds: Option<(V3, V3)>,
 	pub warnings: Vec<String>,
 	pub show_blocks: bool,
-	/// Scale of the mesh each Bone moves (1 for none); see [`scale_translation`].
+	/// `Model:GetScale()` (schema 2).
+	pub scale: Option<f32>,
+	/// Whether joints recorded the pose they were exported in (schema 2).
+	pub captured_pose: bool,
+	/// Scale applied to clip translations of each joint and Bone; see
+	/// [`scale_translation`].
+	motor_scale: Vec<f32>,
 	bone_scale: Vec<f32>,
 	/// The pose needs solving again (time, clip or rest changed).
 	dirty: bool,
@@ -136,11 +268,6 @@ pub struct ModelView {
 /// Parts this transparent are invisible in Roblox (HumanoidRootPart).
 const INVISIBLE: f32 = 0.99;
 const BLOCK_COLOUR: Color32 = Color32::from_rgb(140, 146, 156);
-
-fn cube() -> &'static Geometry {
-	static CUBE: OnceLock<Geometry> = OnceLock::new();
-	CUBE.get_or_init(geometry::unit_cube)
-}
 
 fn load_asset(ctx: &egui::Context, source: &MeshSource) -> Result<MeshAsset, String> {
 	let path = source.mesh.as_ref().map_err(Clone::clone)?;
@@ -416,8 +543,14 @@ impl ModelView {
 		let mut parts = Vec::with_capacity(rig.parts.len());
 		let mut missing = 0;
 		for (i, part) in rig.parts.iter().enumerate() {
-			let shape = if part.mesh_ref == 0 {
-				PartShape::Block
+			// the rig keeps the parts in the record's order
+			let record = &model.parts[i];
+			let look = look(record);
+			let shape = if let Look::Primitive { kind, .. } = look {
+				PartShape::Primitive(kind)
+			} else if let Look::Missing(why) = &look {
+				missing += 1;
+				PartShape::Missing(why.clone())
 			} else {
 				let asset = assets.entry(part.mesh_ref).or_insert_with(|| {
 					match sources.get(&part.mesh_ref) {
@@ -435,8 +568,16 @@ impl ModelView {
 					}
 				}
 			};
-			let (centre, scale) = match &shape {
-				PartShape::Mesh(asset) => match asset.geometry.bounds() {
+			let (centre, scale, offset) = match (&shape, &look) {
+				(_, Look::Primitive { size, offset, .. }) => ([0.0; 3], *size, *offset),
+				// a SpecialMesh scales the mesh's own units instead of fitting it
+				(
+					PartShape::Mesh(_),
+					Look::Mesh {
+						special: Some((scale, offset)),
+					},
+				) => ([0.0; 3], *scale, *offset),
+				(PartShape::Mesh(asset), _) => match asset.geometry.bounds() {
 					Some((lo, hi)) => {
 						let mut centre = [0.0; 3];
 						let mut scale = [1.0; 3];
@@ -447,11 +588,19 @@ impl ModelView {
 								scale[k] = part.size[k] / extent;
 							}
 						}
-						(centre, scale)
+						(centre, scale, [0.0; 3])
 					}
-					None => ([0.0; 3], [1.0; 3]),
+					None => ([0.0; 3], [1.0; 3], [0.0; 3]),
 				},
-				_ => ([0.0; 3], part.size),
+				_ => ([0.0; 3], part.size, [0.0; 3]),
+			};
+			let approximate = match &look {
+				Look::Primitive { approximate, .. } => approximate.clone(),
+				_ => None,
+			};
+			let colour = match &shape {
+				PartShape::Mesh(_) => colour_of(record, viewport::PART_COLOUR),
+				_ => colour_of(record, BLOCK_COLOUR),
 			};
 			let skin = match &shape {
 				PartShape::Mesh(asset) => match &asset.skin {
@@ -472,9 +621,28 @@ impl ModelView {
 				visible: part.transparency < INVISIBLE,
 				centre,
 				scale,
+				offset,
+				colour,
+				approximate,
+				appearance: appearance(record),
 				skin,
 				gpu: None,
 			});
+		}
+		let approximated: Vec<&str> = parts
+			.iter()
+			.filter(|p| p.visible)
+			.filter_map(|p| p.approximate.as_deref())
+			.collect();
+		if !approximated.is_empty() {
+			let mut kinds = approximated.clone();
+			kinds.sort_unstable();
+			kinds.dedup();
+			warnings.push(format!(
+				"{} parts are drawn approximately because Meshvault has no geometry for their shape: {}.",
+				approximated.len(),
+				kinds.join(", ")
+			));
 		}
 		if missing > 0 {
 			warnings.push(format!(
@@ -537,8 +705,21 @@ impl ModelView {
 			.filter(|p| matches!(p.shape, PartShape::Mesh(_)))
 			.map(|p| (p.index, mean(p.scale)))
 			.collect();
+		// Schema 2 records Model:GetScale(), which Roblox applies to every
+		// animated translation. Schema 1 did not, so for bones it is inferred
+		// from the mesh they deform, and joints are left as they are.
+		let model_scale = model.scale.filter(|s| s.is_finite() && *s > 0.0);
+		let motor_scale = vec![model_scale.unwrap_or(1.0); rig.motors.len()];
+		if let Some(s) = model_scale {
+			for skin in parts.iter_mut().filter_map(|p| p.skin.as_mut()) {
+				skin.unit_scale = s;
+			}
+		}
 		let bone_scale = (0..rig.bones.len())
 			.map(|mut b| {
+				if let Some(s) = model_scale {
+					return s;
+				}
 				for _ in 0..=rig.bones.len() {
 					match rig.bones[b].parent {
 						BoneParent::Part(p) => return part_scale.get(&p).copied().unwrap_or(1.0),
@@ -551,6 +732,7 @@ impl ModelView {
 			.collect();
 
 		let mut view = Self {
+			motor_scale,
 			bone_scale,
 			index,
 			name: model.name.clone(),
@@ -567,6 +749,8 @@ impl ModelView {
 			bounds: None,
 			warnings,
 			show_blocks: true,
+			scale: model.scale,
+			captured_pose: model.joints.iter().any(|j| j.transform.is_some()),
 			dirty: true,
 			clips,
 			parts,
@@ -695,6 +879,7 @@ impl ModelView {
 					.zip(&binding.targets)
 					.map(|(s, target)| match target {
 						Some(Target::Bone(b)) => scale_translation(s.1, self.bone_scale[*b]),
+						Some(Target::Motor(m)) => scale_translation(s.1, self.motor_scale[*m]),
 						_ => s.1,
 					})
 					.collect();
@@ -734,8 +919,12 @@ impl ModelView {
 					gpu,
 					centre,
 					scale,
+					offset,
+					colour,
 					..
 				} = part;
+				// SpecialMesh.Offset moves the mesh in the part's own space
+				let world = world.mul(&CFrame::from_position(*offset));
 				match shape {
 					PartShape::Mesh(asset) => {
 						let material = plain.unwrap_or(&asset.material);
@@ -748,7 +937,7 @@ impl ModelView {
 									transform: viewport::IDENTITY,
 									material,
 									colour_groups: false,
-									colour: viewport::PART_COLOUR,
+									colour: *colour,
 									scene: gpu,
 									moved,
 								}
@@ -759,19 +948,19 @@ impl ModelView {
 								transform: placement(&world, *scale, *centre),
 								material,
 								colour_groups: false,
-								colour: viewport::PART_COLOUR,
+								colour: *colour,
 								scene: gpu,
 								moved: false,
 							},
 						})
 					}
-					PartShape::Block if show_blocks => Some(ScenePart {
-						geometry: cube(),
+					PartShape::Primitive(kind) if show_blocks => Some(ScenePart {
+						geometry: kind.geometry(),
 						groups: &[0],
 						transform: placement(&world, *scale, [0.0; 3]),
 						material: plain.unwrap_or_else(|| empty_material()),
 						colour_groups: false,
-						colour: BLOCK_COLOUR,
+						colour: *colour,
 						scene: gpu,
 						moved: false,
 					}),
@@ -792,7 +981,7 @@ impl ModelView {
 					.filter_map(|&g| a.geometry.groups.get(g))
 					.map(|r| r.len())
 					.sum(),
-				PartShape::Block if self.show_blocks => 12,
+				PartShape::Primitive(kind) if self.show_blocks => kind.geometry().triangles.len(),
 				_ => 0,
 			})
 			.sum()
@@ -825,6 +1014,7 @@ mod tests {
 		let model = AnimatedModel {
 			name: "Arm".into(),
 			path: "Workspace/Arm".into(),
+			scale: None,
 			parts: vec![
 				ModelPart {
 					path: "Workspace/Arm/Upper".into(),
@@ -848,6 +1038,7 @@ mod tests {
 				part1: "Workspace/Arm/Lower".into(),
 				c0: cf([0.0, -0.5, 0.0]),
 				c1: cf([0.0, 0.5, 0.0]),
+				transform: None,
 			}],
 			bones: vec![BoneInfo {
 				name: "Tip".into(),
@@ -993,6 +1184,85 @@ mod tests {
 			);
 		}
 		println!("{frames} poses solved");
+	}
+
+	fn part_with(class: Option<&str>, shape: Option<&str>, size: V3) -> ModelPart {
+		ModelPart {
+			class_name: class.map(String::from),
+			shape: shape.map(String::from),
+			size,
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn parts_choose_their_geometry() {
+		use crate::anim::schema::SpecialMeshInfo;
+		let prim = |l: Look| match l {
+			Look::Primitive {
+				kind,
+				size,
+				approximate,
+				..
+			} => (kind, size, approximate.is_some()),
+			other => panic!("{other:?}"),
+		};
+		// schema 1 has no class: a box
+		assert_eq!(
+			prim(look(&part_with(None, None, [1.0, 2.0, 3.0]))),
+			(Primitive::Block, [1.0, 2.0, 3.0], false)
+		);
+		// a ball is as wide as the part's smallest side; a cylinder runs along X
+		assert_eq!(
+			prim(look(&part_with(
+				Some("Part"),
+				Some("Ball"),
+				[3.0, 2.0, 4.0]
+			))),
+			(Primitive::Ball, [2.0; 3], false)
+		);
+		assert_eq!(
+			prim(look(&part_with(
+				Some("Part"),
+				Some("Cylinder"),
+				[5.0, 2.0, 3.0]
+			))),
+			(Primitive::CylinderX, [5.0, 2.0, 2.0], false)
+		);
+		assert_eq!(
+			prim(look(&part_with(Some("WedgePart"), Some("Wedge"), [1.0; 3]))).0,
+			Primitive::Wedge
+		);
+		assert!(prim(look(&part_with(Some("UnionOperation"), Some(""), [1.0; 3]))).2);
+		assert!(matches!(
+			look(&part_with(Some("MeshPart"), Some(""), [1.0; 3])),
+			Look::Missing(_)
+		));
+		// a SpecialMesh sphere stretches to size × scale and moves by its offset
+		let mut p = part_with(Some("Part"), Some("Block"), [2.0, 2.0, 2.0]);
+		p.special_mesh = Some(SpecialMeshInfo {
+			mesh_type: "Sphere".into(),
+			scale: [1.0, 0.5, 1.0],
+			offset: [0.0, 1.0, 0.0],
+		});
+		assert_eq!(
+			look(&p),
+			Look::Primitive {
+				kind: Primitive::Ball,
+				size: [2.0, 1.0, 2.0],
+				offset: [0.0, 1.0, 0.0],
+				approximate: None
+			}
+		);
+		// a SpecialMesh file mesh keeps its own scale instead of fitting
+		p.mesh_ref = 3;
+		p.special_mesh.as_mut().unwrap().mesh_type = "FileMesh".into();
+		assert_eq!(
+			look(&p),
+			Look::Mesh {
+				special: Some(([1.0, 0.5, 1.0], [0.0, 1.0, 0.0]))
+			}
+		);
 	}
 
 	#[test]

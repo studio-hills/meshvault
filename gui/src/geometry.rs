@@ -753,6 +753,198 @@ fn hull_details(geometry: &Geometry) -> Vec<(String, String)> {
 	]
 }
 
+/// Roblox part shapes, as unit-sized solids centred on the origin; a part
+/// scales one to its size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Primitive {
+	Block,
+	/// A sphere (Ball parts, and SpecialMesh spheres, which stretch).
+	Ball,
+	/// A cylinder along X, as Part.Shape = Cylinder.
+	CylinderX,
+	/// A cylinder along Y, as SpecialMesh cylinders and heads.
+	CylinderY,
+	/// Full height at the back (+Z), sloping down to the front (-Z).
+	Wedge,
+	/// A pyramid with its peak over the back right corner (+X, +Z).
+	CornerWedge,
+}
+
+impl Primitive {
+	pub fn geometry(self) -> &'static Geometry {
+		use std::sync::OnceLock;
+		static SHAPES: [OnceLock<Geometry>; 6] = [const { OnceLock::new() }; 6];
+		let (slot, make): (usize, fn() -> Geometry) = match self {
+			Primitive::Block => (0, unit_cube),
+			Primitive::Ball => (1, unit_sphere),
+			Primitive::CylinderX => (2, || unit_cylinder(0)),
+			Primitive::CylinderY => (3, || unit_cylinder(1)),
+			Primitive::Wedge => (4, unit_wedge),
+			Primitive::CornerWedge => (5, unit_corner_wedge),
+		};
+		SHAPES[slot].get_or_init(make)
+	}
+}
+
+/// Turns every triangle of a convex solid centred on the origin to face
+/// outwards (counter-clockwise from outside).
+fn face_outwards(positions: &[[f32; 3]], triangles: &mut [[u32; 3]]) {
+	for t in triangles {
+		let [a, b, c] = t.map(|i| positions[i as usize]);
+		let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+		let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+		let n = [
+			ab[1] * ac[2] - ab[2] * ac[1],
+			ab[2] * ac[0] - ab[0] * ac[2],
+			ab[0] * ac[1] - ab[1] * ac[0],
+		];
+		let centre = [
+			(a[0] + b[0] + c[0]) / 3.0,
+			(a[1] + b[1] + c[1]) / 3.0,
+			(a[2] + b[2] + c[2]) / 3.0,
+		];
+		if n[0] * centre[0] + n[1] * centre[1] + n[2] * centre[2] < 0.0 {
+			t.swap(1, 2);
+		}
+	}
+}
+
+/// A sphere of diameter 1 with smooth normals.
+fn unit_sphere() -> Geometry {
+	const RINGS: u32 = 16;
+	const SEGMENTS: u32 = 32;
+	let mut positions = Vec::new();
+	let mut normals = Vec::new();
+	for r in 0..=RINGS {
+		let phi = std::f32::consts::PI * r as f32 / RINGS as f32;
+		for s in 0..=SEGMENTS {
+			let theta = std::f32::consts::TAU * s as f32 / SEGMENTS as f32;
+			let n = [phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin()];
+			positions.push(n.map(|v| v * 0.5));
+			normals.push(n);
+		}
+	}
+	let row = SEGMENTS + 1;
+	let mut triangles = Vec::new();
+	for r in 0..RINGS {
+		for s in 0..SEGMENTS {
+			let (a, b) = (r * row + s, (r + 1) * row + s);
+			if r > 0 {
+				triangles.push([a, b, a + 1]);
+			}
+			if r + 1 < RINGS {
+				triangles.push([a + 1, b, b + 1]);
+			}
+		}
+	}
+	face_outwards(&positions, &mut triangles);
+	Geometry::whole(positions, triangles).with_normals(normals)
+}
+
+/// A cylinder of length and diameter 1 along `axis` (0 = X, 1 = Y), with
+/// smooth sides and flat caps.
+fn unit_cylinder(axis: usize) -> Geometry {
+	const SEGMENTS: u32 = 32;
+	// built along X, then the axes are swapped for Y
+	let place = |v: [f32; 3]| if axis == 1 { [v[1], v[0], v[2]] } else { v };
+	let mut positions = Vec::new();
+	let mut normals = Vec::new();
+	let mut triangles = Vec::new();
+	let ring = |x: f32, s: u32| {
+		let a = std::f32::consts::TAU * s as f32 / SEGMENTS as f32;
+		([x, 0.5 * a.cos(), 0.5 * a.sin()], [0.0, a.cos(), a.sin()])
+	};
+	// sides
+	for s in 0..=SEGMENTS {
+		for x in [-0.5, 0.5] {
+			let (p, n) = ring(x, s);
+			positions.push(place(p));
+			normals.push(place(n));
+		}
+	}
+	for s in 0..SEGMENTS {
+		let i = s * 2;
+		triangles.push([i, i + 1, i + 2]);
+		triangles.push([i + 1, i + 3, i + 2]);
+	}
+	// caps, each a fan around its centre
+	for x in [-0.5f32, 0.5] {
+		let centre = positions.len() as u32;
+		positions.push(place([x, 0.0, 0.0]));
+		normals.push(place([x.signum(), 0.0, 0.0]));
+		for s in 0..=SEGMENTS {
+			positions.push(place(ring(x, s).0));
+			normals.push(place([x.signum(), 0.0, 0.0]));
+		}
+		for s in 0..SEGMENTS {
+			triangles.push([centre, centre + 1 + s, centre + 2 + s]);
+		}
+	}
+	face_outwards(&positions, &mut triangles);
+	Geometry::whole(positions, triangles).with_normals(normals)
+}
+
+/// Flat-shaded (no normals) solid from corner points and faces.
+fn solid(positions: Vec<[f32; 3]>, faces: &[&[u32]]) -> Geometry {
+	let mut triangles: Vec<[u32; 3]> = faces
+		.iter()
+		.flat_map(|f| (1..f.len() - 1).map(|i| [f[0], f[i], f[i + 1]]))
+		.collect();
+	// the centre of a wedge is not inside all its faces' planes the same way
+	// a box's is, so orient against the solid's centroid instead
+	let n = positions.len() as f32;
+	let c = positions.iter().fold([0.0f32; 3], |acc, p| {
+		[acc[0] + p[0] / n, acc[1] + p[1] / n, acc[2] + p[2] / n]
+	});
+	let shifted: Vec<[f32; 3]> = positions
+		.iter()
+		.map(|p| [p[0] - c[0], p[1] - c[1], p[2] - c[2]])
+		.collect();
+	face_outwards(&shifted, &mut triangles);
+	Geometry::whole(positions, triangles)
+}
+
+fn unit_wedge() -> Geometry {
+	let h = 0.5;
+	solid(
+		vec![
+			[-h, -h, -h],
+			[h, -h, -h],
+			[h, -h, h],
+			[-h, -h, h],
+			[h, h, h],
+			[-h, h, h],
+		],
+		&[
+			&[0, 1, 2, 3], // bottom
+			&[2, 4, 5, 3], // back
+			&[0, 5, 4, 1], // slope
+			&[0, 3, 5],    // left
+			&[1, 4, 2],    // right
+		],
+	)
+}
+
+fn unit_corner_wedge() -> Geometry {
+	let h = 0.5;
+	solid(
+		vec![
+			[-h, -h, -h],
+			[h, -h, -h],
+			[h, -h, h],
+			[-h, -h, h],
+			[h, h, h],
+		],
+		&[
+			&[0, 1, 2, 3], // bottom
+			&[2, 4, 3],    // back
+			&[1, 4, 2],    // right
+			&[0, 4, 1],    // front slope
+			&[0, 3, 4],    // left slope
+		],
+	)
+}
+
 /// A unit cube, used to visualise the BLOCK physics shape.
 pub fn unit_cube() -> Geometry {
 	let positions = (0..8)
@@ -934,6 +1126,46 @@ mod uv_tests {
 			}
 		}
 		println!("{skinned} skinned samples");
+	}
+
+	/// Signed volume by the divergence theorem: right only when the solid is
+	/// closed and every triangle faces outwards.
+	#[test]
+	fn primitives_are_closed_outward_unit_solids() {
+		use std::f32::consts::PI;
+		for (shape, volume) in [
+			(Primitive::Block, 1.0),
+			(Primitive::Ball, PI / 6.0),
+			(Primitive::CylinderX, PI / 4.0),
+			(Primitive::CylinderY, PI / 4.0),
+			(Primitive::Wedge, 0.5),
+			(Primitive::CornerWedge, 1.0 / 3.0),
+		] {
+			let g = shape.geometry();
+			let v: f32 = g
+				.triangles
+				.iter()
+				.map(|t| {
+					let [a, b, c] = t.map(|i| g.positions[i as usize]);
+					(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+						+ a[2] * (b[0] * c[1] - b[1] * c[0]))
+						/ 6.0
+				})
+				.sum();
+			// polygonal spheres and cylinders fall a little short
+			assert!(
+				(v - volume).abs() < volume * 0.03,
+				"{shape:?}: volume {v}, want {volume}"
+			);
+			let (lo, hi) = g.bounds().unwrap();
+			assert!(
+				lo.iter().chain(&hi).all(|c| c.abs() <= 0.5 + 1e-6),
+				"{shape:?} fits the unit box"
+			);
+		}
+		// a cylinder part runs along X
+		let (lo, hi) = Primitive::CylinderX.geometry().bounds().unwrap();
+		assert!((hi[0] - lo[0] - 1.0).abs() < 1e-6 && (hi[1] - lo[1] - 1.0).abs() < 1e-3);
 	}
 
 	#[test]

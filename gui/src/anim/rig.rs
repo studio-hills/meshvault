@@ -28,6 +28,9 @@ pub struct Motor {
 	pub part1: usize,
 	pub c0: CFrame,
 	pub c1: CFrame,
+	/// `Motor6D.Transform` when the model was exported (schema 2), or
+	/// identity. The rest pose shows it; clips replace it.
+	pub captured: CFrame,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +136,10 @@ impl Rig {
 					part1,
 					c0: CFrame::from_components(&j.c0),
 					c1: CFrame::from_components(&j.c1),
+					captured: j
+						.transform
+						.as_ref()
+						.map_or(CFrame::IDENTITY, CFrame::from_components),
 				}),
 				_ => rig.warnings.push(format!(
 					"Joint {} links a part that was not exported",
@@ -281,8 +288,11 @@ impl Rig {
 		})
 	}
 
+	/// The pose the model was exported in: joints at their captured
+	/// transforms (identity for schema 1, which did not record them).
 	pub fn rest(&self) -> Posed {
-		self.solve(&[], &[])
+		let captured: Vec<CFrame> = self.motors.iter().map(|m| m.captured).collect();
+		self.solve(&captured, &[])
 	}
 
 	/// Solves world transforms from a clip sample at `time`.
@@ -399,6 +409,7 @@ mod tests {
 			cframe,
 			size: [1.0; 3],
 			transparency: 0.0,
+			..Default::default()
 		}
 	}
 
@@ -408,6 +419,7 @@ mod tests {
 		AnimatedModel {
 			name: "M".into(),
 			path: "W/M".into(),
+			scale: None,
 			parts: vec![
 				part("W/M/Root", "Root", at(0.0, 2.0, 0.0)),
 				part("W/M/Meshes/Arm", "Meshes/Arm", at(0.0, 2.0, 0.0)),
@@ -419,6 +431,7 @@ mod tests {
 				part1: "W/M/Meshes/Arm".into(),
 				c0: at(0.0, 1.0, 0.0),
 				c1: at(0.0, 1.0, 0.0),
+				transform: None,
 			}],
 			bones: vec![
 				BoneInfo {
@@ -457,6 +470,25 @@ mod tests {
 		assert!(rig.rest_error() < 1e-6);
 		let rest = rig.rest();
 		assert!(rest.bones[1].approx_eq(&CFrame::from_components(&at(0.0, 2.0, 2.0)), 1e-6));
+	}
+
+	/// Schema 2 records Motor6D.Transform: the rest pose shows it, so a
+	/// model captured mid-animation solves back to its exported CFrames.
+	#[test]
+	fn rest_pose_uses_captured_joint_transforms() {
+		let mut m = model();
+		// the arm was exported swung 90° about X at the shoulder
+		let swing = CFrame::axis_rotation(0, std::f32::consts::FRAC_PI_2);
+		m.joints[0].transform = Some(swing.components());
+		let root = CFrame::from_components(&m.parts[0].cframe);
+		let c0 = CFrame::from_components(&m.joints[0].c0);
+		let c1 = CFrame::from_components(&m.joints[0].c1);
+		m.parts[1].cframe = root.mul(&c0).mul(&swing).mul(&c1.inverse()).components();
+		let rig = Rig::build(&m);
+		assert!(rig.rest_error() < 1e-5, "captured pose matches the export");
+		// without the capture the same export looks like a mid-animation snapshot
+		m.joints[0].transform = None;
+		assert!(Rig::build(&m).rest_error() > 0.5);
 	}
 
 	#[test]

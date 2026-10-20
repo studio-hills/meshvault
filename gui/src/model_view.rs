@@ -96,13 +96,8 @@ fn look(part: &ModelPart) -> Look {
 		];
 		return match s.mesh_type.as_str() {
 			"FileMesh" => Look::Missing("its SpecialMesh's file mesh was not exported".into()),
-			"Brick" => primitive(Primitive::Block, scaled, s.offset, None),
-			"Torso" => primitive(
-				Primitive::Block,
-				scaled,
-				s.offset,
-				Some("a SpecialMesh torso (drawn as a box)"),
-			),
+			// a torso is a plain box too (checked in Studio)
+			"Brick" | "Torso" => primitive(Primitive::Block, scaled, s.offset, None),
 			"Sphere" => primitive(Primitive::Ball, scaled, s.offset, None),
 			// like a cylinder part (checked in Studio): along X, as wide as the
 			// smaller of the other two sides

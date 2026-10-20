@@ -27,7 +27,8 @@ struct Uniforms {
 	tint: vec4<f32>,
 	// decal draws: mesh to part space
 	part_from_mesh: mat4x4<f32>,
-	// x: 0 no decal, 1 Decal, 2 Texture; y: face (Enum.NormalId); z: transparency
+	// x: 0 no decal, 1 Decal, 2 Texture, 3 MaterialVariant; y: face (Enum.NormalId);
+	// z: transparency
 	decal: vec4<f32>,
 	// xyz: the part's size in studs
 	decal_size: vec4<f32>,
@@ -123,36 +124,57 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 	return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// The face a MaterialVariant tiles on: the box face the surface turns towards.
+fn box_face(n: vec3<f32>) -> i32 {
+	let a = abs(n);
+	if (a.x >= a.y && a.x >= a.z) {
+		return select(3, 0, n.x > 0.0);
+	}
+	if (a.y >= a.z) {
+		return select(4, 1, n.y > 0.0);
+	}
+	return select(5, 2, n.z > 0.0);
+}
+
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-	// where a decal's image lands: measured from the face's top-left corner
-	let axes = decal_axes(i32(u.decal.y));
+	// the surface's own normal in part space, for geometry without normals;
+	// it faces the camera, like the face normal below
+	let local_face = cross(dpdx(in.local), -dpdy(in.local));
+	let variant = u.decal.x > 2.5;
+	// where a decal's image lands: measured from the face's top-left corner.
+	// A MaterialVariant tiles on whichever box face the surface turns to.
+	var face = i32(u.decal.y);
+	if (variant) {
+		face = box_face(select(local_face, in.local_normal, dot(in.local_normal, in.local_normal) > 1e-8));
+	}
+	let axes = decal_axes(face);
 	let size = u.decal_size.xyz;
 	let face_size = vec2<f32>(abs(dot(size, axes[0])), abs(dot(size, axes[1])));
 	let from_corner = vec2<f32>(dot(in.local, axes[0]), dot(in.local, axes[1])) + face_size * 0.5;
 	var decal_uv = from_corner / max(face_size, vec2<f32>(1e-6));
 	if (u.decal.x > 1.5) {
-		// a Texture tiles from the corner, moved by its offset
+		// a Texture (or a MaterialVariant) tiles from the corner, moved by its offset
 		decal_uv = (from_corner + u.decal_tile.zw) / max(u.decal_tile.xy, vec2<f32>(1e-6));
 	}
 
+	// a MaterialVariant's maps are read where its tiles land
+	let map_uv = select(in.uv, decal_uv, variant);
+
 	// Sample and take derivatives first: both need uniform control flow.
-	let base_s = textureSample(base_tex, samp, in.uv);
+	let base_s = textureSample(base_tex, samp, map_uv);
 	let decal_s = textureSample(base_tex, samp, decal_uv);
-	let normal_s = textureSample(normal_tex, samp, in.uv).xyz;
-	let rough_s = textureSample(rough_tex, samp, in.uv).r;
-	let metal_s = textureSample(metal_tex, samp, in.uv).r;
+	let normal_s = textureSample(normal_tex, samp, map_uv).xyz;
+	let rough_s = textureSample(rough_tex, samp, map_uv).r;
+	let metal_s = textureSample(metal_tex, samp, map_uv).r;
 	// Screen-space derivatives along +x (right) and +y (up). wgpu's framebuffer
 	// y points down, so dpdy is negated to match the OpenGL convention the
 	// tangent frame below was derived in.
 	let dp1 = dpdx(in.world);
 	let dp2 = -dpdy(in.world);
-	let duv1 = dpdx(in.uv);
-	let duv2 = -dpdy(in.uv);
+	let duv1 = dpdx(map_uv);
+	let duv2 = -dpdy(map_uv);
 	let bary_width = fwidth(in.bary);
-	// the surface's own normal in part space, for geometry without normals;
-	// it faces the camera, like the face normal below
-	let local_face = cross(dpdx(in.local), -dpdy(in.local));
 
 	var n: vec3<f32>;
 	if (dot(in.normal, in.normal) < 1e-8) {
@@ -188,7 +210,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 		}
 	}
 
-	if (u.decal.x > 0.5) {
+	if (variant) {
+		// a MaterialVariant: its colour map tinted by the part's colour, opaque
+		if (u.flags.x != 0u) {
+			albedo = base_s.rgb * in.color;
+		}
+		alpha = 1.0;
+	} else if (u.decal.x > 0.5) {
 		// a decal: its image over the part's own face only
 		albedo = decal_s.rgb * u.decal_colour.rgb;
 		alpha = decal_s.a * (1.0 - u.decal.z);

@@ -338,6 +338,33 @@ local function getClip(animationId)
     end
     return item
 end
+local MaterialService = game:GetService("MaterialService")
+local variantCache = {}
+local function materialVariantOf(part)
+    local name = part.MaterialVariant
+    if name == "" then
+        local ok, override = pcall(function()
+            return MaterialService:GetBaseMaterialOverride(part.Material)
+        end)
+        name = ok and override or ""
+    end
+    if name == "" then return nil end
+    local key = name .. "\0" .. part.Material.Name
+    if variantCache[key] == nil then
+        variantCache[key] = false
+        for _, v in ipairs(MaterialService:GetDescendants()) do
+            if v:IsA("MaterialVariant") and v.Name == name and v.BaseMaterial == part.Material then
+                variantCache[key] = {
+                    Name = v.Name, StudsPerTile = v.StudsPerTile,
+                    ColorMap = v.ColorMap, NormalMap = v.NormalMap,
+                    RoughnessMap = v.RoughnessMap, MetalnessMap = v.MetalnessMap,
+                }
+                break
+            end
+        end
+    end
+    return variantCache[key] or nil
+end
 local function exportRig(model)
     local m = {Name=model.Name, Path=fullpath(model), Scale=model:GetScale(), Parts={}, Joints={}, Bones={}, Animations={}}
     local animSeen = {}
@@ -406,6 +433,7 @@ local function exportRig(model)
                 Reflectance=inst.Reflectance,
                 SpecialMesh=specialMesh,
                 SurfaceAppearance=surfaceAppearance,
+                MaterialVariant=materialVariantOf(inst),
                 Decals=decals,
             })
         elseif inst:IsA("Motor6D") then

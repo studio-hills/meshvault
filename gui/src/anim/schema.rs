@@ -62,6 +62,37 @@ pub struct ModelPart {
 	/// The part's Decals and Textures (exporters from 2026-10 on).
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	pub decals: Vec<DecalInfo>,
+	/// The MaterialVariant the part shows, its own or MaterialService's
+	/// override for its material (exporters from 2026-10 on).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub material_variant: Option<MaterialVariantInfo>,
+}
+
+/// A MaterialVariant: maps tiled over the part's surfaces.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct MaterialVariantInfo {
+	pub name: String,
+	/// The size of one tile, in studs.
+	pub studs_per_tile: f32,
+	/// Content ids; "" for a map the variant does not have.
+	pub color_map: String,
+	pub normal_map: String,
+	pub roughness_map: String,
+	pub metalness_map: String,
+}
+
+impl MaterialVariantInfo {
+	/// The variant's maps, by the slot each fills.
+	pub fn maps(&self) -> [(crate::maps::Slot, &str); 4] {
+		use crate::maps::Slot;
+		[
+			(Slot::Base, &self.color_map),
+			(Slot::Normal, &self.normal_map),
+			(Slot::Roughness, &self.roughness_map),
+			(Slot::Metalness, &self.metalness_map),
+		]
+	}
 }
 
 /// A Decal, or a Texture (a Decal that tiles), on one face of a part.

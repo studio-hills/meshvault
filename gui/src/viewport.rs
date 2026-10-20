@@ -161,6 +161,9 @@ pub struct DecalDraw {
 	/// `Color3` (sRGB 0..1) and `Transparency`.
 	pub colour: [f32; 3],
 	pub transparency: f32,
+	/// A MaterialVariant rather than a decal: its maps tile over every face
+	/// (`tiles`), tinted by the part's colour.
+	pub variant: bool,
 }
 
 /// How a Roblox part's surface is drawn, beyond its colour and maps.
@@ -538,7 +541,13 @@ fn draw_gpu(
 			(
 				transpose(d.part_from_mesh),
 				[
-					if d.tiles.is_some() { 2.0 } else { 1.0 },
+					if d.variant {
+						3.0
+					} else if d.tiles.is_some() {
+						2.0
+					} else {
+						1.0
+					},
 					d.face as f32,
 					d.transparency.clamp(0.0, 1.0),
 					0.0,

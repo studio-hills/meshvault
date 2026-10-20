@@ -244,9 +244,11 @@ struct PartDecal {
 	tiles: Option<[f32; 4]>,
 	colour: [f32; 3],
 	transparency: f32,
-	/// The image, as the colour map.
+	/// The image, as the colour map (a MaterialVariant's maps fill their slots).
 	material: Material,
 	gpu: Option<GpuScene>,
+	/// A MaterialVariant over the whole part, drawn before its decals.
+	variant: bool,
 }
 
 /// `Enum.NormalId` value of a face name.
@@ -623,6 +625,8 @@ impl ModelView {
 		// decal images, each loaded once
 		let mut decal_images: HashMap<u64, Option<texture::Texture>> = HashMap::new();
 		let mut decals_missing = 0;
+		let mut variants_missing = 0;
+		let mut variants_on_meshes = 0;
 		let mut parts = Vec::with_capacity(rig.parts.len());
 		let mut missing = 0;
 		for (i, part) in rig.parts.iter().enumerate() {
@@ -737,10 +741,57 @@ impl ModelView {
 						transparency: d.transparency,
 						material,
 						gpu: None,
+						variant: false,
 					},
 				));
 			}
 			decals.sort_by_key(|(z, _)| *z);
+			// a MaterialVariant covers the part, under its decals
+			if let Some(v) = &record.material_variant {
+				let mut material = Material::default();
+				let mut wanted = 0;
+				for (slot, content) in v.maps() {
+					let Some(id) = crate::export::parse_asset_id(content) else {
+						continue;
+					};
+					wanted += 1;
+					let image = decal_images
+						.entry(id)
+						.or_insert_with(|| {
+							let path = images.get(&id)?;
+							let bytes = std::fs::read(path).ok()?;
+							texture::load(ctx, path, &bytes).ok()
+						})
+						.clone();
+					if let Some(image) = image {
+						material.set(slot, image);
+					}
+				}
+				if material.maps.len() < wanted {
+					variants_missing += 1;
+				}
+				if !material.maps.is_empty() {
+					if matches!(shape, PartShape::Mesh(_)) {
+						variants_on_meshes += 1;
+					}
+					let tile = v.studs_per_tile.max(0.01);
+					decals.insert(
+						0,
+						(
+							i32::MIN,
+							PartDecal {
+								face: 0,
+								tiles: Some([tile, tile, 0.0, 0.0]),
+								colour: [1.0; 3],
+								transparency: 0.0,
+								material,
+								gpu: None,
+								variant: true,
+							},
+						),
+					);
+				}
+			}
 			parts.push(PartView {
 				index: i,
 				shape,
@@ -756,6 +807,16 @@ impl ModelView {
 				gpu: None,
 				decals: decals.into_iter().map(|(_, d)| d).collect(),
 			});
+		}
+		if variants_on_meshes > 0 {
+			warnings.push(format!(
+				"{variants_on_meshes} mesh parts have a MaterialVariant, drawn tiled over the part's box faces as on ordinary parts; Studio lays it out differently on meshes."
+			));
+		}
+		if variants_missing > 0 {
+			warnings.push(format!(
+				"{variants_missing} parts show their MaterialVariant without some of its maps: they are not downloaded yet."
+			));
 		}
 		if decals_missing > 0 {
 			warnings.push(format!(
@@ -1155,6 +1216,7 @@ impl ModelView {
 							tiles: d.tiles,
 							colour: d.colour,
 							transparency: d.transparency,
+							variant: d.variant,
 						}),
 					});
 				}

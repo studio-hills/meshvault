@@ -482,8 +482,14 @@ impl Workspace {
 		let images = model
 			.parts
 			.iter()
-			.flat_map(|p| &p.decals)
-			.filter_map(|d| export::parse_asset_id(&d.texture))
+			.flat_map(|p| {
+				let variant = p
+					.material_variant
+					.iter()
+					.flat_map(|v| v.maps().map(|(_, id)| id));
+				p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
+			})
+			.filter_map(export::parse_asset_id)
 			.map(|id| {
 				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);
 				(id, state)
@@ -883,6 +889,18 @@ mod tests {
 		// importing again keeps what was downloaded
 		ws.add_model(&model("A"), &[]).unwrap();
 		assert_eq!(ws.models()[0].images[&77], done);
+		// a MaterialVariant's maps are downloaded the same way
+		let mut tiled = model("C");
+		tiled.parts[0].material_variant = Some(crate::anim::schema::MaterialVariantInfo {
+			name: "Bricks".into(),
+			studs_per_tile: 4.0,
+			color_map: "rbxassetid://99".into(),
+			normal_map: "rbxassetid://100".into(),
+			..Default::default()
+		});
+		ws.add_model(&tiled, &[]).unwrap();
+		let images = &ws.models()[2].images;
+		assert!(images.contains_key(&99) && images.contains_key(&100) && images.contains_key(&77));
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 

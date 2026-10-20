@@ -30,10 +30,11 @@ fn status_colour(p: &super::theme::Palette, status: ClipStatus) -> Color32 {
 impl App {
 	pub(super) fn model_center(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
-		let settings = self.view_settings(&p);
+		let mut settings = self.view_settings(&p);
 		let renderer = self.gpu.as_deref();
 		let plain = (!self.show_maps).then_some(&self.no_material);
 		let Some(model) = &mut self.model else { return };
+		settings.lights = model.scene_lights();
 		let dt = ui.input(|i| i.stable_dt).min(0.1);
 		if model.tick(dt) {
 			ui.ctx().request_repaint();

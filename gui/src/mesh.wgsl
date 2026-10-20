@@ -36,6 +36,11 @@ struct Uniforms {
 	decal_tile: vec4<f32>,
 	// rgb: linear tint (Color3)
 	decal_colour: vec4<f32>,
+	// the model's lights, three each: position and range; linear colour times
+	// brightness and 1 for a cone; direction and the cone's half angle cosine
+	lights: array<vec4<f32>, 24>,
+	// x: how many lights
+	light_count: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -96,6 +101,8 @@ fn decal_axes(face: i32) -> mat3x3<f32> {
 }
 
 const PI: f32 = 3.14159265;
+// a Roblox light's Brightness to this renderer's radiance
+const LIGHT_SCALE: f32 = 3.0;
 // cosine of the steepest angle a surface may turn from a decal and still take it
 const DECAL_FACING: f32 = 0.55;
 
@@ -250,6 +257,25 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	let fill = normalize(vec3<f32>(-key.x, 0.35, -key.z));
 	var color = shade_light(n, v, key, vec3<f32>(2.8), albedo, rough, metal, f0);
 	color += shade_light(n, v, fill, vec3<f32>(0.7), albedo, rough, metal, f0);
+
+	// the model's own lights: fading out to their range, cones softening at
+	// their edge
+	for (var i = 0; i < i32(u.light_count.x); i++) {
+		let at = u.lights[i * 3];
+		let tint = u.lights[i * 3 + 1];
+		let aim = u.lights[i * 3 + 2];
+		let to_light = at.xyz - in.world;
+		let d = length(to_light);
+		if (d < at.w && d > 1e-4) {
+			let l = to_light / d;
+			var fade = 1.0 - d / at.w;
+			fade = fade * fade;
+			if (tint.w > 0.5) {
+				fade *= smoothstep(aim.w, min(aim.w + 0.1, 1.0), dot(-l, normalize(aim.xyz)));
+			}
+			color += shade_light(n, v, l, tint.rgb * fade * LIGHT_SCALE, albedo, rough, metal, f0);
+		}
+	}
 
 	// hemisphere ambient, with a rough environment reflection for metals
 	let sky = vec3<f32>(0.45, 0.48, 0.55);

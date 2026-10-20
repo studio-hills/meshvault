@@ -111,7 +111,26 @@ pub struct ViewSettings {
 	/// Top and bottom of the background gradient.
 	pub background: [Color32; 2],
 	pub grid_colour: Color32,
+	/// The model's own lights, in world space.
+	pub lights: Vec<SceneLight>,
 }
+
+/// A Roblox light placed in the scene.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneLight {
+	pub position: V3,
+	/// Where a spot or surface light shines; unused for point lights.
+	pub direction: V3,
+	/// Colour (sRGB 0..1) and Brightness.
+	pub colour: [f32; 3],
+	pub brightness: f32,
+	pub range: f32,
+	/// Half the cone's angle in degrees, or `None` for a point light.
+	pub half_angle: Option<f32>,
+}
+
+/// The most lights a draw takes; the shader's array holds this many.
+pub const MAX_LIGHTS: usize = 8;
 
 /// Row-major identity, for a mesh shown on its own.
 pub const IDENTITY: [[f32; 4]; 4] = [
@@ -224,6 +243,35 @@ const BASE: Color32 = Color32::from_rgb(170, 185, 205);
 pub const PART_COLOUR: Color32 = Color32::from_rgb(163, 162, 165);
 const WIRE: Color32 = Color32::from_rgba_premultiplied(20, 24, 30, 200);
 const WIRE_ONLY: Color32 = Color32::from_rgb(140, 200, 255);
+
+/// The lights nearest the model, packed for the shader: per light its
+/// position and range, linear colour times brightness and whether it is a
+/// cone, and its direction and the cosine of the cone's half angle.
+fn light_uniforms(lights: &[SceneLight], near: V3) -> Uniforms {
+	let mut sorted: Vec<&SceneLight> = lights
+		.iter()
+		.filter(|l| l.brightness > 0.0 && l.range > 0.0)
+		.collect();
+	let distance = |l: &SceneLight| dot(sub(l.position, near), sub(l.position, near));
+	sorted.sort_by(|a, b| distance(a).total_cmp(&distance(b)));
+	let mut packed = [[0.0f32; 4]; MAX_LIGHTS * 3];
+	for (i, l) in sorted.iter().take(MAX_LIGHTS).enumerate() {
+		let c = l
+			.colour
+			.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)) * l.brightness);
+		packed[i * 3] = [l.position[0], l.position[1], l.position[2], l.range];
+		packed[i * 3 + 1] = [c[0], c[1], c[2], l.half_angle.is_some() as u8 as f32];
+		let cos = l
+			.half_angle
+			.map_or(-1.0, |a| a.clamp(0.0, 90.0).to_radians().cos());
+		packed[i * 3 + 2] = [l.direction[0], l.direction[1], l.direction[2], cos];
+	}
+	Uniforms {
+		lights: packed,
+		light_count: [sorted.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
+		..bytemuck::Zeroable::zeroed()
+	}
+}
 
 fn srgb_channel_to_linear(c: f32) -> f32 {
 	if c <= 0.04045 {
@@ -520,6 +568,7 @@ fn draw_gpu(
 		decal_size: [1.0, 1.0, 1.0, 0.0],
 		decal_tile: [1.0, 1.0, 0.0, 0.0],
 		decal_colour: [1.0; 4],
+		..light_uniforms(&settings.lights, camera.target)
 	};
 	// see-through parts are drawn after the rest, the farthest first
 	let distance = |part: &ScenePart| {

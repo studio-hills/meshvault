@@ -53,6 +53,9 @@ pub struct Uniforms {
 	pub decal_size: [f32; 4],
 	pub decal_tile: [f32; 4],
 	pub decal_colour: [f32; 4],
+	/// The model's lights (see `viewport::light_uniforms`), and how many.
+	pub lights: [[f32; 4]; crate::viewport::MAX_LIGHTS * 3],
+	pub light_count: [f32; 4],
 }
 
 pub struct GpuRenderer {

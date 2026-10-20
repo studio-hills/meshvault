@@ -476,6 +476,7 @@ impl App {
 			show_grid: self.show_grid,
 			background: [p.viewport_top, p.viewport_bottom],
 			grid_colour: p.grid,
+			lights: Vec::new(),
 		}
 	}
 

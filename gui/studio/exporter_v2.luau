@@ -403,6 +403,29 @@ local function exportRig(model)
                 end
             end
             if #decals == 0 then decals = nil end
+            local lights = {}
+            local function addLight(light, at)
+                local tint = light.Color
+                local record = {
+                    ClassName = light.ClassName, Enabled = light.Enabled,
+                    Brightness = light.Brightness, Color = {tint.R, tint.G, tint.B},
+                    Range = light.Range, Shadows = light.Shadows, CFrame = at,
+                }
+                if light:IsA("SpotLight") or light:IsA("SurfaceLight") then
+                    record.Angle, record.Face = light.Angle, light.Face.Name
+                end
+                table.insert(lights, record)
+            end
+            for _, ch in ipairs(inst:GetChildren()) do
+                if ch:IsA("Light") then
+                    addLight(ch, nil)
+                elseif ch:IsA("Attachment") then
+                    for _, light in ipairs(ch:GetChildren()) do
+                        if light:IsA("Light") then addLight(light, cfdata(ch.CFrame)) end
+                    end
+                end
+            end
+            if #lights == 0 then lights = nil end
             local surfaceAppearance = nil
             local appearance = inst:FindFirstChildOfClass("SurfaceAppearance")
             if appearance then
@@ -434,6 +457,7 @@ local function exportRig(model)
                 SpecialMesh=specialMesh,
                 SurfaceAppearance=surfaceAppearance,
                 MaterialVariant=materialVariantOf(inst),
+                Lights=lights,
                 Decals=decals,
             })
         elseif inst:IsA("Motor6D") then

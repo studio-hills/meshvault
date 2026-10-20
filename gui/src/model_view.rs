@@ -236,6 +236,8 @@ pub struct PartView {
 	gpu: Option<GpuScene>,
 	/// Decals and Textures drawn over the part, lowest ZIndex first.
 	decals: Vec<PartDecal>,
+	/// The part's enabled lights.
+	lights: Vec<crate::anim::schema::LightInfo>,
 }
 
 /// A Decal or Texture of a part, with its image loaded.
@@ -806,6 +808,12 @@ impl ModelView {
 				skin,
 				gpu: None,
 				decals: decals.into_iter().map(|(_, d)| d).collect(),
+				lights: record
+					.lights
+					.iter()
+					.filter(|l| l.enabled)
+					.cloned()
+					.collect(),
 			});
 		}
 		if variants_on_meshes > 0 {
@@ -1225,6 +1233,56 @@ impl ModelView {
 			.collect()
 	}
 
+	/// The parts' lights where the parts are now. Spot and surface lights
+	/// shine out of their face; a surface light from the face itself.
+	pub fn scene_lights(&mut self) -> Vec<viewport::SceneLight> {
+		self.update_pose();
+		let mut lights = Vec::new();
+		for part in &self.parts {
+			if part.lights.is_empty() {
+				continue;
+			}
+			let world = self.posed.parts[part.index];
+			let size = self.rig.parts[part.index].size;
+			for l in &part.lights {
+				let at = l
+					.cframe
+					.as_ref()
+					.map_or(world, |c| world.mul(&CFrame::from_components(c)));
+				let normal = match l.face.as_deref().unwrap_or("Front") {
+					"Right" => [1.0, 0.0, 0.0],
+					"Top" => [0.0, 1.0, 0.0],
+					"Back" => [0.0, 0.0, 1.0],
+					"Left" => [-1.0, 0.0, 0.0],
+					"Bottom" => [0.0, -1.0, 0.0],
+					_ => [0.0, 0.0, -1.0],
+				};
+				let mut position = at.pos;
+				if l.class_name == "SurfaceLight" && l.cframe.is_none() {
+					// from the middle of the face
+					let half = [size[0] * 0.5, size[1] * 0.5, size[2] * 0.5];
+					position = at.point([
+						normal[0] * half[0],
+						normal[1] * half[1],
+						normal[2] * half[2],
+					]);
+				}
+				lights.push(viewport::SceneLight {
+					position,
+					direction: at.rotate(normal),
+					colour: l.color,
+					brightness: l.brightness,
+					range: l.range,
+					half_angle: match l.class_name.as_str() {
+						"SpotLight" | "SurfaceLight" => Some(l.angle.unwrap_or(90.0) * 0.5),
+						_ => None,
+					},
+				});
+			}
+		}
+		lights
+	}
+
 	pub fn triangle_count(&self) -> usize {
 		self.parts
 			.iter()
@@ -1391,6 +1449,56 @@ mod tests {
 		assert!(
 			(p[1] - 1.0).abs() < 1e-5 && (p[2] - 2.0).abs() < 1e-5,
 			"{p:?}"
+		);
+	}
+
+	/// Lights follow their part: a spotlight shines out of its face, a
+	/// surface light from the middle of its face, and disabled lights are off.
+	#[test]
+	fn lights_shine_from_their_part() {
+		use crate::anim::schema::LightInfo;
+		let light = |class: &str, face: Option<&str>, enabled: bool| LightInfo {
+			class_name: class.into(),
+			enabled,
+			brightness: 1.0,
+			color: [1.0; 3],
+			range: 8.0,
+			angle: face.map(|_| 60.0),
+			face: face.map(String::from),
+			..Default::default()
+		};
+		let mut lamp = part_with(Some("Part"), Some("Block"), [2.0, 2.0, 2.0]);
+		lamp.path = "Workspace/Lamp/Body".into();
+		lamp.name = "Body".into();
+		// turned a quarter about Y: its Front (-Z) faces -X in the world
+		lamp.cframe = CFrame::axis_rotation(1, std::f32::consts::FRAC_PI_2).components();
+		lamp.cframe[1] = 5.0;
+		lamp.lights = vec![
+			light("SpotLight", Some("Front"), true),
+			light("SurfaceLight", Some("Top"), true),
+			light("PointLight", None, false),
+		];
+		let model = AnimatedModel {
+			name: "Lamp".into(),
+			path: "Workspace/Lamp".into(),
+			parts: vec![lamp],
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		let lights = view.scene_lights();
+		assert_eq!(lights.len(), 2);
+		let close = |a: V3, b: V3| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+		assert!(
+			close(lights[0].direction, [-1.0, 0.0, 0.0]),
+			"{:?}",
+			lights[0].direction
+		);
+		assert_eq!(lights[0].half_angle, Some(30.0));
+		assert!(
+			close(lights[1].position, [0.0, 6.0, 0.0]),
+			"{:?}",
+			lights[1].position
 		);
 	}
 

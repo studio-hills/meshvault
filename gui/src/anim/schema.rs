@@ -66,6 +66,29 @@ pub struct ModelPart {
 	/// override for its material (exporters from 2026-10 on).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub material_variant: Option<MaterialVariantInfo>,
+	/// Lights on the part or its attachments (exporters from 2026-10 on).
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub lights: Vec<LightInfo>,
+}
+
+/// A PointLight, SpotLight or SurfaceLight.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct LightInfo {
+	pub class_name: String,
+	pub enabled: bool,
+	pub brightness: f32,
+	/// Each channel 0..1.
+	pub color: [f32; 3],
+	pub range: f32,
+	pub shadows: bool,
+	/// Spot and surface lights: the cone's angle in degrees, and the face
+	/// (`Enum.NormalId` name) it shines from.
+	pub angle: Option<f32>,
+	pub face: Option<String>,
+	/// Where the light sits on the part, when it is on an attachment.
+	#[serde(rename = "CFrame")]
+	pub cframe: Option<CFrame12>,
 }
 
 /// A MaterialVariant: maps tiled over the part's surfaces.

@@ -173,14 +173,15 @@ Everything travels over `http://localhost:34875`: `GET /export.luau` serves the 
 Schema 1 exports list animated models in the import dialog; selecting one also selects the meshes its parts use.  In the library they appear under Animated models; click one (or open its `.rig.json`) to play it:
 
 - Parts are placed by their Motor6D joints (`Part1 = Part0 * C0 * Transform * C1⁻¹`) and bones (`Parent * CFrame * Transform`); MeshPart meshes are centred and scaled to each part's size, SpecialMesh file meshes keep their own units times `Scale`, plus `Offset`, and fully transparent parts are hidden
-- Parts without a file mesh are drawn as their Roblox shape (block, ball, cylinder, wedge, corner wedge, or a SpecialMesh brick, sphere or cylinder) in their part colour; anything Meshvault has no shape for (trusses, unions, SpecialMesh heads) is drawn approximately and listed in the warnings
+- Parts without a file mesh are drawn as their Roblox shape (block, ball, cylinder, wedge, corner wedge, truss, or a SpecialMesh brick, sphere, cylinder or head, each sized as Studio sizes it) in their part colour; anything Meshvault has no shape for (unions, SpecialMesh torsos) is drawn approximately and listed in the warnings
+- Parts are see-through by their `Transparency`, mirror the sky by their `Reflectance` (tinted by the part on metal materials), and Neon parts glow in their colour
 - Schema 2 models show the pose they were exported in (each joint's captured `Transform`), and clip translations are scaled by the model's `Scale`, as `Model:ScaleTo` does in Roblox. Schema 1 has neither, so joints start at rest and bone translations are scaled by the skinned mesh's own scale
 - Skinned meshes (mesh v4 and later) bend with their bones.  Each bone the mesh was bound to follows a Bone in the model, else a part of the same name (as R15 bodies do), else its bind pose from the mesh file.  Meshes Draco-compressed with edgebreaker stay rigid, since their vertices no longer line up with their weights
 - Clips play as Roblox's Animator plays them, checked against Studio: a pose drives a joint only when its parent pose is named after the joint's Part0 (or the bone's parent), as in Roblox, so poses authored for another rig, or left at the top of a keyframe, move nothing and are listed as unmatched. Pose easing follows Roblox's own curves, including its quirks (legacy Cubic swaps In and Out; Constant In jumps to the next pose at once)
 - The transport bar plays, pauses, scrubs, loops and changes speed (Space plays or pauses), with clip markers on the track.  Clips the exporter could not read are listed with their status and cannot be played
 - The inspector lists clips, tracks that match nothing in the model, parts with visibility toggles, and warnings such as missing meshes or a rig captured mid-animation
 
-Facial animation (FACS) is not part of the export, so face bones hold their bind pose unless a clip animates them by name. Roblox materials other than their colour, reflectance and partial transparency are not rendered yet.
+Facial animation (FACS) is not part of the export, so face bones hold their bind pose unless a clip animates them by name. Material textures (wood grain, metal plates, glass refraction) and shadows are not rendered yet.
 
 #### License
 

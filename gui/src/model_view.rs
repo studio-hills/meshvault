@@ -22,7 +22,7 @@ use crate::geometry::{self, Geometry, GroupKind, Primitive, Skin};
 use crate::gpu::GpuScene;
 use crate::maps::Slot;
 use crate::texture::{self, Material};
-use crate::viewport::{self, Camera, ScenePart};
+use crate::viewport::{self, Camera, ScenePart, Surface};
 
 /// The files of one mesh a model uses, found in the workspace.
 pub struct MeshSource {
@@ -70,6 +70,9 @@ enum Look {
 	Missing(String),
 }
 
+/// A SpecialMesh head's size relative to its part's size times Scale.
+const HEAD_SIZE: f32 = 0.94;
+
 fn look(part: &ModelPart) -> Look {
 	let size = part.size;
 	let special = part.special_mesh.as_ref();
@@ -109,12 +112,17 @@ fn look(part: &ModelPart) -> Look {
 			}
 			"Wedge" => primitive(Primitive::Wedge, scaled, s.offset, None),
 			"CornerWedge" => primitive(Primitive::CornerWedge, scaled, s.offset, None),
-			"Head" => primitive(
-				Primitive::CylinderY,
-				scaled,
-				s.offset,
-				Some("a SpecialMesh head (drawn as a cylinder)"),
-			),
+			// measured in Studio: 94% of the scaled size, upright, and as wide
+			// as the narrower of the scaled X and Z
+			"Head" => {
+				let d = scaled[0].min(scaled[2]) * HEAD_SIZE;
+				primitive(
+					Primitive::Head,
+					[d, scaled[1] * HEAD_SIZE, d],
+					s.offset,
+					None,
+				)
+			}
 			other => primitive(
 				Primitive::Block,
 				scaled,
@@ -140,12 +148,22 @@ fn look(part: &ModelPart) -> Look {
 			primitive(Primitive::CornerWedge, size, [0.0; 3], None)
 		}
 		(Some("MeshPart"), _) => Look::Missing("its mesh was not exported".into()),
-		(_, "Truss") | (Some("TrussPart"), _) => primitive(
-			Primitive::Block,
-			size,
-			[0.0; 3],
-			Some("a truss (drawn as a box)"),
-		),
+		(_, "Truss") | (Some("TrussPart"), _) => {
+			// 2-stud segments along its longest side
+			let axis = (0..3)
+				.max_by(|&a, &b| size[a].total_cmp(&size[b]))
+				.unwrap_or(1);
+			let segments = (size[axis] / 2.0).round().clamp(1.0, 4096.0) as u16;
+			primitive(
+				Primitive::Truss {
+					segments,
+					axis: axis as u8,
+				},
+				size,
+				[0.0; 3],
+				None,
+			)
+		}
 		(Some(class), _) => primitive(
 			Primitive::Block,
 			size,
@@ -175,6 +193,18 @@ fn appearance(part: &ModelPart) -> Option<String> {
 	(!bits.is_empty()).then(|| bits.join(" · "))
 }
 
+fn surface_of(part: &ModelPart) -> Surface {
+	Surface {
+		opacity: 1.0 - part.transparency.clamp(0.0, 1.0),
+		neon: part.material.as_deref() == Some("Neon"),
+		reflectance: part.reflectance.unwrap_or(0.0).clamp(0.0, 1.0),
+		metal: matches!(
+			part.material.as_deref(),
+			Some("Metal" | "DiamondPlate" | "CorrodedMetal" | "Foil")
+		),
+	}
+}
+
 fn colour_of(part: &ModelPart, fallback: Color32) -> Color32 {
 	part.color.map_or(fallback, |c| {
 		let u = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -194,6 +224,7 @@ pub struct PartView {
 	offset: V3,
 	/// `BasePart.Color`, shown where there is no colour map.
 	pub colour: Color32,
+	pub surface: Surface,
 	/// Why the part is drawn as an approximation, if it is.
 	pub approximate: Option<String>,
 	/// Class, material and colour, when the export has them (schema 2).
@@ -635,6 +666,7 @@ impl ModelView {
 				scale,
 				offset,
 				colour,
+				surface: surface_of(record),
 				approximate,
 				appearance: appearance(record),
 				skin,
@@ -956,6 +988,7 @@ impl ModelView {
 					scale,
 					offset,
 					colour,
+					surface,
 					..
 				} = part;
 				// SpecialMesh.Offset moves the mesh in the part's own space
@@ -975,6 +1008,7 @@ impl ModelView {
 									colour: *colour,
 									scene: gpu,
 									moved,
+									surface: *surface,
 								}
 							}
 							None => ScenePart {
@@ -986,6 +1020,7 @@ impl ModelView {
 								colour: *colour,
 								scene: gpu,
 								moved: false,
+								surface: *surface,
 							},
 						})
 					}
@@ -998,6 +1033,7 @@ impl ModelView {
 						colour: *colour,
 						scene: gpu,
 						moved: false,
+						surface: *surface,
 					}),
 					_ => None,
 				}
@@ -1295,6 +1331,18 @@ mod tests {
 			panic!()
 		};
 		assert_eq!((kind, size), (Primitive::CylinderX, [2.0, 1.0, 1.0]));
+		// a SpecialMesh head, measured in Studio: a classic 2×1×1 head part with
+		// scale 1.25 is 1.18 studs wide and tall, round however X and Z differ
+		let mut head = part_with(Some("Part"), Some("Block"), [2.0, 1.0, 1.0]);
+		head.special_mesh = Some(SpecialMeshInfo {
+			mesh_type: "Head".into(),
+			scale: [1.25; 3],
+			offset: [0.0; 3],
+		});
+		let (kind, size, approximate) = prim(look(&head));
+		assert_eq!(kind, Primitive::Head);
+		assert!(!approximate);
+		assert!(size.iter().all(|s| (s - 1.175).abs() < 1e-3), "{size:?}");
 		// a SpecialMesh file mesh keeps its own scale instead of fitting
 		p.mesh_ref = 3;
 		p.special_mesh.as_mut().unwrap().mesh_type = "FileMesh".into();

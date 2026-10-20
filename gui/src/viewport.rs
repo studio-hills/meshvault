@@ -139,6 +139,29 @@ pub struct ScenePart<'a> {
 	pub scene: &'a mut Option<GpuScene>,
 	/// The vertices moved since the last draw (skinning), so they are uploaded again.
 	pub moved: bool,
+	pub surface: Surface,
+}
+
+/// How a Roblox part's surface is drawn, beyond its colour and maps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Surface {
+	/// 1 − `Transparency`.
+	pub opacity: f32,
+	/// Neon parts glow in their colour, unlit.
+	pub neon: bool,
+	/// `Reflectance`: how much of the sky the part mirrors.
+	pub reflectance: f32,
+	/// A metal material: reflections take the part's colour.
+	pub metal: bool,
+}
+
+impl Surface {
+	pub const OPAQUE: Surface = Surface {
+		opacity: 1.0,
+		neon: false,
+		reflectance: 0.0,
+		metal: false,
+	};
 }
 
 const BASE: Color32 = Color32::from_rgb(170, 185, 205);
@@ -428,12 +451,27 @@ fn draw_gpu(
 		],
 		params: [wire_mode, 0.0, 0.6, 0.0],
 		flags: [0; 4],
+		surface: [1.0, 0.0, 0.0, 0.0],
 	};
-	let draws = parts.iter().filter_map(|part| {
+	// see-through parts are drawn after the rest, the farthest first
+	let distance = |part: &ScenePart| {
+		let at = apply(&part.transform, [0.0; 3]);
+		dot(sub(at, eye), sub(at, eye))
+	};
+	let mut order: Vec<&ScenePart> = parts.iter().collect();
+	order.sort_by(|a, b| distance(b).total_cmp(&distance(a)));
+	let draws = order.into_iter().filter_map(|part| {
 		let scene = part.scene.as_ref()?;
+		let s = part.surface;
 		let uniforms = Uniforms {
 			model: transpose(part.transform),
 			normal_model: transpose(normal_matrix(part.transform)),
+			surface: [
+				s.opacity.clamp(0.0, 1.0),
+				s.neon as u8 as f32,
+				s.reflectance,
+				s.metal as u8 as f32,
+			],
 			..uniforms
 		};
 		Some((scene, part.groups, uniforms))

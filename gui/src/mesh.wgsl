@@ -19,6 +19,9 @@ struct Uniforms {
 	params: vec4<f32>,
 	// has base, normal, roughness, metalness map
 	flags: vec4<u32>,
+	// x: opacity (1 - Transparency), y: 1 for Neon, z: Reflectance,
+	// w: 1 for metal materials, whose reflections take the part's colour
+	surface: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -150,7 +153,18 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	let nv = max(dot(n, v), 0.0);
 	let fresnel = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
 	color += ambient * albedo * (1.0 - metal) + ambient * fresnel * (1.0 - 0.7 * rough);
+	// Reflectance mirrors the sky: Roblox blends the reflection over the part
+	if (u.surface.z > 0.0) {
+		let r = reflect(-v, n);
+		let env = mix(ground * 0.6, sky * 1.4, smoothstep(-0.2, 0.3, r.y));
+		let tint = mix(vec3<f32>(1.0), albedo * 1.6, u.surface.w);
+		color = mix(color, env * tint, u.surface.z);
+	}
 	color = aces(color);
+	// Neon glows in its own colour whatever the light, untouched by tone mapping
+	if (u.surface.y > 0.5) {
+		color = min(albedo * 1.25, vec3<f32>(1.0));
+	}
 
 	// wireframe from barycentric coordinates, about one pixel wide
 	let along = smoothstep(vec3<f32>(0.0), bary_width * 1.2, in.bary);
@@ -167,5 +181,5 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	if (u.params.y > 0.5) {
 		color = pow(color, vec3<f32>(1.0 / 2.2));
 	}
-	return vec4<f32>(color, 1.0);
+	return vec4<f32>(color, u.surface.x);
 }

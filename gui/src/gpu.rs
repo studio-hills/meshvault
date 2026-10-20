@@ -39,13 +39,16 @@ pub struct Uniforms {
 	pub wire_color: [f32; 4],
 	pub params: [f32; 4],
 	pub flags: [u32; 4],
+	/// How a Roblox part's surface looks: opacity (1 − Transparency),
+	/// 1 for Neon, Reflectance, 1 for metal materials.
+	pub surface: [f32; 4],
 }
 
 pub struct GpuRenderer {
 	device: wgpu::Device,
 	queue: wgpu::Queue,
-	/// [no culling, back-face culling]
-	pipelines: [wgpu::RenderPipeline; 2],
+	/// [opaque, see-through][no culling, back-face culling]
+	pipelines: [[wgpu::RenderPipeline; 2]; 2],
 	layout: wgpu::BindGroupLayout,
 	sampler: wgpu::Sampler,
 	/// Bound to slots without a map.
@@ -136,7 +139,9 @@ impl GpuRenderer {
 			immediate_size: 0,
 		});
 		let target_format = render_state.target_format;
-		let pipeline = |cull_mode| {
+		// see-through parts blend over what is behind them and leave the depth
+		// buffer alone, so they are drawn last, from the back to the front
+		let pipeline = |see_through: bool, cull_mode| {
 			device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 				label: Some("rbx_mesh pipeline"),
 				layout: Some(&pipeline_layout),
@@ -161,7 +166,7 @@ impl GpuRenderer {
 				},
 				depth_stencil: Some(wgpu::DepthStencilState {
 					format: DEPTH_FORMAT,
-					depth_write_enabled: Some(true),
+					depth_write_enabled: Some(!see_through),
 					depth_compare: Some(wgpu::CompareFunction::Less),
 					stencil: wgpu::StencilState::default(),
 					bias: wgpu::DepthBiasState::default(),
@@ -177,7 +182,7 @@ impl GpuRenderer {
 					compilation_options: wgpu::PipelineCompilationOptions::default(),
 					targets: &[Some(wgpu::ColorTargetState {
 						format: target_format,
-						blend: None,
+						blend: see_through.then_some(wgpu::BlendState::ALPHA_BLENDING),
 						write_mask: wgpu::ColorWrites::ALL,
 					})],
 				}),
@@ -185,7 +190,12 @@ impl GpuRenderer {
 				cache: None,
 			})
 		};
-		let pipelines = [pipeline(None), pipeline(Some(wgpu::Face::Back))];
+		let pipelines = [false, true].map(|see_through| {
+			[
+				pipeline(see_through, None),
+				pipeline(see_through, Some(wgpu::Face::Back)),
+			]
+		});
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("rbx_mesh sampler"),
 			address_mode_u: wgpu::AddressMode::Repeat,
@@ -328,7 +338,8 @@ impl GpuRenderer {
 		scene.flags = flags;
 	}
 
-	/// The paint callback drawing each scene's `groups` with its uniforms.
+	/// The paint callback drawing each scene's `groups` with its uniforms:
+	/// opaque ones first, then see-through ones in the order given.
 	pub fn callback<'a>(
 		&self,
 		scenes: impl IntoIterator<Item = (&'a GpuScene, &'a [usize], Uniforms)>,
@@ -340,6 +351,7 @@ impl GpuRenderer {
 				uniforms.flags = scene.flags;
 				uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
 				Draw {
+					see_through: uniforms.surface[0] < 1.0,
 					bind_group: scene.bind_group.clone(),
 					vertices: scene.vertices.clone(),
 					uniform_buffer: scene.uniforms.clone(),
@@ -352,7 +364,10 @@ impl GpuRenderer {
 			})
 			.collect();
 		MeshCallback {
-			pipeline: self.pipelines[cull as usize].clone(),
+			pipelines: [
+				self.pipelines[0][cull as usize].clone(),
+				self.pipelines[1][cull as usize].clone(),
+			],
 			draws,
 		}
 	}
@@ -446,6 +461,7 @@ fn upload_texture(
 }
 
 struct Draw {
+	see_through: bool,
 	bind_group: wgpu::BindGroup,
 	vertices: wgpu::Buffer,
 	uniform_buffer: wgpu::Buffer,
@@ -454,7 +470,8 @@ struct Draw {
 }
 
 pub struct MeshCallback {
-	pipeline: wgpu::RenderPipeline,
+	/// [opaque, see-through]
+	pipelines: [wgpu::RenderPipeline; 2],
 	draws: Vec<Draw>,
 }
 
@@ -479,13 +496,15 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		render_pass: &mut wgpu::RenderPass<'static>,
 		_resources: &egui_wgpu::CallbackResources,
 	) {
-		render_pass.set_pipeline(&self.pipeline);
-		for draw in &self.draws {
-			render_pass.set_bind_group(0, &draw.bind_group, &[]);
-			render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
-			for range in &draw.ranges {
-				if !range.is_empty() {
-					render_pass.draw(range.clone(), 0..1);
+		for see_through in [false, true] {
+			render_pass.set_pipeline(&self.pipelines[see_through as usize]);
+			for draw in self.draws.iter().filter(|d| d.see_through == see_through) {
+				render_pass.set_bind_group(0, &draw.bind_group, &[]);
+				render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
+				for range in &draw.ranges {
+					if !range.is_empty() {
+						render_pass.draw(range.clone(), 0..1);
+					}
 				}
 			}
 		}

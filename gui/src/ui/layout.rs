@@ -445,6 +445,7 @@ impl App {
 			colour: viewport::PART_COLOUR,
 			scene: &mut doc.gpu,
 			moved: false,
+			surface: viewport::Surface::OPAQUE,
 		}];
 		let home = || Camera::framing(geometry);
 		let rect = viewport::show(

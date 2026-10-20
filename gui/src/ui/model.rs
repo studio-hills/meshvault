@@ -481,7 +481,9 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 							match kind {
 								Primitive::Block => "block",
 								Primitive::Ball => "ball",
-								Primitive::CylinderX | Primitive::CylinderY => "cylinder",
+								Primitive::CylinderX => "cylinder",
+								Primitive::Head => "head",
+								Primitive::Truss { .. } => "truss",
 								Primitive::Wedge => "wedge",
 								Primitive::CornerWedge => "corner wedge",
 							},

@@ -85,6 +85,9 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 		.inner_margin(Margin::same(2))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
+			// the row is exactly as tall as the halves, so the 2px padding is
+			// even on every side and the radii stay concentric (outer = inner + 2)
+			ui.spacing_mut().interact_size.y = CONTROL_SM - 4.0;
 			let half = ((ui.available_width() - 2.0) / 2.0).floor();
 			ui.horizontal(|ui| {
 				let sides = [

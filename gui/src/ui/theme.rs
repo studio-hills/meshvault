@@ -220,10 +220,23 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	s.interact_size = Vec2::new(CONTROL, CONTROL);
 	s.window_margin = Margin::same(16);
 	s.menu_margin = Margin::symmetric(8, 8);
-	// solid scroll bars sit beside the content instead of floating over it
+	// scroll bars stay out of the way: a faint 2px line shows there is more
+	// to scroll, widening to a full bar on hover or while scrolling. The
+	// bar keeps a gutter of its own so it never covers content, and the
+	// edge that hides content fades out.
 	s.scroll = egui::style::ScrollStyle {
+		floating: true,
 		bar_width: 8.0,
-		bar_inner_margin: 6.0,
+		floating_width: 2.0,
+		floating_allocated_width: 8.0,
+		bar_inner_margin: 2.0,
+		bar_outer_margin: 0.0,
+		dormant_background_opacity: 0.0,
+		dormant_handle_opacity: 0.55,
+		active_background_opacity: 0.0,
+		active_handle_opacity: 0.6,
+		interact_background_opacity: 0.3,
+		interact_handle_opacity: 0.9,
 		..egui::style::ScrollStyle::solid()
 	};
 	s.indent = 16.0;

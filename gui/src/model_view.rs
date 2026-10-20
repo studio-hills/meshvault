@@ -16,7 +16,7 @@ use eframe::egui::{self, Color32};
 
 use crate::anim::clip::{Clip, ClipMarker};
 use crate::anim::math::{CFrame, V3};
-use crate::anim::rig::{Binding, Posed, Rig};
+use crate::anim::rig::{Binding, BoneParent, Posed, Rig, Target};
 use crate::anim::schema::{AnimatedModel, ClipStatus};
 use crate::geometry::{self, Geometry, GroupKind, Skin};
 use crate::gpu::GpuScene;
@@ -89,6 +89,8 @@ pub struct PartSkin {
 	/// World-space vertices in the current pose.
 	pub geometry: Geometry,
 	moved: bool,
+	/// The part's mesh scale, applied to clip translations of mesh-only bones.
+	unit_scale: f32,
 	/// How many of the mesh's bones matched a Bone or part in the model.
 	pub matched: usize,
 	pub bones: usize,
@@ -125,6 +127,8 @@ pub struct ModelView {
 	bounds: Option<(V3, V3)>,
 	pub warnings: Vec<String>,
 	pub show_blocks: bool,
+	/// Scale of the mesh each Bone moves (1 for none); see [`scale_translation`].
+	bone_scale: Vec<f32>,
 	/// The pose needs solving again (time, clip or rest changed).
 	dirty: bool,
 }
@@ -281,6 +285,7 @@ impl PartSkin {
 			rest_normals,
 			geometry: g.clone(),
 			moved: true,
+			unit_scale: mean(scale),
 			matched,
 			bones: skin.bones.len(),
 		};
@@ -315,8 +320,7 @@ impl PartSkin {
 					};
 					let t = by_name
 						.get(name.as_str())
-						.copied()
-						.unwrap_or(CFrame::IDENTITY);
+						.map_or(CFrame::IDENTITY, |&t| scale_translation(t, self.unit_scale));
 					(pn.mul(local).mul(&t), pr.mul(local))
 				}
 			};
@@ -355,6 +359,22 @@ impl PartSkin {
 		}
 		self.moved = true;
 	}
+}
+
+fn mean(v: V3) -> f32 {
+	(v[0] + v[1] + v[2]) / 3.0
+}
+
+/// A bone's animated offset in the units of the mesh it deforms. Roblox
+/// keeps skinning in mesh space and scales the result to the part's size,
+/// so when a mesh made at another scale is resized (a pet modelled in
+/// centimetres shrunk to 3 studs) its clips' translations shrink with it.
+/// Without this, such clips throw the model metres off its spot.
+fn scale_translation(mut t: CFrame, scale: f32) -> CFrame {
+	for v in &mut t.pos {
+		*v *= scale;
+	}
+	t
 }
 
 fn add_scaled(acc: &mut V3, v: V3, w: f32) {
@@ -511,7 +531,27 @@ impl ModelView {
 			})
 			.collect();
 
+		// bones under a resized skinned mesh move in the mesh's own units
+		let part_scale: HashMap<usize, f32> = parts
+			.iter()
+			.filter(|p| matches!(p.shape, PartShape::Mesh(_)))
+			.map(|p| (p.index, mean(p.scale)))
+			.collect();
+		let bone_scale = (0..rig.bones.len())
+			.map(|mut b| {
+				for _ in 0..=rig.bones.len() {
+					match rig.bones[b].parent {
+						BoneParent::Part(p) => return part_scale.get(&p).copied().unwrap_or(1.0),
+						BoneParent::Bone(q) => b = q,
+						BoneParent::None => break,
+					}
+				}
+				1.0
+			})
+			.collect();
+
 		let mut view = Self {
+			bone_scale,
 			index,
 			name: model.name.clone(),
 			path: model.path.clone(),
@@ -650,7 +690,14 @@ impl ModelView {
 					.sample(self.time)
 					.map(|(key, t)| (key.name.as_str(), t))
 					.collect();
-				let transforms: Vec<CFrame> = samples.iter().map(|s| s.1).collect();
+				let transforms: Vec<CFrame> = samples
+					.iter()
+					.zip(&binding.targets)
+					.map(|(s, target)| match target {
+						Some(Target::Bone(b)) => scale_translation(s.1, self.bone_scale[*b]),
+						_ => s.1,
+					})
+					.collect();
 				let posed = self.rig.pose_from(binding, &transforms);
 				let by_name: HashMap<&str, CFrame> = samples
 					.iter()
@@ -946,6 +993,18 @@ mod tests {
 			);
 		}
 		println!("{frames} poses solved");
+	}
+
+	#[test]
+	fn bone_translations_scale_with_their_mesh() {
+		// a pet modelled in centimetres: -16 mesh units is 8 cm at scale 0.005
+		let t = CFrame {
+			pos: [0.0, -16.0, 0.0],
+			rot: CFrame::axis_rotation(0, 0.3).rot,
+		};
+		let scaled = scale_translation(t, 0.005);
+		assert!((scaled.pos[1] + 0.08).abs() < 1e-6);
+		assert_eq!(scaled.rot, t.rot, "rotation is unchanged");
 	}
 
 	#[test]

@@ -743,6 +743,29 @@ impl ModelView {
 			})
 			.collect();
 
+		// clips that move parts no exported joint connects: newer avatars use
+		// AnimationConstraints, which the exporter does not read
+		let joined: std::collections::HashSet<usize> =
+			rig.motors.iter().flat_map(|m| [m.part0, m.part1]).collect();
+		let loose: std::collections::HashSet<&str> = rig
+			.parts
+			.iter()
+			.enumerate()
+			.filter(|(i, _)| !joined.contains(i))
+			.map(|(_, p)| p.name.as_str())
+			.collect();
+		let stranded = clips
+			.iter()
+			.flat_map(|c| c.binding.unmatched.iter())
+			.filter(|n| loose.contains(n.as_str()))
+			.collect::<std::collections::BTreeSet<_>>();
+		if !stranded.is_empty() {
+			warnings.push(format!(
+				"Its clips animate {} parts that no exported joint connects, so they stay still. Rigs built with AnimationConstraints (newer avatars) or other joint types are not in the export.",
+				stranded.len()
+			));
+		}
+
 		let mut view = Self {
 			motor_scale,
 			bone_scale,
@@ -1281,6 +1304,87 @@ mod tests {
 				special: Some(([1.0, 0.5, 1.0], [0.0, 1.0, 0.0]))
 			}
 		);
+	}
+
+	/// Compares Meshvault's joint transforms with Roblox's, sampled in Studio
+	/// (`Motor6D.Transform` while a clip plays, as JSON
+	/// `{model: {clip: {samples: [{t, joints: {name: CFrame12}}]}}}`):
+	/// `RBX_TEST_EXPORT=export.json STUDIO_SAMPLES=samples.json cargo test
+	///  -p meshvault -- --ignored matches_studio --nocapture`
+	#[test]
+	#[ignore]
+	fn matches_studio_samples() {
+		let (Ok(export), Ok(samples)) = (
+			std::env::var("RBX_TEST_EXPORT"),
+			std::env::var("STUDIO_SAMPLES"),
+		) else {
+			return;
+		};
+		let export = crate::export::parse(&std::fs::read_to_string(export).unwrap()).unwrap();
+		let samples: serde_json::Value =
+			serde_json::from_str(&std::fs::read_to_string(samples).unwrap()).unwrap();
+		let mut worst = 0.0f32;
+		for (model_name, clips) in samples.as_object().unwrap() {
+			let model = export
+				.models
+				.iter()
+				.find(|m| &m.name == model_name)
+				.unwrap();
+			let rig = Rig::build(model);
+			let scale = model.scale.unwrap_or(1.0);
+			for (clip_name, data) in clips.as_object().unwrap() {
+				let record = model
+					.animations
+					.iter()
+					.find(|a| &a.name == clip_name)
+					.unwrap();
+				let clip = Clip::from_record(record).unwrap();
+				let binding = rig.bind(&clip);
+				let (mut rot_err, mut pos_err, mut at) = (0.0f32, 0.0f32, String::new());
+				for sample in data["samples"].as_array().unwrap() {
+					let t = sample["t"].as_f64().unwrap() as f32;
+					let mut ours: HashMap<&str, CFrame> = HashMap::new();
+					for ((_, local), target) in clip.sample(t).zip(&binding.targets) {
+						if let Some(crate::anim::rig::Target::Motor(i)) = target {
+							ours.insert(&rig.motors[*i].name, scale_translation(local, scale));
+						}
+					}
+					for (joint, theirs) in sample["joints"].as_object().unwrap() {
+						let c: Vec<f32> = theirs
+							.as_array()
+							.unwrap()
+							.iter()
+							.map(|v| v.as_f64().unwrap() as f32)
+							.collect();
+						let theirs = CFrame::from_components(&c.try_into().unwrap());
+						let mine = ours
+							.get(joint.as_str())
+							.copied()
+							.unwrap_or(CFrame::IDENTITY);
+						let r = (0..3)
+							.flat_map(|i| (0..3).map(move |j| (i, j)))
+							.map(|(i, j)| (mine.rot[i][j] - theirs.rot[i][j]).abs())
+							.fold(0.0, f32::max);
+						let p = (0..3)
+							.map(|k| (mine.pos[k] - theirs.pos[k]).abs())
+							.fold(0.0, f32::max);
+						if r > rot_err || p > pos_err {
+							at = format!(
+								"{joint} at {t:.3}s: ours {:?} theirs {:?}",
+								mine.pos, theirs.pos
+							);
+						}
+						rot_err = rot_err.max(r);
+						pos_err = pos_err.max(p);
+					}
+				}
+				println!(
+					"{model_name}/{clip_name}: rotation error {rot_err:.4}, translation error {pos_err:.4} studs  (worst: {at})"
+				);
+				worst = worst.max(rot_err);
+			}
+		}
+		assert!(worst < 0.01, "rotations should match Roblox to rounding");
 	}
 
 	#[test]

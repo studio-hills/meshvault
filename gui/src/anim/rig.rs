@@ -238,9 +238,17 @@ impl Rig {
 		let mut binding = Binding::default();
 		for track in &clip.tracks {
 			let target = self.find_target(&track.target);
-			// a pose on the assembly root (a part no joint drives) has nothing to
-			// drive; it only groups the poses below it
-			let is_root_part = || self.parts.iter().any(|p| p.name == track.target.name);
+			// a pose on the assembly root (a part that drives others but that no
+			// joint drives) has nothing to move; it only groups the poses below
+			// it. A part no joint touches at all is a real miss: a rig whose
+			// joints were not exported would otherwise look fully bound.
+			let is_root_part = || {
+				self.parts.iter().enumerate().any(|(i, p)| {
+					p.name == track.target.name
+						&& self.motors.iter().any(|m| m.part0 == i)
+						&& !self.motors.iter().any(|m| m.part1 == i)
+				})
+			};
 			if target.is_none() && !is_root_part() {
 				binding.unmatched.push(track.target.name.clone());
 			}
@@ -489,6 +497,29 @@ mod tests {
 		// without the capture the same export looks like a mid-animation snapshot
 		m.joints[0].transform = None;
 		assert!(Rig::build(&m).rest_error() > 0.5);
+	}
+
+	/// A pose on the assembly root is harmless, but a pose on a part that no
+	/// exported joint connects (an AnimationConstraint rig) is a real miss.
+	#[test]
+	fn unjoined_parts_are_unmatched() {
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![Keyframe {
+				time: 0.0,
+				poses: vec![rotate_pose("Root", 0.0), rotate_pose("Meshes/Arm", 0.0)],
+				markers: vec![],
+			}],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&record).unwrap();
+		let rig = Rig::build(&model());
+		assert!(rig.bind(&clip).unmatched.is_empty(), "Root drives the arm");
+		let mut unjoined = model();
+		unjoined.joints.clear();
+		let binding = Rig::build(&unjoined).bind(&clip);
+		assert_eq!(binding.unmatched, ["Root", "Meshes/Arm"]);
 	}
 
 	#[test]

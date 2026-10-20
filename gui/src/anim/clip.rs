@@ -9,6 +9,37 @@ use super::schema::{
 	RotationKey, ScalarKey,
 };
 
+/// One face control (JawDrop, ..) over time: NumberPoses of a keyframe
+/// clip, or a FloatCurve of a curve clip.
+#[derive(Clone, Debug)]
+pub struct FaceTrack {
+	pub control: String,
+	keys: FaceKeys,
+}
+
+#[derive(Clone, Debug)]
+enum FaceKeys {
+	Poses(Vec<(f32, f32, EasingStyle, EasingDirection)>),
+	Curve(Vec<ScalarKey>),
+}
+
+impl FaceTrack {
+	pub fn sample(&self, time: f32) -> f32 {
+		match &self.keys {
+			FaceKeys::Curve(keys) => sample_scalar(keys, time).unwrap_or(0.0),
+			FaceKeys::Poses(keys) => match segment(keys, time, |k| k.0) {
+				Err(i) => keys[i].1,
+				Ok(i) => {
+					let (a, b) = (&keys[i], &keys[i + 1]);
+					let span = b.0 - a.0;
+					let t = if span > 0.0 { (time - a.0) / span } else { 1.0 };
+					a.1 + (b.1 - a.1) * pose_ease(a.2, a.3, t)
+				}
+			},
+		}
+	}
+}
+
 /// What a track animates: a pose name plus its parent pose's name, which
 /// tells apart same-named targets in different places of the rig.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -65,6 +96,8 @@ pub struct Clip {
 	pub markers: Vec<ClipMarker>,
 	/// Curves the player cannot apply (e.g. FloatCurves, unknown types).
 	pub skipped_curves: usize,
+	/// Face controls the clip animates, for FACS heads.
+	pub face: Vec<FaceTrack>,
 }
 
 impl Clip {
@@ -76,6 +109,7 @@ impl Clip {
 			tracks: Vec::new(),
 			markers: Vec::new(),
 			skipped_curves: 0,
+			face: Vec::new(),
 		};
 		match record.status {
 			ClipStatus::KeyframeSequence => clip.add_keyframes(record),
@@ -92,7 +126,7 @@ impl Clip {
 				});
 			}
 		}
-		if clip.tracks.is_empty() {
+		if clip.tracks.is_empty() && clip.face.is_empty() {
 			return Err("The clip has no motion data.".into());
 		}
 		// the exported duration is the last key time; recompute if missing
@@ -115,6 +149,24 @@ impl Clip {
 				});
 			}
 			walk_poses(&frame.poses, None, frame.time, &mut tracks);
+			for face in frame.poses.iter().flat_map(face_controls_of) {
+				let key = (
+					frame.time,
+					face.value,
+					face.easing_style,
+					face.easing_direction,
+				);
+				match self.face.iter_mut().find(|t| t.control == face.name) {
+					Some(FaceTrack {
+						keys: FaceKeys::Poses(keys),
+						..
+					}) => keys.push(key),
+					_ => self.face.push(FaceTrack {
+						control: face.name.clone(),
+						keys: FaceKeys::Poses(vec![key]),
+					}),
+				}
+			}
 		}
 		self.tracks = tracks
 			.into_iter()
@@ -169,6 +221,17 @@ impl Clip {
 					keys.sort_by(|a, b| a.time.total_cmp(&b.time));
 					entry.2 = Rotation::Keys(keys);
 				}
+				// a face control: its folder is FaceControls
+				CurveData::FloatCurve { keys }
+					if track.path.rsplit('/').next() == Some("FaceControls") =>
+				{
+					let mut keys = keys.clone();
+					keys.sort_by(|a, b| a.time.total_cmp(&b.time));
+					self.face.push(FaceTrack {
+						control: track.name.clone(),
+						keys: FaceKeys::Curve(keys),
+					});
+				}
 				CurveData::FloatCurve { .. } | CurveData::Unknown => self.skipped_curves += 1,
 			}
 		}
@@ -182,6 +245,14 @@ impl Clip {
 				sampler: Sampler::Curves { position, rotation },
 			})
 			.collect();
+	}
+
+	/// Every animated face control's value at `time` seconds.
+	pub fn face_weights(&self, time: f32) -> Vec<(&str, f32)> {
+		self.face
+			.iter()
+			.map(|t| (t.control.as_str(), t.sample(time)))
+			.collect()
 	}
 
 	/// Local transforms of every track at `time` seconds.
@@ -201,6 +272,15 @@ fn channels_of(channels: &Channels) -> [Vec<ScalarKey>; 3] {
 		sorted(&channels.y),
 		sorted(&channels.z),
 	]
+}
+
+/// Every face control pose in a pose tree.
+fn face_controls_of(pose: &Pose) -> Vec<&super::schema::FaceControlPose> {
+	let mut found: Vec<&super::schema::FaceControlPose> = pose.face_controls.iter().collect();
+	for child in &pose.children {
+		found.extend(face_controls_of(child));
+	}
+	found
 }
 
 fn walk_poses(
@@ -517,6 +597,7 @@ mod tests {
 			easing_style: EasingStyle::Linear,
 			easing_direction: EasingDirection::In,
 			children,
+			face_controls: vec![],
 		}
 	}
 
@@ -720,6 +801,55 @@ mod tests {
 			},
 			1e-5
 		));
+	}
+
+	/// Face controls come from NumberPoses in a keyframe clip's FaceControls
+	/// and from FloatCurves in a curve clip's FaceControls folder; a clip
+	/// with nothing else still plays.
+	#[test]
+	fn face_controls_are_tracks() {
+		use crate::anim::schema::FaceControlPose;
+		let jaw = |value: f32| FaceControlPose {
+			name: "JawDrop".into(),
+			value,
+			easing_style: EasingStyle::Linear,
+			easing_direction: EasingDirection::In,
+		};
+		let frame = |time: f32, value: f32| Keyframe {
+			time,
+			poses: vec![Pose {
+				face_controls: vec![jaw(value)],
+				..pose("Head", 0.0, 0.0, vec![])
+			}],
+			markers: vec![],
+		};
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![frame(0.0, 0.0), frame(1.0, 0.8)],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&record).unwrap();
+		assert!(clip.tracks.is_empty());
+		let w = clip.face_weights(0.5);
+		assert_eq!(w.len(), 1);
+		assert_eq!(w[0].0, "JawDrop");
+		assert!((w[0].1 - 0.4).abs() < 1e-6);
+		let curves = AnimationClip {
+			status: ClipStatus::CurveAnimation,
+			duration: 1.0,
+			curves: vec![CurveTrack {
+				path: "Head/FaceControls".into(),
+				name: "LeftEyeClosed".into(),
+				curve: CurveData::FloatCurve {
+					keys: vec![key(0.0, 0.0, "Linear"), key(1.0, 1.0, "Linear")],
+				},
+			}],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&curves).unwrap();
+		assert_eq!(clip.skipped_curves, 0);
+		assert_eq!(clip.face_weights(0.25)[0], ("LeftEyeClosed", 0.25));
 	}
 
 	#[test]

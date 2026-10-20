@@ -299,6 +299,20 @@ pub struct Pose {
 	pub easing_style: EasingStyle,
 	pub easing_direction: EasingDirection,
 	pub children: Vec<Pose>,
+	/// Face control values set at this pose (NumberPoses in its
+	/// FaceControls), exporters from 2026-10 on.
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub face_controls: Vec<FaceControlPose>,
+}
+
+/// A NumberPose for one face control (JawDrop, LeftEyeClosed, ..).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct FaceControlPose {
+	pub name: String,
+	pub value: f32,
+	pub easing_style: EasingStyle,
+	pub easing_direction: EasingDirection,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -186,7 +186,7 @@ Schema 1 exports list animated models in the import dialog; selecting one also s
 - The transport bar plays, pauses, scrubs, loops and changes speed (Space plays or pauses), with clip markers on the track.  Clips the exporter could not read are listed with their status and cannot be played
 - The inspector lists clips, tracks that match nothing in the model, parts with visibility toggles, and warnings such as missing meshes or a rig captured mid-animation
 
-Facial animation (FACS) is not part of the export, so face bones hold their bind pose unless a clip animates them by name. Material textures (wood grain, metal plates, glass refraction) and shadows are not rendered yet.
+Facial animation plays on FACS heads: clips' face controls (NumberPoses in a keyframe clip's `FaceControls`, FloatCurves in a curve clip's `FaceControls` folder) weight the head's FACS poses and correctives, which move its face bones. The poses' bone movements are applied; their bone rotations are not yet, since applying them as read curls lips far more than Studio does. Material textures (wood grain, metal plates, glass refraction) and shadows are not rendered yet.
 
 #### License
 

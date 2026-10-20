@@ -292,6 +292,10 @@ pub struct PartSkin {
 	moved: bool,
 	/// The part's mesh scale, applied to clip translations of mesh-only bones.
 	unit_scale: f32,
+	/// The mesh's FACS poses, which move its face bones by face control.
+	facs: Option<geometry::Facs>,
+	/// Mesh units to studs, for FACS offsets.
+	mesh_scale: f32,
 	/// How many of the mesh's bones matched a Bone or part in the model.
 	pub matched: usize,
 	pub bones: usize,
@@ -488,10 +492,12 @@ impl PartSkin {
 			geometry: g.clone(),
 			moved: true,
 			unit_scale: mean(scale),
+			facs: skin.facs.clone(),
+			mesh_scale: mean(scale),
 			matched,
 			bones: skin.bones.len(),
 		};
-		out.update(rest, rest, owner, &HashMap::new());
+		out.update(rest, rest, owner, &HashMap::new(), &[]);
 		out
 	}
 
@@ -503,7 +509,23 @@ impl PartSkin {
 		posed: &Posed,
 		owner: usize,
 		by_name: &HashMap<&str, CFrame>,
+		face: &[(String, f32)],
 	) {
+		// face bones posed by the face controls (FACS), in this part's studs
+		let face_bones: HashMap<&str, CFrame> = match &self.facs {
+			Some(facs) if !face.is_empty() => facs
+				.bone_offsets(|c| face.iter().find(|(n, _)| n == c).map_or(0.0, |f| f.1))
+				.into_iter()
+				// only the bones' movements: applying the poses' rotations as
+				// read (degrees about X, Y, Z) curls lips far more than Studio
+				// does, and how Roblox applies them is not yet known
+				.map(|(b, o)| {
+					let pos = [o[0], o[1], o[2]].map(|v| v * self.mesh_scale);
+					(facs.bones[b].as_str(), CFrame::from_position(pos))
+				})
+				.collect(),
+			_ => HashMap::new(),
+		};
 		let n = self.drivers.len();
 		let mut now = vec![CFrame::IDENTITY; n];
 		let mut then = vec![CFrame::IDENTITY; n];
@@ -520,9 +542,12 @@ impl PartSkin {
 						Some(p) => (now[*p], then[*p]),
 						None => (posed.parts[owner], rest.parts[owner]),
 					};
-					let t = by_name
-						.get(name.as_str())
-						.map_or(CFrame::IDENTITY, |&t| scale_translation(t, self.unit_scale));
+					let t = match face_bones.get(name.as_str()) {
+						Some(&t) => t,
+						None => by_name
+							.get(name.as_str())
+							.map_or(CFrame::IDENTITY, |&t| scale_translation(t, self.unit_scale)),
+					};
 					(pn.mul(local).mul(&t), pr.mul(local))
 				}
 			};
@@ -1093,6 +1118,16 @@ impl ModelView {
 			return;
 		}
 		let slot = self.current.and_then(|i| self.clips.get(i));
+		// face controls the clip animates, for FACS heads
+		let face: Vec<(String, f32)> = slot
+			.and_then(|s| s.clip.as_ref().ok())
+			.map(|clip| {
+				clip.face_weights(self.time)
+					.into_iter()
+					.map(|(n, w)| (n.to_string(), w))
+					.collect()
+			})
+			.unwrap_or_default();
 		let (posed, by_name) = match slot.and_then(|s| Some((s.clip.as_ref().ok()?, &s.binding))) {
 			Some((clip, binding)) => {
 				let samples: Vec<(&str, CFrame)> = clip
@@ -1121,7 +1156,7 @@ impl ModelView {
 		};
 		for part in &mut self.parts {
 			if let Some(skin) = &mut part.skin {
-				skin.update(&self.rest, &posed, part.index, &by_name);
+				skin.update(&self.rest, &posed, part.index, &by_name, &face);
 			}
 		}
 		self.posed = posed;
@@ -1396,6 +1431,7 @@ mod tests {
 				[(1, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)],
 				[(2, 0.5), (1, 0.5), (0, 0.0), (0, 0.0)],
 			],
+			facs: None,
 		};
 		let a = asset(
 			vec![[0.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.5, 0.0]],
@@ -1412,7 +1448,7 @@ mod tests {
 			unmatched: vec![],
 		};
 		let posed = rig.pose_from(&binding, &motor_t);
-		ps.update(&rest, &posed, 0, &HashMap::new());
+		ps.update(&rest, &posed, 0, &HashMap::new(), &[]);
 		let p = ps.geometry.positions;
 		assert!(
 			(p[0][1] - 0.0).abs() < 1e-5,
@@ -1437,6 +1473,7 @@ mod tests {
 			parents: vec![None, Some(0)],
 			binds: vec![cf([0.0; 3]), cf([0.0, 0.0, 1.0])],
 			influences: vec![[(1, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; 3],
+			facs: None,
 		};
 		let a = asset(vec![[0.0, 0.0, 2.0]; 3], skin.clone());
 		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, [0.0; 3], [1.0; 3]);
@@ -1444,7 +1481,7 @@ mod tests {
 		assert_eq!(ps.geometry.positions[0], [0.0, 0.0, 2.0]);
 		// a track named Jaw moving it up by 1
 		let by_name = HashMap::from([("Jaw", CFrame::from_position([0.0, 1.0, 0.0]))]);
-		ps.update(&rest, &rest, 0, &by_name);
+		ps.update(&rest, &rest, 0, &by_name, &[]);
 		let p = ps.geometry.positions[0];
 		assert!(
 			(p[1] - 1.0).abs() < 1e-5 && (p[2] - 2.0).abs() < 1e-5,

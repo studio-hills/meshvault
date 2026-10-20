@@ -170,6 +170,17 @@ local function exportPose(pose)
     }
     for _, ch in ipairs(pose:GetChildren()) do
         if ch:IsA("Pose") then table.insert(data.Children, exportPose(ch)) end
+        if ch.Name == "FaceControls" and (ch:IsA("Folder") or ch:IsA("Pose")) then
+            data.FaceControls = data.FaceControls or {}
+            for _, n in ipairs(ch:GetChildren()) do
+                if n:IsA("NumberPose") then
+                    table.insert(data.FaceControls, {
+                        Name = n.Name, Value = n.Value,
+                        EasingStyle = n.EasingStyle.Name, EasingDirection = n.EasingDirection.Name,
+                    })
+                end
+            end
+        end
     end
     return data
 end

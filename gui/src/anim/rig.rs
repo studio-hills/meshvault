@@ -517,6 +517,7 @@ mod tests {
 			easing_style: EasingStyle::Linear,
 			easing_direction: EasingDirection::In,
 			children: vec![],
+			face_controls: vec![],
 		}
 	}
 

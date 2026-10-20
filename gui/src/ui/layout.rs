@@ -19,6 +19,7 @@ impl eframe::App for App {
 		self.poll_downloads();
 		self.poll_parsing();
 		self.poll_model();
+		self.poll_studio_link();
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
 		let p = palette(&ctx);
@@ -316,6 +317,22 @@ impl App {
 						.on_hover_text(
 							"No GPU renderer: normal, roughness and metalness maps are not shown",
 						);
+				}
+			}
+			match &self.studio_link.status {
+				crate::studio_link::Status::Listening => {
+					ui.label(small(format!("{}  Studio link", icons::CIRCLE), p.success))
+						.on_hover_text(format!(
+							"Exports sent from Roblox Studio to localhost:{} open here for import",
+							crate::studio_link::PORT
+						));
+				}
+				crate::studio_link::Status::Unavailable(why) => {
+					ui.label(small(format!("{}  Studio link off", icons::CIRCLE), p.warning))
+						.on_hover_text(format!(
+							"Cannot receive exports from Roblox Studio on port {}: {why}. Another Meshvault may already be receiving them.",
+							crate::studio_link::PORT
+						));
 				}
 			}
 			let path = match (&self.doc, &self.model) {

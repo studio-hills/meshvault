@@ -143,6 +143,12 @@ Roblox requires authentication to download assets.  Use an [Open Cloud API key](
 
 The app also accepts a workspace folder and an export on the command line: `meshvault <workspace> <export.json>`.
 
+### Exporting from Roblox Studio
+
+`gui/studio/meshvault_exporter_v2.luau` is the schema 2 exporter for Studio's Command Bar (run it in Edit mode; set `roots` and `excludedRoots` at the top). With Meshvault open, it sends the export straight to Meshvault instead of printing it: Meshvault saves it to `Documents/Meshvault/Exports/<place>-<time>.json` and opens it for import (making a workspace first if none is open). Without Meshvault running it falls back to printing `=== JSON CHUNK ===` blocks, which can be pasted into a file and imported as before.
+
+The export travels over `http://localhost:34875` in 2 MB pieces. The exporter turns `HttpService.HttpEnabled` on only while sending and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers that a web page cannot send. The status bar shows whether Meshvault is listening ("Studio link"); only one Meshvault at a time can.
+
 ### Animated models
 
 Schema 1 exports list animated models in the import dialog; selecting one also selects the meshes its parts use.  In the library they appear under Animated models; click one (or open its `.rig.json`) to play it:

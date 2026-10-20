@@ -7,6 +7,7 @@
 - Meshvault, a desktop viewer and bulk downloader, in `gui/`
 - Meshvault reads versioned (schema 1) exports and plays their animated models, with Motor6D and bone rigs, KeyframeSequence and CurveAnimation clips, and skinned meshes
 - Meshvault reads schema 2 exports: model scale, primitive part shapes and colours, SpecialMesh scale and offset, and captured joint poses
+- Meshvault receives exports straight from Roblox Studio (`gui/studio/meshvault_exporter_v2.luau`) and saves them, so they need not be copied out of the Output window
 
 ### Changed
 

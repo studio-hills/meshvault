@@ -14,6 +14,7 @@ mod import_ui;
 mod maps;
 mod model_view;
 mod settings_ui;
+mod studio_link;
 mod texture;
 mod ui;
 mod viewport;

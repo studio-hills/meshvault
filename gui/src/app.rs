@@ -110,6 +110,8 @@ pub struct App {
 	/// The animated model shown instead of `doc`.
 	pub model: Option<ModelView>,
 	pub loading_model: Option<LoadingModel>,
+	/// Receives exports sent from Roblox Studio.
+	pub studio_link: crate::studio_link::StudioLink,
 	last_save: Instant,
 }
 
@@ -124,6 +126,7 @@ impl App {
 		let config = Config::load();
 		theme::install_fonts(&ctx);
 		theme::apply(&ctx, config.theme);
+		let studio_link = crate::studio_link::StudioLink::start(&ctx);
 		let mut app = Self {
 			ctx,
 			config,
@@ -151,6 +154,7 @@ impl App {
 			open_stem: None,
 			model: None,
 			loading_model: None,
+			studio_link,
 			last_save: Instant::now(),
 		};
 		// reopen the last workspace
@@ -691,6 +695,35 @@ impl App {
 				.canonicalize()
 				.is_ok_and(|p| p == path)
 		})
+	}
+
+	/// Saves exports that arrived from Studio and opens them for import.
+	pub fn poll_studio_link(&mut self) {
+		for received in self.studio_link.poll() {
+			let dir = Config::default_workspaces_dir().join("Exports");
+			let path = dir.join(crate::studio_link::file_name(&received.name));
+			let saved =
+				std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &received.json));
+			match saved {
+				Ok(()) => {
+					self.toasts.success(format!(
+						"Received {} from Roblox Studio ({}), saved to {}",
+						if received.name.is_empty() {
+							"an export"
+						} else {
+							&received.name
+						},
+						format_bytes(received.json.len()),
+						path.display()
+					));
+					self.start_import(path, &received.json);
+				}
+				Err(e) => self.toasts.error(format!(
+					"Could not save the export from Studio to {}: {e}",
+					path.display()
+				)),
+			}
+		}
 	}
 
 	pub fn poll_model(&mut self) {

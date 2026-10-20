@@ -337,16 +337,12 @@ impl ImportDialog {
 		ui.add_space(4.0);
 
 		// search, what to show, and folder controls
+		// laid out from the right, so the search box takes what is left
+		// and can never run into the controls
 		ui.horizontal(|ui| {
-			let both =
-				!self.models.is_empty() && self.rows.iter().any(|r| matches!(r, Row::Mesh(_)));
-			let reserved = if both { 300.0 } else { 80.0 };
-			ui.add(
-				widgets::input(&mut self.filter)
-					.hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
-					.desired_width((ui.available_width() - reserved).max(160.0)),
-			);
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				let both =
+					!self.models.is_empty() && self.rows.iter().any(|r| matches!(r, Row::Mesh(_)));
 				ui.spacing_mut().item_spacing.x = 0.0;
 				if widgets::icon_button(ui, icons::ARROWS_IN_LINE_VERTICAL, "Collapse all folders")
 					.clicked()
@@ -360,15 +356,24 @@ impl ImportDialog {
 				}
 				if both {
 					ui.add_space(8.0);
-					ui.spacing_mut().item_spacing.x = 4.0;
-					for (value, label) in [
-						(Show::Meshes, "Meshes"),
-						(Show::Animated, "Animated"),
-						(Show::All, "All"),
-					] {
-						widgets::pointer(ui.selectable_value(&mut self.show, value, label));
-					}
+					widgets::text_segmented(
+						ui,
+						&mut self.show,
+						&[
+							(Show::All, "All"),
+							(Show::Animated, "Animated"),
+							(Show::Meshes, "Meshes"),
+						],
+					);
 				}
+				ui.add_space(8.0);
+				ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+					ui.add(
+						widgets::input(&mut self.filter)
+							.hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+							.desired_width(ui.available_width()),
+					);
+				});
 			});
 		});
 		ui.add_space(4.0);

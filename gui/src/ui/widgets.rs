@@ -176,6 +176,72 @@ pub fn segmented<T: PartialEq + Copy>(
 	changed
 }
 
+/// A row of mutually exclusive text options in a framed track, as tall as
+/// the other controls. Radii are concentric: track = option + padding.
+pub fn text_segmented<T: PartialEq + Copy>(
+	ui: &mut Ui,
+	value: &mut T,
+	options: &[(T, &str)],
+) -> bool {
+	let p = palette(ui.ctx());
+	let mut changed = false;
+	// the track (border + padding) is as tall as an input beside it
+	let pad = 2.0;
+	let height = ui.spacing().interact_size.y - 2.0 * (pad + 1.0);
+	Frame::NONE
+		.fill(p.raised)
+		.stroke(Stroke::new(1.0, p.border))
+		.corner_radius(CornerRadius::same(CONTROL_RADIUS + pad as u8))
+		.inner_margin(Margin::same(pad as i8))
+		.show(ui, |ui| {
+			ui.spacing_mut().item_spacing.x = 2.0;
+			ui.spacing_mut().interact_size.y = height;
+			ui.horizontal(|ui| {
+				// rows inside a right-to-left layout fill from the right; keep the
+				// options in reading order either way
+				let mut ordered: Vec<&(T, &str)> = options.iter().collect();
+				if ui.layout().main_dir() == egui::Direction::RightToLeft {
+					ordered.reverse();
+				}
+				for &&(option, label) in &ordered {
+					let selected = *value == option;
+					let font = FontId::new(13.0, medium());
+					let width = ui
+						.painter()
+						.layout_no_wrap(label.to_string(), font.clone(), p.text)
+						.size()
+						.x + 24.0;
+					let (rect, response) =
+						ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+					let response = pointer(response);
+					let fill = if selected {
+						p.accent_soft
+					} else if response.hovered() {
+						p.raised_hover
+					} else {
+						Color32::TRANSPARENT
+					};
+					ui.painter()
+						.rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
+					let colour = if selected {
+						p.accent
+					} else if response.hovered() {
+						p.text
+					} else {
+						p.text_weak
+					};
+					ui.painter()
+						.text(rect.center(), Align2::CENTER_CENTER, label, font, colour);
+					if response.clicked() && !selected {
+						*value = option;
+						changed = true;
+					}
+				}
+			});
+		});
+	changed
+}
+
 /// A collapsible panel section with a small uppercase title.
 pub fn section<R>(
 	ui: &mut Ui,

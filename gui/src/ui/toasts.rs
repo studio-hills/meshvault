@@ -1,5 +1,5 @@
-//! Transient notifications in the bottom-right corner. Errors stay until
-//! dismissed; everything else fades out on its own.
+//! Transient notifications in the bottom-right corner. Errors and warnings
+//! stay until dismissed; everything else fades out on its own.
 
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,14 @@ const MAX_SHOWN: usize = 5;
 pub enum Level {
 	Info,
 	Success,
+	Warning,
 	Error,
+}
+
+impl Level {
+	fn stays(self) -> bool {
+		matches!(self, Level::Warning | Level::Error)
+	}
 }
 
 struct Toast {
@@ -46,13 +53,16 @@ impl Toasts {
 	pub fn success(&mut self, text: impl Into<String>) {
 		self.push(Level::Success, text);
 	}
+	pub fn warning(&mut self, text: impl Into<String>) {
+		self.push(Level::Warning, text);
+	}
 	pub fn error(&mut self, text: impl Into<String>) {
 		self.push(Level::Error, text);
 	}
 
 	pub fn show(&mut self, ctx: &egui::Context) {
 		self.list
-			.retain(|t| t.level == Level::Error || t.created.elapsed() < LIFETIME);
+			.retain(|t| t.level.stays() || t.created.elapsed() < LIFETIME);
 		if self.list.is_empty() {
 			return;
 		}
@@ -69,13 +79,14 @@ impl Toasts {
 					let (icon, colour) = match toast.level {
 						Level::Info => (icons::INFO, p.accent),
 						Level::Success => (icons::CHECK_CIRCLE, p.success),
+						Level::Warning => (icons::WARNING, p.warning),
 						Level::Error => (icons::WARNING_CIRCLE, p.danger),
 					};
 					// fade out over the last half second
 					let left = LIFETIME
 						.saturating_sub(toast.created.elapsed())
 						.as_secs_f32();
-					let alpha = if toast.level == Level::Error {
+					let alpha = if toast.level.stays() {
 						1.0
 					} else {
 						(left / 0.5).min(1.0)
@@ -104,7 +115,7 @@ impl Toasts {
 			self.list.remove(i);
 		}
 		// keep animating the fade-out
-		if self.list.iter().any(|t| t.level != Level::Error) {
+		if self.list.iter().any(|t| !t.level.stays()) {
 			ctx.request_repaint_after(Duration::from_millis(100));
 		}
 	}

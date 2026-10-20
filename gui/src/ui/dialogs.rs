@@ -48,6 +48,7 @@ impl App {
 		self.loading_model_dialog(ctx);
 		self.new_workspace_dialog(ctx);
 		self.shortcuts_dialog(ctx);
+		self.studio_dialog(ctx);
 		self.confirm_dialog(ctx);
 	}
 

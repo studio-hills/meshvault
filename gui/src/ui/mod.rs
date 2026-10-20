@@ -6,6 +6,7 @@ pub mod icons;
 mod inspector;
 mod layout;
 mod model;
+mod studio;
 mod switch;
 pub mod theme;
 mod toasts;
@@ -14,5 +15,6 @@ mod welcome;
 pub mod widgets;
 
 pub use dialogs::{Confirm, ConfirmAction};
+pub use studio::{StudioDialog, unavailable_text};
 pub use toasts::Toasts;
 pub use welcome::paint_gradient;

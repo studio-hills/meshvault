@@ -17,7 +17,7 @@ use crate::model_view::{MeshSource, ModelView};
 use crate::settings_ui::{self, SettingsDialog};
 use crate::texture::{self, Material};
 use crate::ui::theme;
-use crate::ui::{Confirm, ConfirmAction, Toasts};
+use crate::ui::{Confirm, ConfirmAction, StudioDialog, Toasts};
 use crate::viewport::{Camera, Shading};
 use crate::workspace::{self, AssetKind, AssetState, Workspace};
 use crate::{export, workspace_ui};
@@ -112,6 +112,9 @@ pub struct App {
 	pub loading_model: Option<LoadingModel>,
 	/// Receives exports sent from Roblox Studio.
 	pub studio_link: crate::studio_link::StudioLink,
+	pub studio_dialog: Option<StudioDialog>,
+	/// Pieces of an export from Studio received so far, out of how many, and when.
+	pub studio_progress: Option<(usize, usize, Instant)>,
 	last_save: Instant,
 }
 
@@ -155,8 +158,13 @@ impl App {
 			model: None,
 			loading_model: None,
 			studio_link,
+			studio_dialog: None,
+			studio_progress: None,
 			last_save: Instant::now(),
 		};
+		if let crate::studio_link::Status::Unavailable(why) = &app.studio_link.status {
+			app.toasts.warning(crate::ui::unavailable_text(why));
+		}
 		// reopen the last workspace
 		if let Some(root) = app.config.recent_workspaces.first().cloned()
 			&& root.join(workspace::MANIFEST).exists()
@@ -699,7 +707,17 @@ impl App {
 
 	/// Saves exports that arrived from Studio and opens them for import.
 	pub fn poll_studio_link(&mut self) {
-		for received in self.studio_link.poll() {
+		for event in self.studio_link.poll() {
+			let received = match event {
+				crate::studio_link::Event::Progress { done, count } => {
+					self.studio_progress = Some((done, count, Instant::now()));
+					continue;
+				}
+				crate::studio_link::Event::Received(received) => received,
+			};
+			self.studio_progress = None;
+			// the export is here, so the instructions are no longer needed
+			self.studio_dialog = None;
 			let dir = Config::default_workspaces_dir().join("Exports");
 			let path = dir.join(crate::studio_link::file_name(&received.name));
 			let saved =

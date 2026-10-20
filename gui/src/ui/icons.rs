@@ -11,6 +11,7 @@ pub const CIRCLE: &str = "\u{E18A}";
 pub const CLOUD_ARROW_DOWN: &str = "\u{E1AC}";
 pub const CORNERS_OUT: &str = "\u{E1D0}";
 pub const CROSSHAIR: &str = "\u{E1D6}";
+pub const COPY: &str = "\u{E1CA}";
 pub const CUBE: &str = "\u{E1DA}";
 pub const DOTS_THREE_VERTICAL: &str = "\u{E208}";
 pub const EXPORT: &str = "\u{EAF0}";

@@ -145,9 +145,15 @@ The app also accepts a workspace folder and an export on the command line: `mesh
 
 ### Exporting from Roblox Studio
 
-`gui/studio/meshvault_exporter_v2.luau` is the schema 2 exporter for Studio's Command Bar (run it in Edit mode; set `roots` and `excludedRoots` at the top). With Meshvault open, it sends the export straight to Meshvault instead of printing it: Meshvault saves it to `Documents/Meshvault/Exports/<place>-<time>.json` and opens it for import (making a workspace first if none is open). Without Meshvault running it falls back to printing `=== JSON CHUNK ===` blocks, which can be pasted into a file and imported as before.
+Meshvault serves the exporter itself, so there is no script to keep up to date. Open Export from Roblox Studio… (in the ⋮ menu, on the welcome screen, or by clicking "Studio link" in the status bar), copy the line, and paste it into Studio's Command Bar in Edit mode:
 
-The export travels over `http://localhost:34875` in 2 MB pieces. The exporter turns `HttpService.HttpEnabled` on only while sending and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers that a web page cannot send. The status bar shows whether Meshvault is listening ("Studio link"); only one Meshvault at a time can.
+```lua
+local h=game:GetService("HttpService") local e=h.HttpEnabled h.HttpEnabled=true local ok,s=pcall(h.GetAsync,h,"http://localhost:34875/export.luau") h.HttpEnabled=e assert(ok,"Meshvault is not running, or its Studio link is off: "..tostring(s)) loadstring(s)()()
+```
+
+It exports the instances selected in Studio, or, with nothing selected, the whole game except Workspace. The script returns a function taking options, so `loadstring(s)()({roots = {workspace.MyRig}, exclude = {}})` picks the roots by hand. It writes the newest schema; add `?schema=1` to the URL for the schema 1 exporter. Meshvault saves the export to `Documents/Meshvault/Exports/<place>-<time>.json` and opens it for import (making a workspace first if none is open). If sending fails, the exporter prints `=== JSON CHUNK ===` blocks instead, which can be pasted into a file and imported as before.
+
+Everything travels over `http://localhost:34875`: `GET /export.luau` serves the exporter, and `POST /export` takes the export in 2 MB pieces. The line turns `HttpService.HttpEnabled` on only while it talks to Meshvault and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers on exports, which a web page cannot send. Only one program can use the port: if it is taken (usually by another Meshvault), Meshvault warns at startup, the status bar reads "Studio link unavailable", and exporting from Studio is off until the port is free and Meshvault restarts. The exporters live in `gui/studio/` and are built into the app.
 
 ### Animated models
 

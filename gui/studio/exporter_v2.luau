@@ -1,21 +1,25 @@
--- Roblox Studio: Schema V2 mesh/material + rig + keyframe animation JSON exporter
--- Run in Studio Command Bar, in Edit mode. Exports metadata, NOT mesh geometry or texture files.
--- With Meshvault open, the export is sent straight to it (http://localhost:34875), which
--- saves it to Documents/Meshvault/Exports and opens it for import. HttpEnabled is switched
--- on only while sending and put back afterwards. Without Meshvault the JSON is printed in
--- chunks as before.
--- Animation assets must be accessible to the current Studio session.
--- Supports KeyframeSequence and CurveAnimation (Float/Vector3/Euler/Rotation curves).
-local roots = { game } -- Or list non-overlapping services/folders
-
--- EXCLUDE: These instances AND everything beneath them will be ignored.
--- Use actual Instance references, not names, so same-named folders elsewhere are unaffected.
-local excludedRoots = {
-    game:GetService("Workspace"),
-    -- game:GetService("ReplicatedStorage"):FindFirstChild("Animals"),
-    -- game:GetService("ServerStorage"),
-}
-
+-- Meshvault exporter, schema 2: mesh/material + rig + animation metadata as JSON.
+-- Served by Meshvault (see its "Export from Roblox Studio" dialog); run in the Command Bar, in
+-- Edit mode. Exports metadata, NOT mesh geometry or texture files. Animation assets must be
+-- accessible to the current Studio session.
+--
+-- It returns a function. Called without options it exports the current selection, or, with
+-- nothing selected, the whole game except Workspace. Options:
+--   roots   = { instances to export }            (default: the selection, or { game })
+--   exclude = { instances to leave out, with everything beneath them }
+--             (default: { Workspace } when exporting the whole game, otherwise nothing)
+return function(options)
+options = options or {}
+local selection = game:GetService("Selection"):Get()
+local useSelection = options.roots == nil and #selection > 0
+local roots = options.roots or (useSelection and selection) or { game }
+local excludedRoots = options.exclude
+    or ((options.roots or useSelection) and {} or { game:GetService("Workspace") })
+if useSelection then
+    print("Meshvault: exporting the " .. #selection .. " selected instance(s)")
+else
+    print("Meshvault: exporting " .. (options.roots and #roots .. " root(s)" or "the whole game except Workspace"))
+end
 local excludedSet = {}
 for _, excluded in ipairs(excludedRoots) do
     if excluded then excludedSet[excluded] = true end
@@ -357,9 +361,10 @@ for _, root in ipairs(roots) do
 end
 local payload = {SchemaVersion=2, Meshes=meshes, Models=models}
 local json = HttpService:JSONEncode(payload)
-print(("Exported %d unique mesh/materials, %d animated models"):format(#meshes, #models))
--- Send to Meshvault when it is running.
-local MESHVAULT_URL = "http://localhost:34875/export"
+
+-- Send the export to Meshvault, which saves it and opens it for import. HttpEnabled is
+-- switched on only while sending and put back afterwards.
+local MESHVAULT_URL = "__MESHVAULT_URL__"
 local SEND_CHUNK = 2 * 1024 * 1024
 local function sendToMeshvault(text)
     local wasEnabled = HttpService.HttpEnabled
@@ -390,15 +395,15 @@ end
 
 local sent, sendError = sendToMeshvault(json)
 if sent then
-    print(("Sent to Meshvault (%.1f MB). It opens there for import."):format(#json / 1048576))
+    print(("Meshvault: sent %.1f MB. It opens in Meshvault for import."):format(#json / 1048576))
 else
-    warn("Could not send to Meshvault (" .. tostring(sendError) .. "); printing the JSON in chunks instead.")
+    warn("Meshvault: could not send the export (" .. tostring(sendError) .. "); printing it in chunks instead.")
     local CHUNK_SIZE = 12000
     local count = math.max(1, math.ceil(#json / CHUNK_SIZE))
-    for i=1,count do
-        print(("=== JSON CHUNK %d/%d ==="):format(i,count))
-        print(json:sub((i-1)*CHUNK_SIZE+1, math.min(i*CHUNK_SIZE,#json)))
+    for i = 1, count do
+        print(("=== JSON CHUNK %d/%d ==="):format(i, count))
+        print(json:sub((i - 1) * CHUNK_SIZE + 1, math.min(i * CHUNK_SIZE, #json)))
     end
     print("=== END JSON EXPORT ===")
-    -- Concatenate only chunk contents (no labels/newlines) to recover JSON.
+end
 end

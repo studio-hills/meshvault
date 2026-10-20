@@ -2,7 +2,7 @@
 
 use eframe::egui::{
 	self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Key, KeyboardShortcut, Layout,
-	Margin, Modifiers, Order, RichText, Stroke, Vec2,
+	Margin, Modifiers, Order, RichText, Sense, Stroke, Vec2,
 };
 
 use super::theme::{CONTROL, ThemeMode, display, medium, palette, semibold};
@@ -287,6 +287,16 @@ impl App {
 		}
 		ui.separator();
 		if ui
+			.button(format!(
+				"{}  Export from Roblox Studio…",
+				icons::TRAY_ARROW_DOWN
+			))
+			.clicked()
+		{
+			ui.close();
+			self.show_studio_dialog();
+		}
+		if ui
 			.button(format!("{}  Keyboard shortcuts", icons::INFO))
 			.clicked()
 		{
@@ -319,21 +329,44 @@ impl App {
 						);
 				}
 			}
-			match &self.studio_link.status {
-				crate::studio_link::Status::Listening => {
-					ui.label(small(format!("{}  Studio link", icons::CIRCLE), p.success))
-						.on_hover_text(format!(
-							"Exports sent from Roblox Studio to localhost:{} open here for import",
-							crate::studio_link::PORT
-						));
-				}
-				crate::studio_link::Status::Unavailable(why) => {
-					ui.label(small(format!("{}  Studio link off", icons::CIRCLE), p.warning))
-						.on_hover_text(format!(
-							"Cannot receive exports from Roblox Studio on port {}: {why}. Another Meshvault may already be receiving them.",
-							crate::studio_link::PORT
-						));
-				}
+			// an export that stops arriving is forgotten after a while
+			let receiving = self
+				.studio_progress
+				.filter(|(_, _, at)| at.elapsed().as_secs() < 60);
+			let studio = match (&self.studio_link.status, receiving) {
+				(crate::studio_link::Status::Listening, Some((done, count, _))) => ui
+					.add(
+						egui::Label::new(small(
+							format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
+							p.accent,
+						))
+						.sense(Sense::click()),
+					)
+					.on_hover_text("An export is arriving from Roblox Studio"),
+				(crate::studio_link::Status::Listening, None) => ui
+					.add(
+						egui::Label::new(small(
+							format!("{}  Studio link", icons::CIRCLE),
+							p.success,
+						))
+						.sense(Sense::click()),
+					)
+					.on_hover_text(format!(
+						"Listening on localhost:{} for exports from Roblox Studio. Click for the Command Bar line.",
+						crate::studio_link::PORT
+					)),
+				(crate::studio_link::Status::Unavailable(why), _) => ui
+					.add(
+						egui::Label::new(small(
+							format!("{}  Studio link unavailable", icons::CIRCLE),
+							p.warning,
+						))
+						.sense(Sense::click()),
+					)
+					.on_hover_text(crate::ui::unavailable_text(why)),
+			};
+			if widgets::pointer(studio).clicked() {
+				self.show_studio_dialog();
 			}
 			let path = match (&self.doc, &self.model) {
 				(Some(doc), _) => doc.path.display().to_string(),

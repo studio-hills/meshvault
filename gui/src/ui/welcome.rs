@@ -48,14 +48,21 @@ impl App {
 						"Import an export .json to choose which models, folders and maps to download.",
 					);
 					ui.add_space(14.0);
-					if widgets::primary_button(
-						ui,
-						format!("{}  Import export JSON…", icons::FILE_ARROW_DOWN),
-					)
-					.clicked()
-					{
-						self.pick_import();
-					}
+					ui.horizontal(|ui| {
+						if widgets::primary_button(
+							ui,
+							format!("{}  Import export JSON…", icons::FILE_ARROW_DOWN),
+						)
+						.clicked()
+						{
+							self.pick_import();
+						}
+						if widgets::button(ui, icons::TRAY_ARROW_DOWN, "Export from Roblox Studio…")
+							.clicked()
+						{
+							self.show_studio_dialog();
+						}
+					});
 					ui.add_space(14.0);
 					if drop_zone(ui, "or drop the .json file anywhere in the window").clicked() {
 						self.pick_import();
@@ -101,6 +108,23 @@ impl App {
 			ui,
 			"View meshes, unions and physics data with their materials, or download a whole game's models into a workspace.",
 		);
+		ui.add_space(6.0);
+		if ui
+			.add(
+				egui::Label::new(
+					RichText::new(format!(
+						"{}  Export a game from Roblox Studio…",
+						icons::TRAY_ARROW_DOWN
+					))
+					.color(p.accent),
+				)
+				.sense(Sense::click()),
+			)
+			.on_hover_cursor(egui::CursorIcon::PointingHand)
+			.clicked()
+		{
+			self.show_studio_dialog();
+		}
 		ui.add_space(16.0);
 		ui.horizontal(|ui| {
 			if widgets::primary_button(ui, format!("{}  Open file…", icons::FILE)).clicked() {

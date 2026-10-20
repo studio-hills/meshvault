@@ -93,9 +93,10 @@ impl App {
 		let counterparts = self.counterparts();
 		let mut switch = None;
 		let Some(model) = &mut self.model else { return };
-		egui::ScrollArea::vertical()
-			.auto_shrink([false, false])
-			.show(ui, |ui| {
+		widgets::scroll_in_margin(
+			ui,
+			egui::ScrollArea::vertical().auto_shrink([false, false]),
+			|ui| {
 				// the folder holding the model; the whole path is on hover
 				let folder = model.path.rsplit('/').nth(1).unwrap_or_default();
 				let subtitle = if folder.is_empty() {
@@ -234,7 +235,8 @@ impl App {
 				widgets::section(ui, "model_parts", &title, false, |ui| {
 					part_list(ui, &p, model)
 				});
-			});
+			},
+		);
 		if let Some(s) = switch {
 			self.apply_switch(s);
 		}
@@ -436,6 +438,10 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 	});
 	egui::ScrollArea::vertical()
 		.id_salt("model_part_list")
+		.content_margin(egui::Margin {
+			right: 10,
+			..egui::Margin::ZERO
+		})
 		.max_height(320.0)
 		.show(ui, |ui| {
 			ui.spacing_mut().interact_size.y = ROW;

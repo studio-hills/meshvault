@@ -378,15 +378,17 @@ impl Browser {
 		});
 		ui.add_space(4.0);
 
-		egui::ScrollArea::vertical()
-			.auto_shrink([false, false])
-			.show(ui, |ui| {
+		widgets::scroll_in_margin(
+			ui,
+			egui::ScrollArea::vertical().auto_shrink([false, false]),
+			|ui| {
 				ui.spacing_mut().interact_size.y = ROW;
 				self.models(ui, ws, open_model, &mut actions);
 				let tree = std::mem::take(&mut self.tree);
 				self.folder(ui, ws, &tree, "", open_stem, &mut actions);
 				self.tree = tree;
-			});
+			},
+		);
 		actions
 	}
 

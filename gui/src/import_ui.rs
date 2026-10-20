@@ -375,16 +375,19 @@ impl ImportDialog {
 
 		// summary and buttons below the list
 		let footer_height = 92.0;
-		egui::ScrollArea::vertical()
-			.auto_shrink([false, false])
-			.max_height(ui.available_height() - footer_height)
-			.show(ui, |ui| {
+		widgets::scroll_in_margin(
+			ui,
+			egui::ScrollArea::vertical()
+				.auto_shrink([false, false])
+				.max_height(ui.available_height() - footer_height),
+			|ui| {
 				ui.spacing_mut().interact_size.y = ROW;
 				self.select_all_row(ui);
 				let tree = std::mem::take(&mut self.tree);
 				self.folder_contents(ui, &tree, "");
 				self.tree = tree;
-			});
+			},
+		);
 		ui.separator();
 		self.footer(ui)
 	}

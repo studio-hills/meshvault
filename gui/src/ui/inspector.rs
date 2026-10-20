@@ -20,9 +20,10 @@ impl App {
 		let mut switch = None;
 		let mut pick = None;
 		let mut remove_map = None;
-		egui::ScrollArea::vertical()
-			.auto_shrink([false, false])
-			.show(ui, |ui| {
+		widgets::scroll_in_margin(
+			ui,
+			egui::ScrollArea::vertical().auto_shrink([false, false]),
+			|ui| {
 				let Some(doc) = &mut self.doc else { return };
 				let geometry = &doc.loaded.geometry;
 
@@ -138,6 +139,10 @@ impl App {
 							});
 							egui::ScrollArea::vertical()
 								.id_salt("hull_list")
+								.content_margin(egui::Margin {
+									right: 10,
+									..egui::Margin::ZERO
+								})
 								.max_height(260.0)
 								.show(ui, |ui| {
 									ui.spacing_mut().interact_size.y = ROW;
@@ -170,7 +175,8 @@ impl App {
 					rows.extend(doc.loaded.details.iter().cloned());
 					widgets::properties(ui, "inspector_properties_grid", &rows);
 				});
-			});
+			},
+		);
 		if let Some(s) = switch {
 			self.apply_switch(s);
 		}

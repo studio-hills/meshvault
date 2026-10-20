@@ -290,3 +290,37 @@ pub fn dashed_rect(ui: &Ui, rect: egui::Rect, colour: Color32) {
 		));
 	}
 }
+
+/// How far a panel's scroll bar sits into the panel's own right margin.
+pub const SCROLL_GUTTER: f32 = 12.0;
+
+/// Shows a scroll area whose thin floating bar sits in the margin to the
+/// right of the column instead of inside it: the area reaches
+/// [`SCROLL_GUTTER`] further right and keeps that strip for the bar alone.
+/// The content stays exactly as wide as the column, lines up with what is
+/// above and below it, and never moves when a bar appears.
+pub fn scroll_in_margin<R>(
+	ui: &mut Ui,
+	scroll: egui::ScrollArea,
+	add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+	let column = ui.available_rect_before_wrap();
+	let mut rect = column;
+	rect.max.x += SCROLL_GUTTER;
+	// a child, so the wider rect is not claimed from the parent (panels
+	// would grow to fit it)
+	let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+	let inner = scroll
+		.content_margin(Margin {
+			right: SCROLL_GUTTER as i8,
+			..Margin::ZERO
+		})
+		.show(&mut child, add_contents)
+		.inner;
+	let used = child.min_rect().height();
+	ui.allocate_rect(
+		egui::Rect::from_min_size(column.min, Vec2::new(column.width(), used)),
+		Sense::hover(),
+	);
+	inner
+}

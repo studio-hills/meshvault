@@ -386,6 +386,7 @@ mod tests {
 			clips: 0,
 			playable_clips: 0,
 			images: BTreeMap::new(),
+			version: Default::default(),
 		};
 		ws.set_contents(Vec::new(), vec![model]);
 		assert!(!is_empty(&ws));

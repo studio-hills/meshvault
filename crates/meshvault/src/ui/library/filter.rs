@@ -159,6 +159,7 @@ mod tests {
 			clips: playable_clips,
 			playable_clips,
 			images: Default::default(),
+			version: Default::default(),
 		}
 	}
 

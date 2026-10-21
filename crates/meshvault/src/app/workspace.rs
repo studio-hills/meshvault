@@ -10,20 +10,40 @@ use crate::platform;
 use crate::scene::model_view::ModelView;
 use crate::ui::{self, ConfirmAction, NewWorkspaceDialog};
 use crate::workspace::view_loader::{item_maps, model_loader};
-use crate::workspace::{self, AssetKind, AssetState, Workspace};
+use crate::workspace::{self, AssetKind, AssetState, ModelVersion, Workspace};
 
 /// An animated model being read on a background thread.
 pub struct LoadingModel {
 	pub name: String,
-	/// The model's record file. Unlike its index, which shifts when models
-	/// before it are removed, this stays its own while it loads.
-	file: String,
+	/// The version of the model being read. Unlike its index, which shifts
+	/// when models before it are removed, or its file name, which a model
+	/// imported again or added after it was removed keeps, this is its own.
+	version: ModelVersion,
 	pub task: Task<ModelView>,
 }
 
-/// Where the model stored in `file` is now, if it is still in the workspace.
-fn model_with_file(ws: &Workspace, file: &str) -> Option<usize> {
-	ws.models().iter().position(|m| m.file == file)
+/// What a finished model load is for now.
+#[derive(Debug, PartialEq)]
+enum Loaded {
+	/// The model it read, now at this index.
+	Current(usize),
+	/// The model at this index, imported again since the load began, so
+	/// what was read may be its old rig or old meshes.
+	Reimported(usize),
+	/// A model no longer in the workspace.
+	Gone,
+}
+
+/// What the load of the model with `version` is for now.
+fn loaded(ws: &Workspace, version: ModelVersion) -> Loaded {
+	let models = ws.models();
+	if let Some(i) = models.iter().position(|m| m.version == version) {
+		Loaded::Current(i)
+	} else if let Some(i) = models.iter().position(|m| m.version.same_model(version)) {
+		Loaded::Reimported(i)
+	} else {
+		Loaded::Gone
+	}
 }
 
 impl App {
@@ -158,9 +178,13 @@ impl App {
 			return;
 		};
 		let name = item.name.clone();
-		let file = item.file.clone();
+		let version = item.version;
 		let task = Task::spawn(&self.ctx, load);
-		self.loading_model = Some(LoadingModel { name, file, task });
+		self.loading_model = Some(LoadingModel {
+			name,
+			version,
+			task,
+		});
 	}
 
 	/// The open workspace's item whose mesh is the file at `path`.
@@ -193,19 +217,17 @@ impl App {
 		let Some(result) = loading.task.poll("Reading the model stopped unexpectedly") else {
 			return;
 		};
-		let file = loading.file.clone();
+		let version = loading.version;
 		self.loading_model = None;
+		// a model removed while it loaded is not shown, one imported again is
+		// read again, and one that moved up is shown at its new place
+		let index = match self.workspace.as_ref().map(|ws| loaded(ws, version)) {
+			Some(Loaded::Current(index)) => index,
+			Some(Loaded::Reimported(index)) => return self.open_model(index),
+			Some(Loaded::Gone) | None => return,
+		};
 		match result {
 			Ok(mut model) => {
-				// a model removed while it loaded is not shown, and one that
-				// moved up is shown at its new place
-				let Some(index) = self
-					.workspace
-					.as_ref()
-					.and_then(|ws| model_with_file(ws, &file))
-				else {
-					return;
-				};
 				model.index = index;
 				self.doc = None;
 				self.open_stem = None;
@@ -302,6 +324,7 @@ mod tests {
 	use std::collections::BTreeMap;
 
 	use super::*;
+	use crate::anim::schema::AnimatedModel;
 	use crate::test_support::TempDir;
 
 	fn model(file: &str) -> workspace::ModelItem {
@@ -315,21 +338,85 @@ mod tests {
 			clips: 0,
 			playable_clips: 0,
 			images: BTreeMap::new(),
+			version: Default::default(),
 		}
 	}
 
 	#[test]
-	fn a_loading_model_is_found_by_its_file_after_removals() {
+	fn a_loading_model_is_found_again_after_removals() {
 		let dir = TempDir::new("loading-model");
 		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
 		let files = ["Rigs/a.rig.json", "Rigs/b.rig.json", "Rigs/c.rig.json"];
 		ws.set_contents(Vec::new(), files.iter().map(|f| model(f)).collect());
+		let (b, c) = (ws.models()[1].version, ws.models()[2].version);
 		// c was loading at index 2 when a was removed
 		ws.remove_models(&[0]).unwrap();
-		assert_eq!(model_with_file(&ws, files[2]), Some(1));
+		assert_eq!(loaded(&ws, c), Loaded::Current(1));
 		// and once c itself is removed it is not shown at all
 		ws.remove_models(&[1]).unwrap();
-		assert_eq!(model_with_file(&ws, files[2]), None);
-		assert_eq!(model_with_file(&ws, files[1]), Some(0));
+		assert_eq!(loaded(&ws, c), Loaded::Gone);
+		assert_eq!(loaded(&ws, b), Loaded::Current(0));
+	}
+
+	fn rig_model(name: &str, parts: usize) -> AnimatedModel {
+		AnimatedModel {
+			name: name.into(),
+			path: format!("Workspace/{name}"),
+			parts: vec![Default::default(); parts],
+			..Default::default()
+		}
+	}
+
+	/// A model imported again while it loads keeps its file name, but what
+	/// the load read may be the old rig (or the new rig with the old
+	/// meshes), so it is read again rather than shown (once bug B13).
+	#[test]
+	fn a_model_imported_again_while_it_loads_is_read_again() {
+		let dir = TempDir::new("loading-model-reimport");
+		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
+		ws.add_model(&rig_model("Other", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		let loading = ws.models()[1].version;
+		let file = ws.models()[1].file.clone();
+		assert!(model_loader(&ws, 1).is_some());
+
+		assert!(!ws.add_model(&rig_model("Wolf", 2), &[]).unwrap());
+		assert_eq!(ws.models()[1].file, file);
+		assert_eq!(loaded(&ws, loading), Loaded::Reimported(1));
+		// the load started again is for the new import, and moves with it
+		let reloading = ws.models()[1].version;
+		ws.remove_models(&[0]).unwrap();
+		assert_eq!(loaded(&ws, reloading), Loaded::Current(0));
+		assert_eq!(loaded(&ws, loading), Loaded::Reimported(0));
+	}
+
+	/// A model removed while it loads, and another added under the same file
+	/// name before the load ends, is a different model: nothing is shown.
+	#[test]
+	fn a_model_added_under_a_removed_models_file_name_is_not_the_one_loaded() {
+		let dir = TempDir::new("loading-model-reuse");
+		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		let loading = ws.models()[0].version;
+		let file = ws.models()[0].file.clone();
+
+		ws.remove_models(&[0]).unwrap();
+		assert!(ws.add_model(&rig_model("Wolf", 3), &[]).unwrap());
+		assert_eq!(ws.models()[0].file, file);
+		assert_eq!(loaded(&ws, loading), Loaded::Gone);
+	}
+
+	/// A model read again from the manifest is a new version, so a load
+	/// from before the workspace was reopened is never taken for it.
+	#[test]
+	fn models_read_from_the_manifest_get_new_versions() {
+		let dir = TempDir::new("loading-model-reopen");
+		let root = dir.join("ws");
+		let mut ws = Workspace::create(&root, "ws").unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		ws.save_if_dirty().unwrap();
+		let before = ws.models()[0].version;
+		let reopened = Workspace::open(&root).unwrap();
+		assert_eq!(loaded(&reopened, before), Loaded::Gone);
 	}
 }

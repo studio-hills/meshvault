@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -125,6 +126,57 @@ pub struct ModelItem {
 	/// once each under `Images/`.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub images: BTreeMap<u64, AssetState>,
+	/// Which model this is and which import of it, while the app runs.
+	#[serde(skip)]
+	pub version: ModelVersion,
+}
+
+/// Tells a model apart from one stored later under the same file name, and
+/// one import of a model from the next, so work started on a model can tell
+/// whether it is still the model it was started on. Not saved: every model
+/// read from a manifest gets a new one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelVersion {
+	/// The same for every import of one model; new when a model is added,
+	/// including one added again after it was removed.
+	model: u64,
+	/// New on every import, including one that replaces the model.
+	import: u64,
+}
+
+impl ModelVersion {
+	fn next() -> u64 {
+		static NEXT: AtomicU64 = AtomicU64::new(1);
+		NEXT.fetch_add(1, Ordering::Relaxed)
+	}
+
+	/// A version for a model new to the workspace.
+	pub fn new() -> Self {
+		let n = Self::next();
+		Self {
+			model: n,
+			import: n,
+		}
+	}
+
+	/// The version of this model imported again.
+	pub fn reimported(self) -> Self {
+		Self {
+			model: self.model,
+			import: Self::next(),
+		}
+	}
+
+	/// Whether both are imports of the same model.
+	pub fn same_model(self, other: Self) -> bool {
+		self.model == other.model
+	}
+}
+
+impl Default for ModelVersion {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

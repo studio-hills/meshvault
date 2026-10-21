@@ -29,7 +29,7 @@ use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
 use crate::studio::export_file::Entry;
 
-pub use self::manifest::{AssetState, Item, MapRef, ModelItem};
+pub use self::manifest::{AssetState, Item, MapRef, ModelItem, ModelVersion};
 use self::manifest::{MANIFEST_VERSION, Manifest};
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
 use self::paths::{MODELS_DIR, RIGS_DIR, image_id, image_stem, rig_stem};
@@ -327,6 +327,9 @@ impl Workspace {
 		let previous = existing
 			.map(|i| self.manifest.models[i].images.clone())
 			.unwrap_or_default();
+		let version = existing.map_or_else(ModelVersion::new, |i| {
+			self.manifest.models[i].version.reimported()
+		});
 		let images = image_ids(model)
 			.map(|id| {
 				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);
@@ -350,6 +353,7 @@ impl Workspace {
 				.filter(|a| a.status.is_playable())
 				.count(),
 			images,
+			version,
 		};
 		self.dirty = true;
 		self.generation += 1;
@@ -707,6 +711,7 @@ mod tests {
 			clips: 0,
 			playable_clips: 0,
 			images: BTreeMap::new(),
+			version: Default::default(),
 		}
 	}
 

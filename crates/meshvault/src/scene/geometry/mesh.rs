@@ -2,9 +2,9 @@
 
 use std::ops::Range;
 
-use rbx_mesh::mesh::{Chunk6, Chunks6, CoreMeshChunk, Mesh, Vertices2};
+use rbx_mesh::mesh::{Bone4, Chunk6, Chunks6, CoreMeshChunk, Mesh, Subset4, Vertices2};
 
-use super::{Geometry, GroupKind, Loaded, detail, single_group};
+use super::{Attributes, Geometry, Loaded, attributes, detail, nul_separated, single_group};
 
 fn faces2(faces: &[rbx_mesh::mesh::Face2]) -> Vec<[u32; 3]> {
 	faces
@@ -13,24 +13,14 @@ fn faces2(faces: &[rbx_mesh::mesh::Face2]) -> Vec<[u32; 3]> {
 		.collect()
 }
 
-type Attributes = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 3]>);
-
 fn vertices2(vertices: &Vertices2) -> (Attributes, &'static str) {
 	match vertices {
 		Vertices2::Full(v) => (
-			(
-				v.iter().map(|v| v.pos).collect(),
-				v.iter().map(|v| v.tex).collect(),
-				v.iter().map(|v| v.norm).collect(),
-			),
+			attributes(v, |v| v.pos, |v| v.tex, |v| v.norm),
 			"40 bytes (with colour)",
 		),
 		Vertices2::Truncated(v) => (
-			(
-				v.iter().map(|v| v.pos).collect(),
-				v.iter().map(|v| v.tex).collect(),
-				v.iter().map(|v| v.norm).collect(),
-			),
+			attributes(v, |v| v.pos, |v| v.tex, |v| v.norm),
 			"36 bytes (no colour)",
 		),
 	}
@@ -51,13 +41,28 @@ fn lod_groups(lods: &[rbx_mesh::mesh::Lod3], face_count: usize) -> Vec<Range<usi
 	}
 }
 
-fn bone_names(bytes: &[u8]) -> String {
-	bytes
-		.split(|&b| b == 0)
-		.filter(|s| !s.is_empty())
-		.map(String::from_utf8_lossy)
-		.collect::<Vec<_>>()
-		.join(", ")
+/// A NUL-separated name list as one line, for the info panel.
+fn name_list(bytes: &[u8]) -> String {
+	nul_separated(bytes).join(", ")
+}
+
+/// The skinning rows of the info panel, before any FACS row.
+fn skin_counts(bones: &[Bone4], subsets: &[Subset4]) -> [(String, String); 2] {
+	[
+		detail("Bones", bones.len()),
+		detail("Subsets", subsets.len()),
+	]
+}
+
+/// The bone names row, for a mesh with bones.
+fn bone_names_row(bones: &[Bone4], names: &[u8]) -> Option<(String, String)> {
+	(!bones.is_empty()).then(|| detail("Bone names", name_list(names)))
+}
+
+/// The FACS controls row, when the mesh names any.
+fn facs_controls_row(names: &[u8]) -> Option<(String, String)> {
+	let controls = name_list(names);
+	(!controls.is_empty()).then(|| detail("FACS controls", controls))
 }
 
 pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
@@ -67,9 +72,9 @@ pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
 				rbx_mesh::mesh::Revision1::Version100 => "1.00",
 				rbx_mesh::mesh::Revision1::Version101 => "1.01",
 			};
-			let positions: Vec<_> = m.vertices.iter().map(|v| v.pos).collect();
-			let uvs = m.vertices.iter().map(|v| [v.tex[0], v.tex[1]]).collect();
-			let normals = m.vertices.iter().map(|v| v.norm).collect();
+			// v1 stores a third texture coordinate, which is dropped
+			let (positions, uvs, normals) =
+				attributes(&m.vertices, |v| v.pos, |v| [v.tex[0], v.tex[1]], |v| v.norm);
 			let triangles = (0..positions.len() as u32 / 3)
 				.map(|i| [i * 3, i * 3 + 1, i * 3 + 2])
 				.collect();
@@ -114,16 +119,9 @@ pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
 					detail("Vertex size", vertex_size),
 					detail("LODs", groups.len()),
 				],
-				geometry: Geometry {
-					positions,
-					uvs: None,
-					normals: None,
-					triangles,
-					groups,
-					group_kind: GroupKind::Lod,
-				}
-				.with_uvs(uvs)
-				.with_normals(normals),
+				geometry: Geometry::lods(positions, triangles, groups)
+					.with_uvs(uvs)
+					.with_normals(normals),
 				note: None,
 			}
 		}
@@ -132,9 +130,8 @@ pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
 				rbx_mesh::mesh::Revision4::Version400 => "4.00",
 				rbx_mesh::mesh::Revision4::Version401 => "4.01",
 			};
-			let positions: Vec<_> = m.vertices.iter().map(|v| v.pos).collect();
-			let uvs = m.vertices.iter().map(|v| v.tex).collect();
-			let normals = m.vertices.iter().map(|v| v.norm).collect();
+			let (positions, uvs, normals) =
+				attributes(&m.vertices, |v| v.pos, |v| v.tex, |v| v.norm);
 			let triangles = faces2(&m.faces);
 			let groups = lod_groups(&m.lods, triangles.len());
 			let mut details = vec![
@@ -142,32 +139,21 @@ pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
 				detail("Faces", triangles.len()),
 				detail("LODs", groups.len()),
 				detail("LOD type", format!("{:?}", m.lod_type)),
-				detail("Bones", m.bones.len()),
-				detail("Subsets", m.subsets.len()),
 			];
-			if !m.bones.is_empty() {
-				details.push(detail("Bone names", bone_names(&m.bone_names)));
-			}
+			details.extend(skin_counts(&m.bones, &m.subsets));
+			details.extend(bone_names_row(&m.bones, &m.bone_names));
 			Loaded {
 				format: format!("Mesh v{revision}"),
 				details,
-				geometry: Geometry {
-					positions,
-					uvs: None,
-					normals: None,
-					triangles,
-					groups,
-					group_kind: GroupKind::Lod,
-				}
-				.with_uvs(uvs)
-				.with_normals(normals),
+				geometry: Geometry::lods(positions, triangles, groups)
+					.with_uvs(uvs)
+					.with_normals(normals),
 				note: None,
 			}
 		}
 		Mesh::V5(m) => {
-			let positions: Vec<_> = m.vertices.iter().map(|v| v.pos).collect();
-			let uvs = m.vertices.iter().map(|v| v.tex).collect();
-			let normals = m.vertices.iter().map(|v| v.norm).collect();
+			let (positions, uvs, normals) =
+				attributes(&m.vertices, |v| v.pos, |v| v.tex, |v| v.norm);
 			let triangles = faces2(&m.faces);
 			let groups = lod_groups(&m.lods, triangles.len());
 			let mut details = vec![
@@ -175,30 +161,18 @@ pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
 				detail("Faces", triangles.len()),
 				detail("LODs", groups.len()),
 				detail("LOD type", format!("{:?}", m.lod_type)),
-				detail("Bones", m.bones.len()),
-				detail("Subsets", m.subsets.len()),
-				detail("FACS data", format!("{} bytes", m.sizeof_facs)),
 			];
-			if !m.bones.is_empty() {
-				details.push(detail("Bone names", bone_names(&m.bone_names)));
-			}
-			let controls = bone_names(&m.facs.face_control_names);
-			if !controls.is_empty() {
-				details.push(detail("FACS controls", controls));
-			}
+			details.extend(skin_counts(&m.bones, &m.subsets));
+			// v5 shows its FACS size between the counts and the bone names
+			details.push(detail("FACS data", format!("{} bytes", m.sizeof_facs)));
+			details.extend(bone_names_row(&m.bones, &m.bone_names));
+			details.extend(facs_controls_row(&m.facs.face_control_names));
 			Loaded {
 				format: "Mesh v5.00".into(),
 				details,
-				geometry: Geometry {
-					positions,
-					uvs: None,
-					normals: None,
-					triangles,
-					groups,
-					group_kind: GroupKind::Lod,
-				}
-				.with_uvs(uvs)
-				.with_normals(normals),
+				geometry: Geometry::lods(positions, triangles, groups)
+					.with_uvs(uvs)
+					.with_normals(normals),
 				note: None,
 			}
 		}
@@ -261,14 +235,12 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 		}
 	};
 
-	let (positions, uvs, normals, triangles) = match &core {
+	let ((positions, uvs, normals), triangles) = match &core {
 		Some(core) => (
-			core.vertices.iter().map(|v| v.pos).collect(),
-			core.vertices.iter().map(|v| v.tex).collect(),
-			core.vertices.iter().map(|v| v.norm).collect(),
+			attributes(&core.vertices, |v| v.pos, |v| v.tex, |v| v.norm),
 			faces2(&core.faces),
 		),
-		None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+		None => Default::default(),
 	};
 	details.push(detail("Vertices", positions.len()));
 	details.push(detail("Faces", triangles.len()));
@@ -283,17 +255,11 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 		None => single_group(triangles.len()),
 	};
 	if let Some(skinning) = m.skinning() {
-		details.push(detail("Bones", skinning.bones.len()));
-		details.push(detail("Subsets", skinning.subsets.len()));
-		if !skinning.bones.is_empty() {
-			details.push(detail("Bone names", bone_names(&skinning.bone_names)));
-		}
+		details.extend(skin_counts(&skinning.bones, &skinning.subsets));
+		details.extend(bone_names_row(&skinning.bones, &skinning.bone_names));
 	}
 	if let Some(facs) = m.facs() {
-		let controls = bone_names(&facs.face_control_names);
-		if !controls.is_empty() {
-			details.push(detail("FACS controls", controls));
-		}
+		details.extend(facs_controls_row(&facs.face_control_names));
 	}
 	if let Some(hsr) = m.hsr_avis() {
 		let hidden = (0..hsr.bit_count as usize)
@@ -305,16 +271,9 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 	Loaded {
 		format: format!("Mesh v{revision}"),
 		details,
-		geometry: Geometry {
-			positions,
-			uvs: None,
-			normals: None,
-			triangles,
-			groups,
-			group_kind: GroupKind::Lod,
-		}
-		.with_uvs(uvs)
-		.with_normals(normals),
+		geometry: Geometry::lods(positions, triangles, groups)
+			.with_uvs(uvs)
+			.with_normals(normals),
 		note,
 	}
 }

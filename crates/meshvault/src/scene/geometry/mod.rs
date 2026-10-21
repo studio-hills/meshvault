@@ -73,6 +73,18 @@ impl Geometry {
 		}
 	}
 
+	/// Levels of detail of one mesh: each group is a LOD, finest first.
+	fn lods(positions: Vec<[f32; 3]>, triangles: Vec<[u32; 3]>, groups: Vec<Range<usize>>) -> Self {
+		Self {
+			positions,
+			uvs: None,
+			normals: None,
+			triangles,
+			groups,
+			group_kind: GroupKind::Lod,
+		}
+	}
+
 	/// Attaches vertex normals, ignored unless there is one per position.
 	pub(super) fn with_normals(mut self, normals: Vec<[f32; 3]>) -> Self {
 		if normals.len() == self.positions.len() && !normals.is_empty() {
@@ -134,6 +146,33 @@ impl Geometry {
 			(lo, hi)
 		}))
 	}
+}
+
+/// Positions, texture coordinates and normals, one of each per vertex.
+type Attributes = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 3]>);
+
+/// Splits a vertex list into its positions, texture coordinates and normals.
+fn attributes<V>(
+	vertices: &[V],
+	pos: impl Fn(&V) -> [f32; 3],
+	tex: impl Fn(&V) -> [f32; 2],
+	norm: impl Fn(&V) -> [f32; 3],
+) -> Attributes {
+	(
+		vertices.iter().map(pos).collect(),
+		vertices.iter().map(tex).collect(),
+		vertices.iter().map(norm).collect(),
+	)
+}
+
+/// The names in a list of NUL-terminated strings, in order, skipping empty
+/// ones. Bytes that are not UTF-8 become U+FFFD.
+fn nul_separated(bytes: &[u8]) -> Vec<String> {
+	bytes
+		.split(|&b| b == 0)
+		.filter(|s| !s.is_empty())
+		.map(|s| String::from_utf8_lossy(s).into_owned())
+		.collect()
 }
 
 /// One group of every triangle, for `len` triangles.

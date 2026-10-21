@@ -1,5 +1,7 @@
 //! A FACS head's face poses.
 
+use super::nul_separated;
+
 /// A FACS head's face poses: how far each face bone moves for each face
 /// control, and for each corrective (two or three controls together).
 #[derive(Clone, Debug, PartialEq)]
@@ -95,14 +97,8 @@ fn facs_control_name(code: &str) -> Option<&'static str> {
 
 pub(super) fn facs_of(f: &rbx_mesh::mesh::Facs5) -> Option<Facs> {
 	use rbx_mesh::mesh::QuantizedMatrix5;
-	let names = |b: &[u8]| -> Vec<String> {
-		b.split(|&c| c == 0)
-			.filter(|s| !s.is_empty())
-			.map(|s| String::from_utf8_lossy(s).into_owned())
-			.collect()
-	};
-	let bones = names(&f.face_bone_names);
-	let codes = names(&f.face_control_names);
+	let bones = nul_separated(&f.face_bone_names);
+	let codes = nul_separated(&f.face_control_names);
 	let controls: Vec<String> = codes
 		.iter()
 		.map(|c| facs_control_name(c).map_or_else(|| c.clone(), String::from))

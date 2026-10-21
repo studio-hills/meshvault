@@ -284,6 +284,15 @@ pub fn text_segmented<T: PartialEq + Copy>(
 	changed
 }
 
+/// A small uppercase label over a group (a section title, "Recent"):
+/// `text` in natural case, set in capitals with 0.05em of tracking.
+pub fn overline(text: &str) -> RichText {
+	RichText::new(text.to_uppercase())
+		.size(crate::ui::theme::CAPTION)
+		.family(semibold())
+		.extra_letter_spacing(0.05 * crate::ui::theme::CAPTION)
+}
+
 /// A collapsible panel section with a small uppercase title.
 pub fn section<R>(
 	ui: &mut Ui,
@@ -305,10 +314,7 @@ pub fn section<R>(
 		} else {
 			super::icons::CARET_RIGHT
 		};
-		let text = RichText::new(format!("{icon}  {}", title.to_uppercase()))
-			.size(crate::ui::theme::CAPTION)
-			.family(semibold())
-			.color(p.text_weak);
+		let text = overline(&format!("{icon}  {title}")).color(p.text_weak);
 		ui.add(
 			egui::Label::new(text)
 				.sense(Sense::click())

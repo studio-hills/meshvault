@@ -204,12 +204,7 @@ impl App {
 				// line the heading up with the menu items' text
 				ui.horizontal(|ui| {
 					ui.add_space(ui.spacing().button_padding.x);
-					ui.label(
-						RichText::new("RECENT")
-							.size(crate::ui::theme::CAPTION)
-							.family(semibold())
-							.weak(),
-					);
+					ui.label(widgets::overline("Recent").weak());
 				});
 				for root in recent {
 					let name = root

@@ -150,12 +150,7 @@ impl App {
 		let recent = self.recent_workspaces();
 		if !recent.is_empty() {
 			ui.add_space(18.0);
-			ui.label(
-				RichText::new("RECENT WORKSPACES")
-					.size(crate::ui::theme::CAPTION)
-					.family(semibold())
-					.color(p.text_weak),
-			);
+			ui.label(widgets::overline("Recent workspaces").color(p.text_weak));
 			ui.add_space(2.0);
 			for root in recent.into_iter().take(5) {
 				match recent_row(ui, &root) {

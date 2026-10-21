@@ -130,7 +130,12 @@ fn icon_widget(
 		shape = shape.with_angle_and_anchor(std::f32::consts::PI, Align2::CENTER_CENTER);
 	}
 	ui.painter().add(shape);
-	response.on_hover_text(tooltip)
+	// no tooltip when there is nothing to say (an empty one still shows)
+	if tooltip.is_empty() {
+		response
+	} else {
+		response.on_hover_text(tooltip)
+	}
 }
 
 /// A filled accent button for the main action of a screen or dialog

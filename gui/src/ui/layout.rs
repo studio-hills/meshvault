@@ -648,7 +648,9 @@ impl App {
 								ui.set_min_width(230.0);
 								self.export_items(ui);
 							});
-							widgets::icon_button(ui, icons::INFO, "").on_hover_text(
+							widgets::icon_button(
+								ui,
+								icons::INFO,
 								"Left-drag: orbit\nRight or middle-drag: pan\nScroll: zoom\nDouble-click: frame model",
 							);
 						});

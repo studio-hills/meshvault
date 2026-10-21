@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::{MeshJob, Names};
-use crate::render::maths::{IDENTITY, apply, apply_dir};
+use crate::render::maths::{IDENTITY, apply, apply_normal};
 use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
@@ -269,7 +269,7 @@ impl<'a> Obj<'a> {
 		}
 		if let Some(normals) = &geometry.normals {
 			for &n in normals {
-				let n = apply_dir(transform, n);
+				let n = apply_normal(transform, n);
 				let _ = writeln!(self.obj, "vn {} {} {}", n[0], n[1], n[2]);
 			}
 		}
@@ -355,6 +355,32 @@ mod tests {
 		let mut names = Names::default();
 		let obj = Obj::chosen(&dir.join(format!("{name}.obj")), &mut names).unwrap();
 		write_one(obj, geometry, &[0], base, normal).unwrap();
+	}
+
+	/// A part stretched to twice its width: its 45° slope gets shallower,
+	/// so the normal leans up, to (1, 2, 0) over √5, not (2, 1, 0).
+	#[test]
+	fn normals_of_a_stretched_part_stay_perpendicular() {
+		let dir = TempDir::new("obj_stretched");
+		let mut names = Names::default();
+		let mut obj = Obj::new(&dir, "s", "s.mtl".into(), &mut names);
+		let mut slope = triangle(false);
+		let n = std::f32::consts::FRAC_1_SQRT_2;
+		slope.normals = Some(vec![[n, n, 0.0]; 3]);
+		let mut stretch = IDENTITY;
+		stretch[0][0] = 2.0;
+		obj.add("a", &slope, &[0], &stretch, "m");
+		let vn: Vec<f32> = obj
+			.obj
+			.lines()
+			.find_map(|l| l.strip_prefix("vn "))
+			.unwrap()
+			.split(' ')
+			.map(|v| v.parse().unwrap())
+			.collect();
+		let len = 5f32.sqrt();
+		let expected = [1.0 / len, 2.0 / len, 0.0];
+		assert!((0..3).all(|k| (vn[k] - expected[k]).abs() < 1e-6), "{vn:?}");
 	}
 
 	fn read(path: PathBuf) -> String {

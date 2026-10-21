@@ -83,14 +83,34 @@ pub(crate) fn apply(m: &[[f32; 4]; 4], p: V3) -> V3 {
 	]
 }
 
-/// The direction `d` turned by the upper 3x3 of the row-major transform
-/// `m` (no translation), then scaled to unit length. A length below 1e-12
-/// divides by 1e-12 instead, so a zero vector stays zero. Unlike
-/// [`normal_matrix`], this is the plain 3x3 the OBJ writer uses.
-pub(crate) fn apply_dir(m: &[[f32; 4]; 4], d: V3) -> V3 {
-	let d = [0, 1, 2].map(|r| m[r][0] * d[0] + m[r][1] * d[1] + m[r][2] * d[2]);
-	let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
-	d.map(|c| c / len)
+/// The normal `n` of a surface placed by the row-major transform `m`
+/// (the translation does not reach it), scaled to unit length. A length
+/// below 1e-12 divides by 1e-12 instead, so a zero vector stays zero.
+///
+/// Normals turn by the [`normal_matrix`] so they stay perpendicular under
+/// a non-uniform scale. A turn with a uniform scale (no stretch) keeps
+/// them perpendicular by itself, so it is used as it is, which gives the
+/// same digits as before for every part that is not stretched.
+pub(crate) fn apply_normal(m: &[[f32; 4]; 4], n: V3) -> V3 {
+	let m = if is_uniform(m) { *m } else { normal_matrix(*m) };
+	let n = [0, 1, 2].map(|r| m[r][0] * n[0] + m[r][1] * n[1] + m[r][2] * n[2]);
+	let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+	n.map(|c| c / len)
+}
+
+/// Whether the upper 3x3 of `m` is a turn with a uniform scale: its
+/// columns are square to each other and of the same length.
+fn is_uniform(m: &[[f32; 4]; 4]) -> bool {
+	let column = |c: usize| [m[0][c], m[1][c], m[2][c]];
+	let [x, y, z] = [column(0), column(1), column(2)];
+	let scale = (dot(x, x) + dot(y, y) + dot(z, z)) / 3.0;
+	let near = |a: f32, b: f32| (a - b).abs() <= 1e-5 * scale;
+	[dot(x, x), dot(y, y), dot(z, z)]
+		.iter()
+		.all(|&d| near(d, scale))
+		&& [dot(x, y), dot(y, z), dot(z, x)]
+			.iter()
+			.all(|&d| near(d, 0.0))
 }
 
 /// Whether two numbers agree to 1e-5, for the render tests.
@@ -155,8 +175,12 @@ mod tests {
 		assert_matrix(normal_matrix(m), expected);
 	}
 
+	/// Normals are turned by the inverse transpose, so under a non-uniform
+	/// scale they stay perpendicular to the surface: stretching X by 2
+	/// makes a 45° slope shallower, so its normal leans towards Y, not X
+	/// (as the plain 3x3 made it, bug B28).
 	#[test]
-	fn apply_dir_ignores_the_translation_and_normalises() {
+	fn apply_normal_ignores_the_translation_and_keeps_normals_perpendicular() {
 		let m = [
 			[2.0, 0.0, 0.0, 5.0],
 			[0.0, 4.0, 0.0, 6.0],
@@ -164,16 +188,37 @@ mod tests {
 			[0.0, 0.0, 0.0, 1.0],
 		];
 		assert_eq!(apply(&m, [1.0, 1.0, 1.0]), [7.0, 10.0, 7.5]);
-		assert_eq!(apply_dir(&m, [3.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
-		let d = apply_dir(&m, [1.0, 1.0, 0.0]);
-		let len = 20f32.sqrt();
+		assert_eq!(apply_normal(&m, [3.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+		let n = apply_normal(&m, [1.0, 1.0, 0.0]);
+		let len = 5f32.sqrt();
 		assert!(
-			close(d[0], 2.0 / len) && close(d[1], 4.0 / len) && d[2] == 0.0,
-			"{d:?}"
+			close(n[0], 2.0 / len) && close(n[1], 1.0 / len) && n[2] == 0.0,
+			"{n:?}"
 		);
-		// a zero (or vanishing) direction is not blown up
-		assert_eq!(apply_dir(&m, [0.0; 3]), [0.0; 3]);
-		assert_eq!(apply_dir(&IDENTITY, [1e-14, 0.0, 0.0]), [0.01, 0.0, 0.0]);
+		// still perpendicular to the moved edge from (0, 0) to (1, -1)
+		let edge = sub(apply(&m, [1.0, -1.0, 0.0]), apply(&m, [0.0; 3]));
+		assert!(close(dot(n, edge), 0.0), "{n:?} {edge:?}");
+		// a zero (or vanishing) normal is not blown up
+		assert_eq!(apply_normal(&m, [0.0; 3]), [0.0; 3]);
+		assert_eq!(apply_normal(&IDENTITY, [1e-14, 0.0, 0.0]), [0.01, 0.0, 0.0]);
+	}
+
+	/// A turn with a uniform scale keeps normals perpendicular as it is, so
+	/// it gives exactly what the plain 3x3 gave, and exports stay the same
+	/// to the last digit.
+	#[test]
+	fn apply_normal_of_a_scaled_turn_is_the_plain_turn() {
+		let (s, c) = 0.7f32.sin_cos();
+		let m = [
+			[3.0 * c, 0.0, 3.0 * s, 1.0],
+			[0.0, 3.0, 0.0, 2.0],
+			[-3.0 * s, 0.0, 3.0 * c, 3.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+		let d = [0.3, -0.5, 0.8];
+		let plain = [0, 1, 2].map(|r| m[r][0] * d[0] + m[r][1] * d[1] + m[r][2] * d[2]);
+		let len = dot(plain, plain).sqrt();
+		assert_eq!(apply_normal(&m, d), plain.map(|v| v / len));
 	}
 
 	/// The viewport's normalise scales any vector longer than 0, however

@@ -23,10 +23,43 @@ pub fn compact(ui: &mut Ui) {
 	ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
 }
 
+/// Rounds the controls inside a container whose corners have radius
+/// `outer`, `padding` in from its edge (its margin plus its border), so
+/// their corners are concentric with the container's: inner radius = outer
+/// radius − padding. Where the gap is as large as the radius, they keep
+/// their own radius.
+pub fn nest(ui: &mut Ui, outer: u8, padding: f32) {
+	let inner = outer as f32 - padding;
+	if inner <= 0.0 {
+		return;
+	}
+	let radius = CornerRadius::same(inner.round() as u8);
+	let w = &mut ui.visuals_mut().widgets;
+	for state in [
+		&mut w.noninteractive,
+		&mut w.inactive,
+		&mut w.hovered,
+		&mut w.active,
+		&mut w.open,
+	] {
+		state.corner_radius = radius;
+	}
+}
+
+/// The corner radius of controls in `ui`: `CONTROL_RADIUS`, or what a
+/// container nesting them gives them (see [`nest`]).
+pub fn control_radius(ui: &Ui) -> CornerRadius {
+	ui.visuals().widgets.inactive.corner_radius
+}
+
 /// Sizes dropdown and context menu items: full-width rows of `CONTROL_SM`.
+/// Their corners are concentric with the menu's.
 pub fn menu_style(ui: &mut Ui) {
 	ui.spacing_mut().interact_size.y = CONTROL_SM;
 	ui.spacing_mut().button_padding = Vec2::new(10.0, 6.0);
+	let outer = ui.visuals().menu_corner_radius.nw;
+	let padding = ui.spacing().menu_margin.top as f32 + ui.visuals().window_stroke.width;
+	nest(ui, outer, padding);
 }
 
 /// A borderless square button showing one icon, with a tooltip. It is as
@@ -85,8 +118,7 @@ fn icon_widget(
 	} else {
 		p.text_weak
 	};
-	ui.painter()
-		.rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
+	ui.painter().rect_filled(rect, control_radius(ui), fill);
 	let galley = ui.painter().layout_no_wrap(
 		icon.to_string(),
 		FontId::proportional((size.y * 0.45).round()),
@@ -160,14 +192,18 @@ pub fn segmented<T: PartialEq + Copy>(
 	// the track (border + padding) is as tall as a control beside it
 	let pad = 2.0;
 	let height = ui.spacing().interact_size.y - 2.0 * (pad + 1.0);
+	// the track is a control of its row, rounded like the others; the
+	// options inside it nest in it
+	let track = control_radius(ui).nw;
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(CONTROL_RADIUS + pad as u8))
+		.corner_radius(CornerRadius::same(track))
 		.inner_margin(Margin::same(pad as i8))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
 			ui.spacing_mut().interact_size.y = height;
+			nest(ui, track, pad + 1.0);
 			ui.horizontal(|ui| {
 				for &(option, icon, tooltip) in options {
 					if icon_toggle(ui, icon, tooltip, *value == option).clicked()
@@ -183,7 +219,7 @@ pub fn segmented<T: PartialEq + Copy>(
 }
 
 /// A row of mutually exclusive text options in a framed track, as tall as
-/// the other controls. Radii are concentric: track = option + padding.
+/// the other controls. Radii are concentric: option = track − padding.
 pub fn text_segmented<T: PartialEq + Copy>(
 	ui: &mut Ui,
 	value: &mut T,
@@ -202,6 +238,7 @@ pub fn text_segmented<T: PartialEq + Copy>(
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
 			ui.spacing_mut().interact_size.y = height;
+			nest(ui, CONTROL_RADIUS + pad as u8, pad + 1.0);
 			ui.horizontal(|ui| {
 				// rows inside a right-to-left layout fill from the right; keep the
 				// options in reading order either way
@@ -227,8 +264,7 @@ pub fn text_segmented<T: PartialEq + Copy>(
 					} else {
 						Color32::TRANSPARENT
 					};
-					ui.painter()
-						.rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
+					ui.painter().rect_filled(rect, control_radius(ui), fill);
 					let colour = if selected {
 						p.accent
 					} else if response.hovered() {

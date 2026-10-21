@@ -13,6 +13,10 @@ use crate::geometry::Primitive;
 use crate::model_view::{ModelView, PartShape};
 use crate::viewport;
 
+/// Corner radius of the transport bar; the controls in it are rounded to
+/// this less its padding and border.
+const TRANSPORT_RADIUS: u8 = CONTROL_RADIUS + 4;
+
 const SPEEDS: [f32; 6] = [0.1, 0.25, 0.5, 1.0, 1.5, 2.0];
 
 fn speed_label(speed: f32) -> String {
@@ -81,12 +85,14 @@ impl App {
 					.fill(p.panel.gamma_multiply(0.94))
 					.stroke(Stroke::new(1.0, p.border))
 					// concentric with the controls: radius = control radius + padding
-					.corner_radius(CornerRadius::same(CONTROL_RADIUS + 4))
+					.corner_radius(CornerRadius::same(TRANSPORT_RADIUS))
 					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)
 					.show(ui, |ui| {
 						ui.set_width(width - 8.0);
 						ui.spacing_mut().interact_size.y = 30.0;
+						// the controls' corners are concentric with the bar's
+						widgets::nest(ui, TRANSPORT_RADIUS, 4.0 + 1.0);
 						ui.horizontal(|ui| transport(ui, &p, model));
 					});
 			});

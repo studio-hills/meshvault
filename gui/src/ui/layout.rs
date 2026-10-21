@@ -546,7 +546,8 @@ impl App {
 		}
 	}
 
-	/// Floating controls over the top-left of the viewport.
+	/// Floating controls over the top-left of the viewport (see
+	/// [`TOOLBAR_RADIUS`]).
 	pub(super) fn viewport_toolbar(&mut self, ctx: &egui::Context, rect: egui::Rect) {
 		let p = palette(ctx);
 		egui::Area::new(Id::unique("viewport_toolbar"))
@@ -556,13 +557,13 @@ impl App {
 				Frame::NONE
 					.fill(p.panel.gamma_multiply(0.94))
 					.stroke(Stroke::new(1.0, p.border))
-					// concentric with the shading track at its left end: the
-					// track's radius (CONTROL_RADIUS + 2) plus this padding
-					.corner_radius(CornerRadius::same(CONTROL_RADIUS + 2 + 4))
+					.corner_radius(CornerRadius::same(TOOLBAR_RADIUS))
 					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)
 					.show(ui, |ui| {
 						ui.spacing_mut().interact_size.y = 30.0;
+						// the controls' corners are concentric with the toolbar's
+						widgets::nest(ui, TOOLBAR_RADIUS, 4.0 + 1.0);
 						ui.horizontal(|ui| {
 							ui.spacing_mut().item_spacing.x = 4.0;
 							widgets::segmented(
@@ -803,6 +804,10 @@ impl App {
 		}
 	}
 }
+
+/// Corner radius of the viewport toolbar; the controls in it are rounded
+/// to this less its padding and border.
+const TOOLBAR_RADIUS: u8 = CONTROL_RADIUS + 6;
 
 /// Keyboard shortcuts, for the help dialog.
 pub const SHORTCUTS: &[(&str, &str)] = &[

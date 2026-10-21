@@ -473,6 +473,8 @@ impl Browser {
 			.corner_radius(CornerRadius::same(8))
 			.inner_margin(egui::Margin::symmetric(10, 2))
 			.show(ui, |ui| {
+				// its buttons sit 2 px from its top and bottom edges
+				widgets::nest(ui, 8, 2.0);
 				ui.horizontal(|ui| {
 					ui.spacing_mut().interact_size.y = 28.0;
 					ui.label(RichText::new(format!("{n} selected")).color(p.accent));

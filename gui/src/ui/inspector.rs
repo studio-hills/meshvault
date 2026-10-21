@@ -204,6 +204,10 @@ impl App {
 }
 
 /// One material slot: thumbnail, name, and show/replace/remove controls.
+/// Corner radius of a map's card; its thumbnail and buttons are rounded
+/// to this less its padding and border.
+const MAP_CARD_RADIUS: u8 = 8;
+
 fn map_row(
 	ui: &mut egui::Ui,
 	slot: Slot,
@@ -216,12 +220,14 @@ fn map_row(
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(8))
+		.corner_radius(CornerRadius::same(MAP_CARD_RADIUS))
 		.inner_margin(Margin::same(6))
 		.show(ui, |ui| {
 			ui.set_width(ui.available_width());
-			// small icon buttons inside the card row
+			// small icon buttons inside the card row, their corners (and the
+			// thumbnail's) concentric with the card's
 			ui.spacing_mut().interact_size.y = 30.0;
+			widgets::nest(ui, MAP_CARD_RADIUS, 6.0 + 1.0);
 			ui.horizontal(|ui| {
 				let thumb = Vec2::splat(40.0);
 				match material.maps.get(&slot) {
@@ -232,11 +238,12 @@ fn map_row(
 							egui::Pos2::ZERO,
 							egui::Pos2::new(1.0, texture.info.v_scale),
 						);
+						let radius = widgets::control_radius(ui);
 						let image = |size| {
 							egui::Image::new((texture.handle.id(), size))
 								.uv(uv)
 								.maintain_aspect_ratio(false)
-								.corner_radius(CornerRadius::same(5))
+								.corner_radius(radius)
 						};
 						ui.add(image(thumb).tint(if on {
 							egui::Color32::WHITE

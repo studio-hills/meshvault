@@ -120,8 +120,10 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
 			// the row is exactly as tall as the halves, so the 2px padding is
-			// even on every side and the radii stay concentric (outer = inner + 2)
+			// even on every side, and the halves' corners are concentric with
+			// the track's (inner = outer − padding and border)
 			ui.spacing_mut().interact_size.y = CONTROL_SM - 4.0;
+			widgets::nest(ui, CONTROL_RADIUS + 2, 3.0);
 			let half = ((ui.available_width() - 2.0) / 2.0).floor();
 			ui.horizontal(|ui| {
 				let sides = [
@@ -158,7 +160,7 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 						egui::Color32::TRANSPARENT
 					};
 					ui.painter()
-						.rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
+						.rect_filled(rect, widgets::control_radius(ui), fill);
 					let colour = if current {
 						p.accent
 					} else if hovered {

@@ -4,5 +4,5 @@ members = ["crates/meshvault", "crates/rbx_mesh"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.95"
 repository = "https://github.com/studio-hills/meshvault"

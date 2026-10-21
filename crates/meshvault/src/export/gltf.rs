@@ -15,11 +15,11 @@ use eframe::egui::Color32;
 use serde_json::{Value, json};
 
 use crate::anim::math::CFrame;
-use crate::render::viewport::{AlphaMode, Surface};
 use crate::scene::colour::{linear_rgb, linear_to_srgb, srgb_to_linear, srgb8_to_linear};
 use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::model_view::{ExportMesh, ModelView};
+use crate::scene::surface::{AlphaMode, Surface};
 use crate::scene::texture::Material;
 
 /// Keyframes per second of baked clips.

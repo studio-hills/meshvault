@@ -57,14 +57,14 @@ pub struct Uniforms {
 	pub decal_size: [f32; 4],
 	pub decal_tile: [f32; 4],
 	pub decal_colour: [f32; 4],
-	/// The model's lights (see `viewport::light_uniforms`), and how many.
-	pub lights: [[f32; 4]; crate::render::viewport::MAX_LIGHTS * 3],
+	/// The model's lights (see `lighting::light_uniforms`), and how many.
+	pub lights: [[f32; 4]; crate::render::lighting::MAX_LIGHTS * 3],
 	pub light_count: [f32; 4],
 	/// Clothing draws: the template region (x, y, width, height, 0..1) of
 	/// each box face (Right, Top, Back, Left, Bottom, Front), then the box's
 	/// centre and half size in the body section's space.
 	pub clothing: [[f32; 4]; 8],
-	/// Lighting and highlight (see `viewport::Lighting`): key light colour
+	/// Lighting and highlight (see `lighting::Lighting`): key light colour
 	/// and fill strength; sky colour and exposure; ground colour and how
 	/// strongly this draw is highlighted; the highlight colour.
 	pub env: [[f32; 4]; 4],

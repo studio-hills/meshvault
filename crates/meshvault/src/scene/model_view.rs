@@ -18,12 +18,14 @@ use crate::anim::clip::{Clip, ClipMarker};
 use crate::anim::math::{CFrame, V3};
 use crate::anim::rig::{Binding, BoneParent, Posed, Rig, Target};
 use crate::anim::schema::{AnimatedModel, ClipStatus, ModelPart};
+use crate::render::camera::Camera;
 use crate::render::gpu::GpuScene;
-use crate::render::viewport::{
-	self, AlphaMode, Camera, ClothingDraw, DecalDraw, ScenePart, Surface,
-};
+use crate::render::lighting::SceneLight;
+use crate::render::maths::IDENTITY;
+use crate::render::viewport::ScenePart;
 use crate::scene::geometry::{self, Geometry, Primitive, Skin};
 use crate::scene::maps::Slot;
+use crate::scene::surface::{AlphaMode, ClothingDraw, DecalDraw, PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
 
 /// The files of one mesh a model uses, found in the workspace.
@@ -914,7 +916,7 @@ impl ModelView {
 				_ => None,
 			};
 			let colour = match &shape {
-				PartShape::Mesh(_) => colour_of(record, viewport::PART_COLOUR),
+				PartShape::Mesh(_) => colour_of(record, PART_COLOUR),
 				_ => colour_of(record, BLOCK_COLOUR),
 			};
 			let skin = match &shape {
@@ -1682,7 +1684,7 @@ impl ModelView {
 							Some(skin) => (
 								&skin.geometry,
 								asset.groups.as_slice(),
-								viewport::IDENTITY,
+								IDENTITY,
 								part_world.inverse().to_matrix([1.0; 3]),
 								std::mem::take(&mut skin.moved),
 								material,
@@ -1761,7 +1763,7 @@ impl ModelView {
 
 	/// The parts' lights where the parts are now. Spot and surface lights
 	/// shine out of their face; a surface light from the face itself.
-	pub fn scene_lights(&mut self) -> Vec<viewport::SceneLight> {
+	pub fn scene_lights(&mut self) -> Vec<SceneLight> {
 		self.update_pose();
 		let mut lights = Vec::new();
 		for part in &self.parts {
@@ -1793,7 +1795,7 @@ impl ModelView {
 						normal[2] * half[2],
 					]);
 				}
-				lights.push(viewport::SceneLight {
+				lights.push(SceneLight {
 					position,
 					direction: at.rotate(normal),
 					colour: l.color,

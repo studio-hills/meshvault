@@ -27,7 +27,7 @@ pub struct Config {
 	pub concurrency: usize,
 	pub theme: ThemeMode,
 	/// How the 3D view is lit.
-	pub lighting: crate::render::viewport::Lighting,
+	pub lighting: crate::render::lighting::Lighting,
 }
 
 impl Default for Config {

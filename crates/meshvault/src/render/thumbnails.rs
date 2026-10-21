@@ -10,11 +10,14 @@ use std::time::SystemTime;
 
 use eframe::egui;
 
+use crate::render::camera::Camera;
 use crate::render::gpu::GpuRenderer;
-use crate::render::viewport::{self, Camera, ScenePart, Shading, ViewSettings};
+use crate::render::maths::IDENTITY;
+use crate::render::viewport::{self, ScenePart, Shading, ViewSettings};
 use crate::scene::geometry::{self, Geometry, GroupKind};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
+use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
 use crate::workspace::view_loader::{item_maps, model_loader};
 use crate::workspace::{AssetState, CACHE_DIR, Workspace};
@@ -319,13 +322,13 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 			let mut parts = [ScenePart {
 				geometry: &geometry,
 				groups: &groups,
-				transform: viewport::IDENTITY,
+				transform: IDENTITY,
 				material: &material,
 				colour_groups: geometry.group_kind == GroupKind::Hull,
-				colour: viewport::PART_COLOUR,
+				colour: PART_COLOUR,
 				scene: &mut scene,
 				moved: false,
-				surface: viewport::Surface::OPAQUE,
+				surface: Surface::OPAQUE,
 				decal: None,
 				highlight: false,
 			}];
@@ -381,7 +384,8 @@ mod tests {
 	use std::time::Duration;
 
 	use super::*;
-	use crate::render::viewport::{DecalDraw, IDENTITY, Surface};
+	use crate::render::maths::IDENTITY;
+	use crate::scene::surface::{DecalDraw, Surface};
 	use crate::test_support::TempDir;
 
 	/// Cached thumbnails are named by these hashes, so they must never change.

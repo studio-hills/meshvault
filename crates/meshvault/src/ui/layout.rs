@@ -10,7 +10,9 @@ use super::theme::{
 };
 use super::{icons, widgets};
 use crate::app::App;
-use crate::render::viewport::{self, Camera, Lighting, ScenePart, Shading, ViewSettings};
+use crate::render::camera::Camera;
+use crate::render::lighting::Lighting;
+use crate::render::viewport::{self, ScenePart, Shading, ViewSettings};
 use crate::scene::geometry::GroupKind;
 use crate::scene::maps::Slot;
 use crate::ui::ConfirmAction;

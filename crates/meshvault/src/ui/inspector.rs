@@ -1,6 +1,6 @@
 //! The right-hand panel describing the open model and its material.
 
-use crate::render::viewport::AlphaMode;
+use crate::scene::surface::AlphaMode;
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
 use super::format::{format_bytes, format_count};

@@ -9,8 +9,9 @@ use eframe::egui;
 
 use crate::config::Config;
 use crate::export::Format;
+use crate::render::camera::Camera;
 use crate::render::gpu::{GpuRenderer, GpuScene};
-use crate::render::viewport::{Camera, Shading};
+use crate::render::viewport::Shading;
 use crate::scene::geometry::{self, GroupKind, Loaded};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
@@ -38,7 +39,7 @@ pub struct Document {
 	/// The mesh uploaded to the GPU, created on first draw.
 	pub gpu: Option<GpuScene>,
 	/// What the colour map's alpha does.
-	pub alpha: crate::render::viewport::AlphaMode,
+	pub alpha: crate::scene::surface::AlphaMode,
 }
 
 impl Document {
@@ -285,7 +286,7 @@ impl App {
 					hull_visible,
 					material: Material::default(),
 					gpu: None,
-					alpha: crate::render::viewport::AlphaMode::Overlay,
+					alpha: crate::scene::surface::AlphaMode::Overlay,
 				});
 				true
 			}
@@ -1015,7 +1016,7 @@ impl App {
 				&doc.loaded.geometry,
 				&doc.visible_groups(),
 				&doc.material,
-				crate::render::viewport::PART_COLOUR,
+				crate::scene::surface::PART_COLOUR,
 				&name,
 				&path,
 			);
@@ -1103,15 +1104,15 @@ impl App {
 				let mut parts = [crate::render::viewport::ScenePart {
 					geometry,
 					groups: &groups,
-					transform: crate::render::viewport::IDENTITY,
+					transform: crate::render::maths::IDENTITY,
 					material: plain.unwrap_or(&doc.material),
 					colour_groups: geometry.group_kind == GroupKind::Hull,
-					colour: crate::render::viewport::PART_COLOUR,
+					colour: crate::scene::surface::PART_COLOUR,
 					scene: &mut doc.gpu,
 					moved: false,
-					surface: crate::render::viewport::Surface {
+					surface: crate::scene::surface::Surface {
 						alpha_mode: doc.alpha,
-						..crate::render::viewport::Surface::OPAQUE
+						..crate::scene::surface::Surface::OPAQUE
 					},
 					decal: None,
 					highlight: false,
@@ -1130,7 +1131,7 @@ impl App {
 		Some(out)
 	}
 
-	pub fn set_lighting(&mut self, lighting: crate::render::viewport::Lighting) {
+	pub fn set_lighting(&mut self, lighting: crate::render::lighting::Lighting) {
 		self.config.lighting = lighting;
 		// a failed save is not reported yet (bug B08)
 		let _ = self.config.save();

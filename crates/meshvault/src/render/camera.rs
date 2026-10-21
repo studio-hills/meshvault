@@ -1,0 +1,166 @@
+//! The orbit camera, and projecting world points into the view.
+
+use eframe::egui::{Pos2, Rect};
+
+use crate::render::maths::{V3, cross, dot, normalize, sub};
+use crate::scene::geometry::Geometry;
+
+#[derive(Clone)]
+pub struct Camera {
+	pub yaw: f32,
+	pub pitch: f32,
+	pub distance: f32,
+	pub target: V3,
+	/// Radius of the mesh's bounding sphere; scales pan and zoom speed.
+	pub(super) radius: f32,
+	/// Lowest point of the model, where the ground grid sits.
+	pub(super) floor: f32,
+}
+
+impl Camera {
+	pub fn framing(geometry: &Geometry) -> Self {
+		Self::framing_bounds(geometry.bounds())
+	}
+
+	/// Frames an axis-aligned box `(min, max)`.
+	pub fn framing_bounds(bounds: Option<(V3, V3)>) -> Self {
+		let floor = bounds.map_or(0.0, |(lo, _)| lo[1]);
+		let (target, radius) = match bounds {
+			Some((lo, hi)) => {
+				let centre = [
+					(lo[0] + hi[0]) * 0.5,
+					(lo[1] + hi[1]) * 0.5,
+					(lo[2] + hi[2]) * 0.5,
+				];
+				let r = dot(sub(hi, centre), sub(hi, centre)).sqrt();
+				(centre, if r > 1e-6 { r } else { 1.0 })
+			}
+			None => ([0.0; 3], 1.0),
+		};
+		Self {
+			// Roblox models face -Z, so start from a front three-quarter view
+			yaw: std::f32::consts::PI - 0.6,
+			pitch: 0.4,
+			distance: radius * 1.9,
+			target,
+			radius,
+			floor,
+		}
+	}
+
+	/// Orthonormal camera basis: right, up, forward (pointing into the scene).
+	pub(super) fn basis(&self) -> (V3, V3, V3) {
+		let (sy, cy) = self.yaw.sin_cos();
+		let (sp, cp) = self.pitch.sin_cos();
+		let forward = [-sy * cp, -sp, -cy * cp];
+		let right = normalize(cross(forward, [0.0, 1.0, 0.0]));
+		let up = cross(right, forward);
+		(right, up, forward)
+	}
+
+	pub(super) fn eye(&self) -> V3 {
+		let (_, _, f) = self.basis();
+		[
+			self.target[0] - f[0] * self.distance,
+			self.target[1] - f[1] * self.distance,
+			self.target[2] - f[2] * self.distance,
+		]
+	}
+}
+
+/// Where the world point `p` lands in the view `rect`, if it is in front
+/// of the camera.
+pub fn project(camera: &Camera, rect: Rect, p: V3) -> Option<Pos2> {
+	let (right, up, forward) = camera.basis();
+	let d = sub(p, camera.eye());
+	let z = dot(d, forward);
+	if z <= camera.radius * 0.01 {
+		return None;
+	}
+	let focal = rect.height() * 0.5 / 35f32.to_radians().tan();
+	let centre = rect.center();
+	Some(Pos2::new(
+		centre.x + dot(d, right) / z * focal,
+		centre.y - dot(d, up) / z * focal,
+	))
+}
+
+#[cfg(test)]
+mod tests {
+	use eframe::egui::Vec2;
+
+	use super::*;
+	use crate::render::maths::close;
+
+	#[test]
+	fn framing_nothing_gives_a_unit_radius() {
+		let camera = Camera::framing_bounds(None);
+		assert_eq!(camera.target, [0.0; 3]);
+		assert_eq!(camera.radius, 1.0);
+		assert_eq!(camera.floor, 0.0);
+		assert!(close(camera.distance, 1.9));
+	}
+
+	#[test]
+	fn framing_a_point_does_not_give_a_zero_radius() {
+		let camera = Camera::framing_bounds(Some(([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])));
+		assert_eq!(camera.target, [1.0, 2.0, 3.0]);
+		assert_eq!(camera.radius, 1.0);
+		assert_eq!(camera.floor, 2.0);
+	}
+
+	#[test]
+	fn framing_a_box_centres_on_it() {
+		let camera = Camera::framing_bounds(Some(([-1.0, -2.0, 0.0], [1.0, 2.0, 4.0])));
+		assert_eq!(camera.target, [0.0, 0.0, 2.0]);
+		assert!(close(camera.radius, 3.0));
+		assert!(close(camera.distance, 3.0 * 1.9));
+		assert_eq!(camera.floor, -2.0);
+		assert!(close(camera.yaw, std::f32::consts::PI - 0.6));
+		assert_eq!(camera.pitch, 0.4);
+	}
+
+	#[test]
+	fn project_puts_the_target_at_the_centre() {
+		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
+		let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(300.0, 200.0));
+		let p = project(&camera, rect, camera.target).unwrap();
+		assert!(close(p.x, rect.center().x) && close(p.y, rect.center().y));
+	}
+
+	#[test]
+	fn project_follows_the_camera_basis() {
+		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
+		let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 200.0));
+		let (right, up, _) = camera.basis();
+		let focal = 100.0 / 35f32.to_radians().tan();
+		let shift = focal / camera.distance;
+		let to_right = project(&camera, rect, add(camera.target, right)).unwrap();
+		assert!((to_right.x - (150.0 + shift)).abs() < 1e-3);
+		assert!((to_right.y - 100.0).abs() < 1e-3);
+		// screen y grows downwards
+		let above = project(&camera, rect, add(camera.target, up)).unwrap();
+		assert!((above.x - 150.0).abs() < 1e-3);
+		assert!((above.y - (100.0 - shift)).abs() < 1e-3);
+	}
+
+	#[test]
+	fn project_rejects_points_behind_or_at_the_eye() {
+		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
+		let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 200.0));
+		let eye = camera.eye();
+		let (_, _, forward) = camera.basis();
+		assert_eq!(project(&camera, rect, eye), None);
+		assert_eq!(project(&camera, rect, sub(eye, forward)), None);
+		// the near limit is a hundredth of the radius
+		let near = camera.radius * 0.01;
+		let just_inside = add(eye, forward.map(|f| f * near * 0.5));
+		assert_eq!(project(&camera, rect, just_inside), None);
+		let just_beyond = add(eye, forward.map(|f| f * near * 2.0));
+		assert!(project(&camera, rect, just_beyond).is_some());
+	}
+
+	fn add(a: V3, b: V3) -> V3 {
+		[a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+	}
+}

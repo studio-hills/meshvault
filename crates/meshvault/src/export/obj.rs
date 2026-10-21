@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::MeshJob;
-use crate::render::viewport;
+use crate::render::maths::IDENTITY;
 use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
@@ -32,7 +32,7 @@ pub(super) fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), S
 		.find(|(s, _)| *s == Slot::Normal)
 		.map(|(_, p)| p.as_path());
 	let material = obj.material(base, normal, [1.0; 3])?;
-	obj.add(name, &geometry, &groups, &viewport::IDENTITY, &material);
+	obj.add(name, &geometry, &groups, &IDENTITY, &material);
 	obj.write()
 }
 
@@ -51,7 +51,7 @@ pub fn write_mesh(
 		map_path(material, Slot::Normal),
 		[1.0; 3],
 	)?;
-	obj.add(&name, geometry, groups, &viewport::IDENTITY, &m);
+	obj.add(&name, geometry, groups, &IDENTITY, &m);
 	obj.write()
 }
 
@@ -278,8 +278,8 @@ mod tests {
 	fn parts_with_and_without_uvs_index_their_own_lists() {
 		let dir = TempDir::new("obj_parts");
 		let mut obj = Obj::new(&dir, "parts");
-		obj.add("a", &triangle(false), &[0], &viewport::IDENTITY, "m");
-		obj.add("b", &triangle(true), &[0], &viewport::IDENTITY, "m");
+		obj.add("a", &triangle(false), &[0], &IDENTITY, "m");
+		obj.add("b", &triangle(true), &[0], &IDENTITY, "m");
 		assert!(obj.obj.contains("f 4/1/4 5/2/5 6/3/6"), "{}", obj.obj);
 		check_indices(&obj.obj);
 	}

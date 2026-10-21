@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 
 use self::obj::{export_mesh, export_model};
-use crate::render::viewport;
 use crate::scene::geometry;
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
+use crate::scene::surface::PART_COLOUR;
 use crate::scene::texture::{self, Material};
 use crate::workspace::sanitize;
 
@@ -138,14 +138,7 @@ fn export_mesh_glb(
 		Material::default()
 	};
 	let groups = geometry.default_groups();
-	crate::export::gltf::export_mesh(
-		&geometry,
-		&groups,
-		&material,
-		viewport::PART_COLOUR,
-		name,
-		path,
-	)
+	crate::export::gltf::export_mesh(&geometry, &groups, &material, PART_COLOUR, name, path)
 }
 
 /// Fixtures shared by the OBJ and glTF tests.

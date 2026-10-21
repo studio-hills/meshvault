@@ -277,14 +277,7 @@ impl Downloader {
 	fn accept(&mut self, Message { run, event }: Message, root: Option<&Path>) -> Option<Event> {
 		self.settle();
 		if root != Some(run.root.as_path()) {
-			// nothing will publish these files
-			if let Event::Finished {
-				result: Ok(written),
-				..
-			} = &event
-			{
-				written.iter().for_each(Stored::discard);
-			}
+			// nothing will publish its files: dropping the event deletes them
 			return None;
 		}
 		let latest = self.run.as_ref().is_some_and(|r| Arc::ptr_eq(r, &run));
@@ -851,7 +844,7 @@ mod tests {
 
 	/// Moves every file the events wrote into place under `root`, as the
 	/// workspace does for targets it still has.
-	fn publish(events: &[Event], root: &Path) {
+	fn publish(events: &mut [Event], root: &Path) {
 		for event in events {
 			if let Event::Finished {
 				result: Ok(written),
@@ -905,8 +898,8 @@ mod tests {
 		let mut downloader = Downloader::default();
 		let jobs = vec![mesh_job(9, "Models/Nine")];
 		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
-		let events = run_to_end(&mut downloader, &dir);
-		publish(&events, &dir);
+		let mut events = run_to_end(&mut downloader, &dir);
+		publish(&mut events, &dir);
 		assert_eq!(assets.requests(9), 1);
 		assert!(matches!(
 			&events[..],
@@ -927,7 +920,7 @@ mod tests {
 		let mut downloader = Downloader::default();
 		let jobs = vec![mesh_job(8, "Models/Eight")];
 		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
-		publish(&run_to_end(&mut downloader, &dir), &dir);
+		publish(&mut run_to_end(&mut downloader, &dir), &dir);
 		let cache_dir = dir.join(crate::workspace::CACHE_DIR);
 		let names: Vec<_> = std::fs::read_dir(&cache_dir)
 			.unwrap()
@@ -980,7 +973,7 @@ mod tests {
 			1,
 		);
 		drop(go);
-		publish(&run_to_end(&mut downloader, &dir), &dir);
+		publish(&mut run_to_end(&mut downloader, &dir), &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());
 	}
@@ -1013,7 +1006,7 @@ mod tests {
 		);
 		assert_eq!(downloader.total, 1);
 		gate.release();
-		publish(&run_to_end(&mut downloader, &dir), &dir);
+		publish(&mut run_to_end(&mut downloader, &dir), &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());
 	}
@@ -1037,8 +1030,8 @@ mod tests {
 		let jobs = vec![mesh_job(2, "Models/Two")];
 		downloader.start(&ctx, new.to_path_buf(), assets.client(), jobs, 1);
 		gate.release();
-		let events = run_to_end(&mut downloader, &new);
-		publish(&events, &new);
+		let mut events = run_to_end(&mut downloader, &new);
+		publish(&mut events, &new);
 		assert!(new.join("Models/Two.mesh").is_file());
 		assert!(!old.join("Models/Two.mesh").exists());
 		// the old workspace's job is not reported to the new one
@@ -1340,13 +1333,13 @@ mod tests {
 		downloader.start(&ctx, root, assets.client(), jobs, 2);
 		assert_eq!(downloader.total, 1);
 		gate.release();
-		let events = run_to_end(&mut downloader, &dir);
+		let mut events = run_to_end(&mut downloader, &dir);
 		let [Event::Finished { job, result: Ok(_) }] = &events[..] else {
 			panic!("one download expected");
 		};
 		let stems: Vec<&str> = job.targets.iter().map(|(s, _)| s.as_str()).collect();
 		assert_eq!(stems, ["Models/One", "Models/One copy"]);
-		publish(&events, &dir);
+		publish(&mut events, &dir);
 		assert!(dir.join("Models/One copy.mesh").is_file());
 		assert_eq!(assets.requests(1), 1);
 		assert_eq!(downloader.completed, 1);

@@ -108,7 +108,10 @@ pub fn write_cache(root: &Path, asset_id: u64, bytes: &[u8]) {
 
 /// One file written for a job, not yet in place: which item and use it is
 /// for, where it goes, and where it waits until the workspace takes it
-/// ([`Self::publish`]) or turns it down ([`Self::discard`]).
+/// ([`Self::publish`]). The waiting file is deleted when this is dropped
+/// unless it was published, so a target nothing wants any more, a
+/// publication that fails at any step, and a result that never reaches
+/// the workspace all leave nothing behind.
 pub struct Stored {
 	pub stem: String,
 	pub kind: AssetKind,
@@ -116,25 +119,29 @@ pub struct Stored {
 	pub path: String,
 	/// The written file, under the workspace's cache folder.
 	staged: PathBuf,
+	published: bool,
 }
 
 impl Stored {
 	/// Moves the file into place under `root`, replacing any file there.
-	pub fn publish(&self, root: &Path) -> Result<(), String> {
+	pub fn publish(&mut self, root: &Path) -> Result<(), String> {
 		let path = root.join(&self.path);
 		if let Some(parent) = path.parent() {
 			std::fs::create_dir_all(parent)
 				.map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
 		}
-		std::fs::rename(&self.staged, &path).map_err(|e| {
-			self.discard();
-			format!("Could not write {}: {e}", path.display())
-		})
+		std::fs::rename(&self.staged, &path)
+			.map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+		self.published = true;
+		Ok(())
 	}
+}
 
-	/// Deletes the file, for a target nothing wants any more.
-	pub fn discard(&self) {
-		let _ = std::fs::remove_file(&self.staged);
+impl Drop for Stored {
+	fn drop(&mut self) {
+		if !self.published {
+			let _ = std::fs::remove_file(&self.staged);
+		}
 	}
 }
 
@@ -144,6 +151,7 @@ impl Stored {
 /// that finishes after its item was removed (and its stem perhaps reused)
 /// cannot touch another item's files.
 pub fn stage(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String> {
+	// dropped, and so deleted, if a later target cannot be written
 	let mut written: Vec<Stored> = Vec::new();
 	for (stem, kind) in &job.targets {
 		let ext = sniff_extension(bytes, *kind);
@@ -154,7 +162,6 @@ pub fn stage(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String
 			.and_then(|()| std::fs::write(&staged, bytes));
 		if let Err(e) = result {
 			let _ = std::fs::remove_file(&staged);
-			written.iter().for_each(Stored::discard);
 			return Err(format!("Could not write {}: {e}", staged.display()));
 		}
 		written.push(Stored {
@@ -162,11 +169,11 @@ pub fn stage(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String
 			kind: *kind,
 			path: format!("{stem}{}.{ext}", kind.file_suffix()),
 			staged,
+			published: false,
 		});
 	}
 	Ok(written)
 }
-
 #[cfg(test)]
 mod tests {
 	use super::*;

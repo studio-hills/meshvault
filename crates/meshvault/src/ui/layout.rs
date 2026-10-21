@@ -19,6 +19,12 @@ impl eframe::App for App {
 		self.shortcuts(&ctx);
 		let p = palette(&ctx);
 		super::window::resize_grips(&ctx);
+		// the inspector's part list lights the part under the pointer. It is
+		// cleared here, before the inspector draws, so it also goes when the
+		// inspector is hidden or the list collapsed
+		if let Some(model) = &mut self.model {
+			model.highlight = None;
+		}
 
 		egui::Panel::top("top_bar")
 			.frame(

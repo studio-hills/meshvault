@@ -593,8 +593,8 @@ fn part_list(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
 				highlight,
 				..
 			} = model;
-			// the part under the pointer stands out in the view
-			*highlight = None;
+			// the part under the pointer stands out in the view; cleared each
+			// frame in the layout
 			for part in parts.iter_mut() {
 				let rp = &rig.parts[part.index];
 				let (tag, colour, hover) = part_tag(part, p);

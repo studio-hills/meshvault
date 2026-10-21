@@ -4,7 +4,8 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
-use crate::render::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms, linear_rgb};
+use crate::render::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms};
+use crate::scene::colour::{linear_rgb, srgb_to_linear};
 use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::texture::Material;
@@ -403,7 +404,7 @@ fn light_uniforms(lights: &[SceneLight], near: V3) -> Uniforms {
 	for (i, l) in sorted.iter().take(MAX_LIGHTS).enumerate() {
 		let c = l
 			.colour
-			.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)) * l.brightness);
+			.map(|c| srgb_to_linear(c.clamp(0.0, 1.0)) * l.brightness);
 		packed[i * 3] = [l.position[0], l.position[1], l.position[2], l.range];
 		packed[i * 3 + 1] = [c[0], c[1], c[2], l.half_angle.is_some() as u8 as f32];
 		let cos = l
@@ -415,14 +416,6 @@ fn light_uniforms(lights: &[SceneLight], near: V3) -> Uniforms {
 		lights: packed,
 		light_count: [sorted.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
 		..bytemuck::Zeroable::zeroed()
-	}
-}
-
-fn srgb_channel_to_linear(c: f32) -> f32 {
-	if c <= 0.04045 {
-		c / 12.92
-	} else {
-		((c + 0.055) / 1.055).powf(2.4)
 	}
 }
 
@@ -758,7 +751,7 @@ fn mesh_callback(
 		let scene = part.scene.as_ref()?;
 		let s = part.surface;
 		let decal = part.decal.map(|d| {
-			let colour = d.colour.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)));
+			let colour = d.colour.map(|c| srgb_to_linear(c.clamp(0.0, 1.0)));
 			(
 				transpose(d.part_from_mesh),
 				[
@@ -797,7 +790,7 @@ fn mesh_callback(
 				s.metal as u8 as f32,
 			],
 			tint: {
-				let linear = s.tint.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)));
+				let linear = s.tint.map(|c| srgb_to_linear(c.clamp(0.0, 1.0)));
 				[linear[0], linear[1], linear[2], s.alpha_mode as u8 as f32]
 			},
 			env: {
@@ -1102,7 +1095,7 @@ mod tests {
 		// sRGB colour to linear, times brightness; 1 marks a cone
 		let [r, g, b, cone] = u.lights[1];
 		assert!(close(r, 2.0) && close(g, 0.0) && cone == 1.0);
-		assert!(close(b, 2.0 * srgb_channel_to_linear(0.5)));
+		assert!(close(b, 2.0 * srgb_to_linear(0.5)));
 		assert_eq!(&u.lights[2][..3], &[0.0, -1.0, 0.0]);
 		assert!(close(u.lights[2][3], 0.5));
 		// a point light has no cone, and a cosine of -1

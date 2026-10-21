@@ -9,6 +9,7 @@ use std::sync::Arc;
 use eframe::egui_wgpu::{self, wgpu};
 use wgpu::util::DeviceExt;
 
+use crate::scene::colour::{linear_to_srgb, srgb8_to_linear};
 use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::texture::Material;
@@ -118,23 +119,6 @@ pub struct GpuScene {
 	/// Uploaded maps, keyed by the address of their pixels so toggling a
 	/// map off and on does not upload it again.
 	textures: BTreeMap<Slot, (usize, wgpu::TextureView)>,
-}
-
-fn srgb_to_linear(c: u8) -> f32 {
-	let c = c as f32 / 255.0;
-	if c <= 0.04045 {
-		c / 12.92
-	} else {
-		((c + 0.055) / 1.055).powf(2.4)
-	}
-}
-
-pub fn linear_rgb(c: eframe::egui::Color32) -> [f32; 3] {
-	[
-		srgb_to_linear(c.r()),
-		srgb_to_linear(c.g()),
-		srgb_to_linear(c.b()),
-	]
 }
 
 impl GpuRenderer {
@@ -598,7 +582,7 @@ fn unblend(
 ) -> image::RgbaImage {
 	let decode = |c: u8| {
 		if srgb {
-			srgb_to_linear(c)
+			srgb8_to_linear(c)
 		} else {
 			c as f32 / 255.0
 		}
@@ -625,14 +609,6 @@ fn unblend(
 		]);
 	}
 	out
-}
-
-fn linear_to_srgb(c: f32) -> f32 {
-	if c <= 0.003_130_8 {
-		c * 12.92
-	} else {
-		1.055 * c.powf(1.0 / 2.4) - 0.055
-	}
 }
 
 fn build_vertices(geometry: &Geometry, colours: &[[f32; 3]]) -> (Vec<Vertex>, Vec<Range<u32>>) {
@@ -1030,7 +1006,8 @@ mod tests {
 		}
 	}
 
-	use super::{linear_to_srgb, read_rows, unblend};
+	use super::{read_rows, unblend};
+	use crate::scene::colour::linear_to_srgb;
 
 	/// One pixel drawn over black and over white, unblended.
 	fn unblend_one(black: [u8; 3], white: [u8; 3], srgb: bool) -> [u8; 4] {

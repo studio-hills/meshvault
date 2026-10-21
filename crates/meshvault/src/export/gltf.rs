@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::anim::math::CFrame;
 use crate::render::viewport::{AlphaMode, Surface};
+use crate::scene::colour::{linear_rgb, linear_to_srgb, srgb_to_linear, srgb8_to_linear};
 use crate::scene::geometry::{Geometry, GroupKind};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::{ExportMesh, ModelView};
@@ -206,15 +207,10 @@ fn bake(
 	if !changes {
 		return None;
 	}
-	let decode: Vec<f32> = (0..=255).map(|c| linear(c as f32 / 255.0)).collect();
+	let decode: Vec<f32> = (0..=255).map(srgb8_to_linear).collect();
 	let encode = |v: f32| {
 		let v = v.clamp(0.0, 1.0);
-		let s = if v <= 0.003_130_8 {
-			v * 12.92
-		} else {
-			1.055 * v.powf(1.0 / 2.4) - 0.055
-		};
-		(s * 255.0).round() as u8
+		(linear_to_srgb(v) * 255.0).round() as u8
 	};
 	Some(image::RgbaImage::from_fn(
 		map.width(),
@@ -276,14 +272,6 @@ fn min_max(values: &[f32], width: usize) -> (Vec<f32>, Vec<f32>) {
 		}
 	}
 	(lo, hi)
-}
-
-fn linear(c: f32) -> f32 {
-	if c <= 0.04045 {
-		c / 12.92
-	} else {
-		((c + 0.055) / 1.055).powf(2.4)
-	}
 }
 
 /// A glTF document being built, with its one binary buffer.
@@ -491,8 +479,8 @@ impl Gltf {
 		if let Some(&i) = self.by_look.get(&key) {
 			return Some(i);
 		}
-		let part = [colour.r(), colour.g(), colour.b()].map(|c| linear(c as f32 / 255.0));
-		let tint = surface.tint.map(|c| linear(c.clamp(0.0, 1.0)));
+		let part = linear_rgb(colour);
+		let tint = surface.tint.map(|c| srgb_to_linear(c.clamp(0.0, 1.0)));
 		// a colour map is baked as Meshvault draws it (over the part colour,
 		// tinted), since glTF cannot mix them the way Roblox does
 		let rgb = if base.is_some() { [1.0; 3] } else { part };
@@ -740,7 +728,7 @@ mod tests {
 			vec![[188, 188, 188, 255], [0, 0, 0, 255], [10, 20, 30, 255]]
 		);
 		// fully transparent shows the part's colour
-		let part = [linear(1.0), linear(128.0 / 255.0), 0.0];
+		let part = [srgb_to_linear(1.0), srgb_to_linear(128.0 / 255.0), 0.0];
 		let baked = bake(&half, AlphaMode::Overlay, WHITE, part).unwrap();
 		assert_eq!(pixels(&baked)[1], [255, 128, 0, 255]);
 	}
@@ -749,7 +737,7 @@ mod tests {
 	/// is kept, but the pixel becomes opaque.
 	#[test]
 	fn bake_tint_mask_tints_by_alpha_and_drops_it() {
-		let tint = [linear(128.0 / 255.0), 1.0, 1.0];
+		let tint = [srgb_to_linear(128.0 / 255.0), 1.0, 1.0];
 		let mask = map(&[[255, 255, 255, 0], [255, 255, 255, 255], [200, 100, 50, 0]]);
 		let baked = bake(&mask, AlphaMode::TintMask, tint, BLACK).unwrap();
 		assert_eq!(
@@ -766,7 +754,7 @@ mod tests {
 	/// a tint to change anything (untinted, the map is used as it is).
 	#[test]
 	fn bake_transparency_tints_and_keeps_alpha() {
-		let tint = [linear(128.0 / 255.0), 1.0, linear(0.0)];
+		let tint = [srgb_to_linear(128.0 / 255.0), 1.0, srgb_to_linear(0.0)];
 		let see_through = map(&[[255, 255, 255, 77], [255, 255, 255, 255]]);
 		for mode in [AlphaMode::Transparency, AlphaMode::Blend] {
 			let baked = bake(&see_through, mode, tint, WHITE).unwrap();
@@ -914,7 +902,7 @@ mod tests {
 		// no map: the part colour, in linear light, opaque
 		let pbr = &doc["materials"][0]["pbrMetallicRoughness"];
 		let factor: Vec<f32> = serde_json::from_value(pbr["baseColorFactor"].clone()).unwrap();
-		let expected = [163, 162, 165].map(|c| linear(c as f32 / 255.0));
+		let expected = [163, 162, 165].map(srgb8_to_linear);
 		assert_eq!(factor, [expected[0], expected[1], expected[2], 1.0]);
 		assert_eq!(
 			(

@@ -18,7 +18,9 @@
 - Exports record keyframe clips' face control poses, and Meshvault plays facial animation on FACS heads from them and from curve clips' face control curves (bone movements; rotations not yet)
 - Exports record the lights on each part and its attachments, and Meshvault lights the model with them
 - The library has a grid view of thumbnails (drawn off screen once and cached in the workspace), filters for animated, skinned and not-downloaded models and for each map kind, and multi-select (Ctrl/Shift-click, Ctrl+A) to retry, export or remove many models at once
-- Library models export as OBJ with texture coordinates, normals and an MTL file with their maps; animated models export posed, as one OBJ
+- Export for Blender: animated models and meshes export as binary glTF (`.glb`) with one armature, skin weights, every clip baked at 30 fps, and their maps embedded; checked by importing into Blender 5.2
+- OBJ exports carry texture coordinates, normals and an MTL file with the maps beside it, from the viewer (an animated model as posed now) and the library
+- Save the view as a transparent PNG, or as a turntable GIF that plays the selected clip
 - Exports record a model's classic clothing (Shirt, Pants, ShirtGraphic and their colours), and Meshvault dresses the body in it as Studio does
 - Exports record each part's MaterialVariant (its maps and studs per tile), and Meshvault tiles it over the part as Studio does
 - Exports record each part's Decals and Textures, and Meshvault downloads their images and draws them on their faces as Studio does (no longer standing a mesh part's decal in for its texture)

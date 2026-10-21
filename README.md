@@ -107,7 +107,10 @@ cargo run --release -p meshvault -- meshes/sphere.mesh
 - The library shows the export's folder tree, or a grid of thumbnails grouped by folder (the button beside the title switches). Each model is drawn once, when it first scrolls into view, and its picture is kept in the workspace's `.cache/thumbnails`
 - Search by name, folder or asset id, narrow by download status, and filter (the funnel beside the search) to models with animations, skinned meshes (read once in the background and kept in `.cache/facts.json`), missing meshes, or a given map
 - Select several models with Ctrl-click and Shift-click (Ctrl+A selects everything shown, Esc clears), then retry their failed downloads, export them, or remove them at once from the bar over the library or the right-click menu
-- Export library models as Wavefront OBJ: a mesh with its colour and normal maps copied beside it and an MTL file, and an animated model as one OBJ of its parts in the pose it opens in, with each part's map or colour
+- Export for Blender (Ctrl+E, the export button over the viewport, or a library model's menu): binary glTF (`.glb`) that Blender's glTF importer reads as one armature. Every part and Bone is a bone of it, every mesh is skinned to it (a skinned mesh with its own weights, a rigid part's mesh fully to its part), and every playable clip is baked at 30 frames a second into its own action, so Blender plays it as Meshvault does: easing, bones only meshes have, and facial animation's bone movements included. Colour, normal, roughness and metalness maps are embedded. Lengths are in studs, which Blender reads as metres. Decals, clothing and MaterialVariants are not exported yet
+- Export as Wavefront OBJ (Ctrl+Shift+E), with an MTL file and the colour and normal maps copied beside it: a mesh's visible LODs or hulls, or an animated model as one OBJ of its parts as posed now
+- Save the view as a PNG (1080 pixels tall, transparent background) or as a turntable GIF: the camera turns once around the model while the selected clip plays
+- Export many library models at once, as glTF or OBJ, from the library's selection bar or right-click menu
 - A frameless window with Meshvault's own title bar: drag its empty space to move the window, double-click it to maximize, and use the minimize, maximize and close buttons at its right end; the edges resize it, and Windows 11 keeps its corners rounded
 - Dark and light themes, notifications for long-running work, and keyboard shortcuts (press `?` in the app for the list)
 - Open files with the Open button (Ctrl+O), drag and drop, or pass a path on the command line
@@ -115,7 +118,6 @@ cargo run --release -p meshvault -- meshes/sphere.mesh
 - Solid, wireframe or combined shading, a ground grid, and optional back-face culling
 - GPU rendering (wgpu): depth-tested, multisampled, mipmapped, with physically based shading; falls back to a CPU renderer when no GPU backend is available
 - Materials: base color, normal, roughness and metalness maps (Roblox `SurfaceAppearance`).  Maps next to the mesh load automatically by name (`Name.png` or `Name.color.png`, `Name.normal.png`, `Name.roughness.png`, `Name.metalness.png`); otherwise use the inspector's Material section or drop PNG/JPEG/BMP/TGA/WebP files onto the window.  Each map can be toggled to compare with and without it
-- Export the visible geometry as Wavefront OBJ
 - Controls: left-drag to orbit, right/middle-drag to pan, scroll to zoom, double-click or F to frame the model
 
 Meshvault bundles the [Cal Sans](https://github.com/calcom/sans) typeface (SIL Open Font License 1.1) and [Phosphor](https://phosphoricons.com) icons (MIT); see `gui/assets/` for their licenses.

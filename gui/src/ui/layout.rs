@@ -19,7 +19,7 @@ impl eframe::App for App {
 		self.poll_downloads();
 		self.poll_parsing();
 		self.poll_model();
-		self.poll_export();
+		self.poll_background();
 		self.poll_studio_link();
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
@@ -260,16 +260,8 @@ impl App {
 		widgets::menu_style(ui);
 		ui.set_min_width(220.0);
 		let has_doc = self.doc.is_some();
-		if ui
-			.add_enabled(
-				has_doc,
-				egui::Button::new(format!("{}  Export visible as OBJ…", icons::EXPORT)),
-			)
-			.clicked()
-		{
-			ui.close();
-			self.export_obj();
-		}
+		ui.add_enabled_ui(has_doc || self.model.is_some(), |ui| self.export_items(ui));
+		ui.separator();
 		ui.add_enabled_ui(has_doc, |ui| {
 			ui.menu_button(format!("{}  Load map", icons::IMAGE), |ui| {
 				widgets::menu_style(ui);
@@ -470,10 +462,11 @@ impl App {
 			self.gpu.as_deref(),
 			&home,
 		);
+		self.viewport = rect;
 		self.viewport_toolbar(ui.ctx(), rect);
 	}
 
-	pub(super) fn view_settings(&self, p: &super::theme::Palette) -> ViewSettings {
+	pub(crate) fn view_settings(&self, p: &super::theme::Palette) -> ViewSettings {
 		ViewSettings {
 			shading: self.shading,
 			cull_backfaces: self.cull_backfaces,
@@ -482,6 +475,57 @@ impl App {
 			background: [p.viewport_top, p.viewport_bottom],
 			grid_colour: p.grid,
 			lights: Vec::new(),
+		}
+	}
+
+	/// Exporting what is shown, and saving pictures of it.
+	fn export_items(&mut self, ui: &mut egui::Ui) {
+		let blender = widgets::blender_item(ui, "Export for Blender (.glb)…").on_hover_text(
+			if self.model.is_some() {
+				"Binary glTF: one armature, skinned meshes, every clip and the maps"
+			} else {
+				"Binary glTF with the mesh's maps"
+			},
+		);
+		if blender.clicked() {
+			ui.close();
+			self.export_glb();
+		}
+		let obj = if self.model.is_some() {
+			"Export as OBJ (as posed)…"
+		} else {
+			"Export visible as OBJ…"
+		};
+		if ui.button(format!("{}  {obj}", icons::EXPORT)).clicked() {
+			ui.close();
+			self.export_obj();
+		}
+		ui.separator();
+		let gpu = self.gpu.is_some();
+		if ui
+			.add_enabled(
+				gpu,
+				egui::Button::new(format!("{}  Save image (PNG)…", icons::IMAGE)),
+			)
+			.on_hover_text("The view as it is now, with a transparent background")
+			.clicked()
+		{
+			ui.close();
+			self.save_image();
+		}
+		if ui
+			.add_enabled(
+				gpu,
+				egui::Button::new(format!(
+					"{}  Save turntable (GIF)…",
+					icons::ARROWS_CLOCKWISE
+				)),
+			)
+			.on_hover_text("The camera turning once around the model, playing the selected clip")
+			.clicked()
+		{
+			ui.close();
+			self.save_turntable();
 		}
 	}
 
@@ -537,6 +581,13 @@ impl App {
 							{
 								self.frame_model();
 							}
+							let export =
+								widgets::icon_button(ui, icons::EXPORT, "Export and save images");
+							egui::Popup::menu(&export).show(|ui| {
+								widgets::menu_style(ui);
+								ui.set_min_width(230.0);
+								self.export_items(ui);
+							});
 							widgets::icon_button(ui, icons::INFO, "").on_hover_text(
 								"Left-drag: orbit\nRight or middle-drag: pan\nScroll: zoom\nDouble-click: frame model",
 							);
@@ -627,6 +678,9 @@ impl App {
 		if pressed(shortcut(cmd_shift, Key::O)) {
 			self.pick_open_workspace();
 		}
+		if pressed(shortcut(cmd_shift, Key::E)) {
+			self.export_obj();
+		}
 		if pressed(shortcut(cmd_shift, Key::B)) {
 			self.show_inspector = !self.show_inspector;
 		}
@@ -643,7 +697,7 @@ impl App {
 			self.start_downloads();
 		}
 		if pressed(shortcut(cmd, Key::E)) {
-			self.export_obj();
+			self.export_glb();
 		}
 		if pressed(shortcut(cmd, Key::B)) && self.workspace.is_some() {
 			self.show_library = !self.show_library;
@@ -695,7 +749,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
 	("Ctrl+N", "New workspace"),
 	("Ctrl+I", "Import an export .json"),
 	("Ctrl+D", "Download pending"),
-	("Ctrl+E", "Export visible geometry as OBJ"),
+	("Ctrl+E", "Export for Blender (.glb)"),
+	("Ctrl+Shift+E", "Export as OBJ"),
 	("Ctrl+,", "Roblox access"),
 	("Ctrl+B", "Toggle library"),
 	("Ctrl+Shift+B", "Toggle inspector"),

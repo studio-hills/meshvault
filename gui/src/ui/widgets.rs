@@ -413,3 +413,14 @@ pub fn scroll_in_margin<R>(
 	);
 	inner
 }
+
+/// A menu item with Blender's logo before its text.
+pub fn blender_item(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
+	match super::icons::blender(ui.ctx()) {
+		Some(logo) => ui.add(egui::Button::image_and_text(
+			egui::Image::new((logo.id(), Vec2::splat(16.0))),
+			text,
+		)),
+		None => ui.button(text),
+	}
+}

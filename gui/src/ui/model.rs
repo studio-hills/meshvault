@@ -48,6 +48,7 @@ impl App {
 			})
 		};
 		model.camera = camera;
+		self.viewport = rect;
 		self.viewport_toolbar(ui.ctx(), rect);
 		self.transport_bar(ui.ctx(), rect);
 	}

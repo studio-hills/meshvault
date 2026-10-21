@@ -55,3 +55,28 @@ pub const FLAG: &str = "\u{E244}";
 pub const FILM_STRIP: &str = "\u{E792}";
 pub const WARNING: &str = "\u{E4E0}";
 pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+
+/// Blender's logo (assets/blender.svg), drawn once at 64 pixels and kept.
+pub fn blender(ctx: &eframe::egui::Context) -> Option<eframe::egui::TextureHandle> {
+	use eframe::egui;
+	use resvg::{tiny_skia, usvg};
+	let id = egui::Id::unique("blender_logo");
+	if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+		return Some(texture);
+	}
+	const SIDE: u32 = 64;
+	let svg = include_bytes!("../../assets/blender.svg");
+	let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+	let mut pixmap = tiny_skia::Pixmap::new(SIDE, SIDE)?;
+	let size = tree.size();
+	let scale = SIDE as f32 / size.width().max(size.height());
+	// centred in the square
+	let dx = (SIDE as f32 - size.width() * scale) / 2.0;
+	let dy = (SIDE as f32 - size.height() * scale) / 2.0;
+	let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
+	resvg::render(&tree, transform, &mut pixmap.as_mut());
+	let image = egui::ColorImage::from_rgba_premultiplied([SIDE as usize; 2], pixmap.data());
+	let texture = ctx.load_texture("blender_logo", image, egui::TextureOptions::LINEAR);
+	ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+	Some(texture)
+}

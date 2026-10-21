@@ -12,6 +12,7 @@ use crate::export::FolderTree;
 use crate::facts::Facts;
 use crate::gpu::GpuRenderer;
 use crate::maps::MapKind;
+use crate::obj_export::Format;
 use crate::thumbnails::{Subject, Thumbnails};
 use crate::ui::theme::{Palette, ROW, display, palette};
 use crate::ui::tree::{self, FolderCommand};
@@ -39,11 +40,40 @@ pub enum Action {
 		items: Vec<usize>,
 		models: Vec<usize>,
 	},
-	/// Exports meshes and animated models as OBJ files.
+	/// Exports meshes and animated models as files.
 	Export {
 		items: Vec<usize>,
 		models: Vec<usize>,
+		format: Format,
 	},
+}
+
+/// The two export items of a menu, for `items` and `models`.
+fn export_items(
+	ui: &mut egui::Ui,
+	items: &[usize],
+	models: &[usize],
+	n: usize,
+	actions: &mut Vec<Action>,
+) {
+	let what = if n == 1 {
+		String::new()
+	} else {
+		format!("{n} ")
+	};
+	let blender = widgets::blender_item(ui, format!("Export {what}for Blender (.glb)…"))
+		.on_hover_text("Binary glTF with the skeleton, skin weights, clips and maps");
+	let obj = ui.button(format!("{}  Export {what}as OBJ…", icons::EXPORT));
+	for (response, format) in [(blender, Format::Glb), (obj, Format::Obj)] {
+		if response.clicked() {
+			actions.push(Action::Export {
+				items: items.to_vec(),
+				models: models.to_vec(),
+				format,
+			});
+			ui.close();
+		}
+	}
 }
 
 /// How the library lays out its models.
@@ -390,14 +420,8 @@ impl Browser {
 			actions.push(Action::Retry(failed));
 			ui.close();
 		}
-		if ui
-			.button(format!("{}  Export {n} as OBJ…", icons::EXPORT))
-			.clicked()
-		{
-			let (items, models) = self.selected();
-			actions.push(Action::Export { items, models });
-			ui.close();
-		}
+		let (items, models) = self.selected();
+		export_items(ui, &items, &models, n, actions);
 		if ui
 			.button(format!("{}  Clear selection", icons::X))
 			.clicked()
@@ -447,10 +471,12 @@ impl Browser {
 							let (items, models) = self.selected();
 							actions.push(Action::RemoveSelection { items, models });
 						}
-						if widgets::icon_button(ui, icons::EXPORT, "Export as OBJ").clicked() {
+						let export = widgets::icon_button(ui, icons::EXPORT, "Export");
+						egui::Popup::menu(&export).show(|ui| {
+							widgets::menu_style(ui);
 							let (items, models) = self.selected();
-							actions.push(Action::Export { items, models });
-						}
+							export_items(ui, &items, &models, n, actions);
+						});
 						let failed = self.selected_failures(ws);
 						let retry = ui
 							.add_enabled_ui(!failed.is_empty(), |ui| {
@@ -511,16 +537,7 @@ impl Browser {
 			ui.ctx().copy_text(model.path.clone());
 			ui.close();
 		}
-		if ui
-			.button(format!("{}  Export as OBJ…", icons::EXPORT))
-			.clicked()
-		{
-			actions.push(Action::Export {
-				items: Vec::new(),
-				models: vec![i],
-			});
-			ui.close();
-		}
+		export_items(ui, &[], &[i], 1, actions);
 		ui.separator();
 		if widgets::danger_item(ui, format!("{}  Remove from workspace", icons::TRASH)).clicked() {
 			actions.push(Action::RemoveModels(vec![i]));
@@ -553,16 +570,8 @@ impl Browser {
 			ui.ctx().copy_text(item.mesh_id.to_string());
 			ui.close();
 		}
-		if item.is_done()
-			&& ui
-				.button(format!("{}  Export as OBJ…", icons::EXPORT))
-				.clicked()
-		{
-			actions.push(Action::Export {
-				items: vec![i],
-				models: Vec::new(),
-			});
-			ui.close();
+		if item.is_done() {
+			export_items(ui, &[i], &[], 1, actions);
 		}
 		ui.separator();
 		if widgets::danger_item(ui, format!("{}  Remove from workspace", icons::TRASH)).clicked() {

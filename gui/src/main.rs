@@ -10,6 +10,7 @@ mod download;
 mod export;
 mod facts;
 mod geometry;
+mod gltf_export;
 mod gpu;
 mod import_ui;
 mod maps;

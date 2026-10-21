@@ -1,6 +1,7 @@
-//! Exports library models as Wavefront OBJ files: a mesh with its colour
-//! and normal maps copied beside it, and an animated model as one OBJ of
-//! all its parts, posed as it opens, with each part's map or colour.
+//! Exports models as files: Wavefront OBJ (a mesh with its colour and
+//! normal maps copied beside it, an animated model as one OBJ of all its
+//! parts as posed, with each part's map or colour), or binary glTF for
+//! Blender (see [`crate::gltf_export`]), several at once from the library.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -14,6 +15,24 @@ use crate::model_view::ModelView;
 use crate::texture::Material;
 use crate::viewport;
 use crate::workspace::sanitize;
+
+/// What to write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+	/// Binary glTF: skeleton, skin weights, clips and embedded maps.
+	Glb,
+	/// Wavefront OBJ with an MTL file and the maps beside it.
+	Obj,
+}
+
+impl Format {
+	pub fn extension(self) -> &'static str {
+		match self {
+			Format::Glb => "glb",
+			Format::Obj => "obj",
+		}
+	}
+}
 
 /// A downloaded mesh to export: its name, file and maps.
 pub struct MeshJob {
@@ -44,6 +63,7 @@ pub fn export(
 	dir: &Path,
 	meshes: Vec<MeshJob>,
 	models: Vec<ModelJob>,
+	format: Format,
 ) -> Report {
 	let mut report = Report {
 		dir: dir.to_path_buf(),
@@ -52,15 +72,24 @@ pub fn export(
 	};
 	let mut names = Names::default();
 	for job in meshes {
-		let name = names.unique(dir, &job.name);
-		match export_mesh(dir, &name, &job) {
+		let name = names.unique(dir, &job.name, format);
+		let result = match format {
+			Format::Obj => export_mesh(dir, &name, &job),
+			Format::Glb => export_mesh_glb(ctx, &dir.join(format!("{name}.glb")), &name, &job),
+		};
+		match result {
 			Ok(()) => report.written += 1,
 			Err(e) => report.failed.push(format!("{}: {e}", job.name)),
 		}
 	}
 	for job in models {
-		let name = names.unique(dir, &job.name);
-		let result = (job.load)(ctx).and_then(|mut model| export_model(dir, &name, &mut model));
+		let name = names.unique(dir, &job.name, format);
+		let result = (job.load)(ctx).and_then(|mut model| match format {
+			Format::Obj => export_model(dir, &name, &mut model),
+			Format::Glb => {
+				crate::gltf_export::export_model(&model, &dir.join(format!("{name}.glb")))
+			}
+		});
 		match result {
 			Ok(()) => report.written += 1,
 			Err(e) => report.failed.push(format!("{}: {e}", job.name)),
@@ -75,7 +104,7 @@ pub fn export(
 struct Names(std::collections::HashSet<String>);
 
 impl Names {
-	fn unique(&mut self, dir: &Path, name: &str) -> String {
+	fn unique(&mut self, dir: &Path, name: &str, format: Format) -> String {
 		let base = sanitize(name);
 		let base = if base.is_empty() {
 			"model".to_string()
@@ -84,7 +113,8 @@ impl Names {
 		};
 		let mut name = base.clone();
 		let mut n = 2;
-		while self.0.contains(&name.to_lowercase()) || dir.join(format!("{name}.obj")).exists() {
+		let ext = format.extension();
+		while self.0.contains(&name.to_lowercase()) || dir.join(format!("{name}.{ext}")).exists() {
 			name = format!("{base} ({n})");
 			n += 1;
 		}
@@ -118,6 +148,74 @@ fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), String> {
 	let material = obj.material(base, normal, [1.0; 3])?;
 	obj.add(name, &geometry, &groups, &viewport::IDENTITY, &material);
 	obj.write()
+}
+
+fn export_mesh_glb(
+	ctx: &egui::Context,
+	path: &Path,
+	name: &str,
+	job: &MeshJob,
+) -> Result<(), String> {
+	let bytes = std::fs::read(&job.mesh).map_err(|e| e.to_string())?;
+	let geometry = geometry::load(&bytes)?.geometry;
+	let mut material = Material::default();
+	if geometry.uvs.is_some() {
+		for (slot, map) in &job.maps {
+			if let Ok(texture) = std::fs::read(map)
+				.map_err(|e| e.to_string())
+				.and_then(|b| crate::texture::load(ctx, map, &b))
+			{
+				material.set(*slot, texture);
+			}
+		}
+	}
+	let groups = crate::gltf_export::default_groups(&geometry);
+	crate::gltf_export::export_mesh(
+		&geometry,
+		&groups,
+		&material,
+		viewport::PART_COLOUR,
+		name,
+		path,
+	)
+}
+
+/// Writes `groups` of a mesh to the OBJ file `path`, with an MTL file and
+/// `material`'s colour and normal maps beside it.
+pub fn write_mesh(
+	path: &Path,
+	geometry: &Geometry,
+	groups: &[usize],
+	material: &Material,
+) -> Result<(), String> {
+	let (dir, name) = split(path)?;
+	let mut obj = Obj::new(&dir, &name);
+	let m = obj.material(
+		map_path(material, Slot::Base),
+		map_path(material, Slot::Normal),
+		[1.0; 3],
+	)?;
+	obj.add(&name, geometry, groups, &viewport::IDENTITY, &m);
+	obj.write()
+}
+
+/// Writes an animated model as posed now to the OBJ file `path`.
+pub fn write_model(path: &Path, model: &mut ModelView) -> Result<(), String> {
+	let (dir, name) = split(path)?;
+	export_model(&dir, &name, model)
+}
+
+/// A file path's folder and its name without the extension.
+fn split(path: &Path) -> Result<(PathBuf, String), String> {
+	let dir = path
+		.parent()
+		.ok_or("no folder to write into")?
+		.to_path_buf();
+	let name = path
+		.file_stem()
+		.map(|s| s.to_string_lossy().into_owned())
+		.ok_or("no file name")?;
+	Ok((dir, name))
 }
 
 fn export_model(dir: &Path, name: &str, model: &mut ModelView) -> Result<(), String> {
@@ -365,12 +463,46 @@ mod tests {
 			mesh,
 			maps: Vec::new(),
 		};
-		let report = export(&egui::Context::default(), &dir, vec![job], Vec::new());
+		let report = export(
+			&egui::Context::default(),
+			&dir,
+			vec![job],
+			Vec::new(),
+			Format::Obj,
+		);
 		assert_eq!(report.written, 1, "{:?}", report.failed);
 		let obj = std::fs::read_to_string(dir.join("Sample.obj")).unwrap();
 		assert!(obj.contains("mtllib Sample.mtl") && obj.contains("\nvt "));
 		check_indices(&obj);
 		assert!(dir.join("Sample.mtl").exists());
+	}
+
+	#[test]
+	fn exports_a_sample_mesh_as_glb() {
+		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../meshes");
+		let mesh = std::fs::read_dir(samples)
+			.unwrap()
+			.map(|e| e.unwrap().path())
+			.find(|p| {
+				std::fs::read(p)
+					.ok()
+					.and_then(|b| geometry::load(&b).ok())
+					.is_some_and(|l| !l.geometry.triangles.is_empty())
+			})
+			.expect("a sample mesh");
+		let dir = std::env::temp_dir().join("meshvault-glb-test-sample");
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let job = MeshJob {
+			name: "Sample".into(),
+			mesh,
+			maps: Vec::new(),
+		};
+		let report = export(&egui::Context::default(), &dir, vec![job], Vec::new(), Format::Glb);
+		assert_eq!(report.written, 1, "{:?}", report.failed);
+		let glb = std::fs::read(dir.join("Sample.glb")).unwrap();
+		assert_eq!(&glb[..4], b"glTF");
+		assert_eq!(u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize, glb.len());
 	}
 
 	/// Exports every animated model of the workspace at `MESHVAULT_WS`.
@@ -388,7 +520,13 @@ mod tests {
 		let dir = std::env::temp_dir().join("meshvault-obj-test-models");
 		let _ = std::fs::remove_dir_all(&dir);
 		std::fs::create_dir_all(&dir).unwrap();
-		let report = export(&egui::Context::default(), &dir, Vec::new(), models);
+		let report = export(
+			&egui::Context::default(),
+			&dir,
+			Vec::new(),
+			models,
+			Format::Obj,
+		);
 		assert!(report.failed.is_empty(), "{:?}", report.failed);
 		assert_eq!(report.written, ws.models().len());
 		for entry in std::fs::read_dir(&dir).unwrap() {

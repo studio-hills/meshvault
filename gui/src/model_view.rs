@@ -592,9 +592,54 @@ impl PartSkin {
 		rest: &Posed,
 		posed: &Posed,
 		owner: usize,
-		by_name: &HashMap<&str, CFrame>,
+		by_name: &HashMap<String, CFrame>,
 		face: &[(String, f32)],
 	) {
+		let (now, then) = self.drivers_at(rest, posed, owner, by_name, face);
+		let deltas: Vec<CFrame> = now
+			.iter()
+			.zip(&then)
+			.map(|(a, b)| a.mul(&b.inverse()))
+			.collect();
+		let owner_delta = posed.parts[owner].mul(&rest.parts[owner].inverse());
+		for (i, inf) in self.influences.iter().enumerate() {
+			let p = self.rest_positions[i];
+			let n = self.rest_normals.as_ref().map(|ns| ns[i]);
+			let (mut pos, mut nrm) = ([0.0; 3], [0.0; 3]);
+			let mut total = 0.0;
+			for &(bone, w) in inf {
+				if w <= 0.0 {
+					continue;
+				}
+				let d = &deltas[bone as usize];
+				add_scaled(&mut pos, d.point(p), w);
+				if let Some(n) = n {
+					add_scaled(&mut nrm, d.rotate(n), w);
+				}
+				total += w;
+			}
+			// vertices no bone moves follow their part
+			if total <= 0.0 {
+				pos = owner_delta.point(p);
+				nrm = n.map_or([0.0; 3], |n| owner_delta.rotate(n));
+			}
+			self.geometry.positions[i] = pos;
+			if let Some(normals) = &mut self.geometry.normals {
+				normals[i] = normalize(nrm);
+			}
+		}
+		self.moved = true;
+	}
+
+	/// Where each bone the mesh was bound to is in `posed`, and in `rest`.
+	fn drivers_at(
+		&self,
+		rest: &Posed,
+		posed: &Posed,
+		owner: usize,
+		by_name: &HashMap<String, CFrame>,
+		face: &[(String, f32)],
+	) -> (Vec<CFrame>, Vec<CFrame>) {
 		// face bones posed by the face controls (FACS), in this part's studs
 		let face_bones: HashMap<&str, CFrame> = match &self.facs {
 			Some(facs) if !face.is_empty() => facs
@@ -636,39 +681,7 @@ impl PartSkin {
 				}
 			};
 		}
-		let deltas: Vec<CFrame> = now
-			.iter()
-			.zip(&then)
-			.map(|(a, b)| a.mul(&b.inverse()))
-			.collect();
-		let owner_delta = posed.parts[owner].mul(&rest.parts[owner].inverse());
-		for (i, inf) in self.influences.iter().enumerate() {
-			let p = self.rest_positions[i];
-			let n = self.rest_normals.as_ref().map(|ns| ns[i]);
-			let (mut pos, mut nrm) = ([0.0; 3], [0.0; 3]);
-			let mut total = 0.0;
-			for &(bone, w) in inf {
-				if w <= 0.0 {
-					continue;
-				}
-				let d = &deltas[bone as usize];
-				add_scaled(&mut pos, d.point(p), w);
-				if let Some(n) = n {
-					add_scaled(&mut nrm, d.rotate(n), w);
-				}
-				total += w;
-			}
-			// vertices no bone moves follow their part
-			if total <= 0.0 {
-				pos = owner_delta.point(p);
-				nrm = n.map_or([0.0; 3], |n| owner_delta.rotate(n));
-			}
-			self.geometry.positions[i] = pos;
-			if let Some(normals) = &mut self.geometry.normals {
-				normals[i] = normalize(nrm);
-			}
-		}
-		self.moved = true;
+		(now, then)
 	}
 }
 
@@ -1348,12 +1361,29 @@ impl ModelView {
 		if !std::mem::take(&mut self.dirty) {
 			return;
 		}
-		let slot = self.current.and_then(|i| self.clips.get(i));
+		let (posed, by_name, face) = self.solve_at(self.current, self.time);
+		for part in &mut self.parts {
+			if let Some(skin) = &mut part.skin {
+				skin.update(&self.rest, &posed, part.index, &by_name, &face);
+			}
+		}
+		self.posed = posed;
+	}
+
+	/// The rig posed by `clip` at `time` (the rest pose without a clip),
+	/// with the clip's transforms for bones only meshes have, by name, and
+	/// its face control weights.
+	fn solve_at(
+		&self,
+		clip: Option<usize>,
+		time: f32,
+	) -> (Posed, HashMap<String, CFrame>, Vec<(String, f32)>) {
+		let slot = clip.and_then(|i| self.clips.get(i));
 		// face controls the clip animates, for FACS heads
 		let face: Vec<(String, f32)> = slot
 			.and_then(|s| s.clip.as_ref().ok())
 			.map(|clip| {
-				clip.face_weights(self.time)
+				clip.face_weights(time)
 					.into_iter()
 					.map(|(n, w)| (n.to_string(), w))
 					.collect()
@@ -1362,7 +1392,7 @@ impl ModelView {
 		let (posed, by_name) = match slot.and_then(|s| Some((s.clip.as_ref().ok()?, &s.binding))) {
 			Some((clip, binding)) => {
 				let samples: Vec<(&str, CFrame)> = clip
-					.sample(self.time)
+					.sample(time)
 					.map(|(key, t)| (key.name.as_str(), t))
 					.collect();
 				let transforms: Vec<CFrame> = samples
@@ -1375,22 +1405,195 @@ impl ModelView {
 					})
 					.collect();
 				let posed = self.rig.pose_from(binding, &transforms);
-				let by_name: HashMap<&str, CFrame> = samples
+				let by_name: HashMap<String, CFrame> = samples
 					.iter()
 					.zip(&binding.targets)
 					.filter(|(_, t)| t.is_none())
-					.map(|(s, _)| *s)
+					.map(|(s, _)| (s.0.to_string(), s.1))
 					.collect();
 				(posed, by_name)
 			}
 			None => (self.rest.clone(), HashMap::new()),
 		};
-		for part in &mut self.parts {
-			if let Some(skin) = &mut part.skin {
-				skin.update(&self.rest, &posed, part.index, &by_name, &face);
+		(posed, by_name, face)
+	}
+
+	// ---------------------------------------------------------------- export
+
+	/// The model as a skeleton for export: every part, then every Bone,
+	/// then each skinned mesh's bones that only the mesh has.
+	pub fn export_nodes(&self) -> Vec<ExportNode> {
+		let parents = self.rig.part_parents();
+		let parts = self.rig.parts.len();
+		let mut nodes: Vec<ExportNode> = self
+			.rig
+			.parts
+			.iter()
+			.zip(parents)
+			.map(|(p, parent)| ExportNode {
+				name: p.name.clone(),
+				parent,
+			})
+			.collect();
+		nodes.extend(self.rig.bones.iter().map(|b| ExportNode {
+			name: b.name.clone(),
+			parent: match b.parent {
+				BoneParent::Part(p) => Some(p),
+				BoneParent::Bone(b) => Some(parts + b),
+				BoneParent::None => None,
+			},
+		}));
+		for (part, skin) in self.skins() {
+			let first = nodes.len();
+			let driver_node = self.driver_nodes(skin, first);
+			for (k, d) in skin.drivers.iter().enumerate() {
+				if let Driver::Mesh { parent, name, .. } = d {
+					nodes.push(ExportNode {
+						name: name.clone(),
+						parent: Some(match parent {
+							Some(p) => driver_node[*p],
+							None => part.index,
+						}),
+					});
+					debug_assert_eq!(nodes.len() - 1, driver_node[k]);
+				}
 			}
 		}
-		self.posed = posed;
+		nodes
+	}
+
+	/// The visible parts with a skin, in node order.
+	fn skins(&self) -> impl Iterator<Item = (&PartView, &PartSkin)> {
+		self.parts
+			.iter()
+			.filter_map(|p| Some((p, p.skin.as_ref()?)))
+	}
+
+	/// The node of each of a skin's bones, mesh-only ones numbered from `first`.
+	fn driver_nodes(&self, skin: &PartSkin, first: usize) -> Vec<usize> {
+		let parts = self.rig.parts.len();
+		let mut next = first;
+		skin.drivers
+			.iter()
+			.map(|d| match d {
+				Driver::Part(p) => *p,
+				Driver::Bone(b) => parts + b,
+				Driver::Mesh { .. } => {
+					next += 1;
+					next - 1
+				}
+			})
+			.collect()
+	}
+
+	/// Where every node of [`Self::export_nodes`] is, in world space, when
+	/// `clip` is at `time` (the rest pose without a clip).
+	pub fn export_frame(&self, clip: Option<usize>, time: f32) -> Vec<CFrame> {
+		let (posed, by_name, face) = self.solve_at(clip, time);
+		let mut worlds = posed.parts.clone();
+		worlds.extend(posed.bones.iter().copied());
+		for (part, skin) in self.skins() {
+			let (now, _) = skin.drivers_at(&self.rest, &posed, part.index, &by_name, &face);
+			for (k, d) in skin.drivers.iter().enumerate() {
+				if matches!(d, Driver::Mesh { .. }) {
+					worlds.push(now[k]);
+				}
+			}
+		}
+		worlds
+	}
+
+	/// What is drawn, in the rest pose, with the nodes that move it.
+	/// Primitive parts are included when blocks are shown.
+	pub fn export_meshes(&self) -> Vec<ExportMesh<'_>> {
+		let mut first = self.rig.parts.len() + self.rig.bones.len();
+		let mut out = Vec::new();
+		for part in &self.parts {
+			let skinned = part.skin.as_ref().map(|skin| {
+				let nodes = self.driver_nodes(skin, first);
+				first += skin
+					.drivers
+					.iter()
+					.filter(|d| matches!(d, Driver::Mesh { .. }))
+					.count();
+				(skin, nodes)
+			});
+			if !part.visible {
+				continue;
+			}
+			let name = self.rig.parts[part.index].name.clone();
+			let base = ExportMesh {
+				name,
+				// every arm below sets its own
+				geometry: Primitive::Block.geometry(),
+				groups: Vec::new(),
+				positions: Vec::new(),
+				normals: None,
+				joints: vec![part.index],
+				influences: Vec::new(),
+				material: empty_material(),
+				colour: part.colour,
+				surface: part.surface,
+			};
+			let rest = self.rest.parts[part.index].mul(&CFrame::from_position(part.offset));
+			match (&part.shape, skinned) {
+				(PartShape::Mesh(asset), Some((skin, nodes))) => {
+					// joint k of the skin is its bone k; one more for the part,
+					// which carries the vertices no bone moves
+					let mut joints = nodes;
+					joints.push(part.index);
+					let owner = (joints.len() - 1) as u16;
+					let influences = skin
+						.influences
+						.iter()
+						.map(|inf| {
+							if inf.iter().any(|&(_, w)| w > 0.0) {
+								*inf
+							} else {
+								[(owner, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]
+							}
+						})
+						.collect();
+					out.push(ExportMesh {
+						geometry: &asset.geometry,
+						groups: asset.groups.clone(),
+						positions: skin.rest_positions.clone(),
+						normals: skin.rest_normals.clone(),
+						joints,
+						influences,
+						material: &asset.material,
+						..base
+					});
+				}
+				(PartShape::Mesh(asset), None) => {
+					let (positions, normals) =
+						placed(&asset.geometry, &rest, part.scale, part.centre);
+					out.push(ExportMesh {
+						geometry: &asset.geometry,
+						groups: asset.groups.clone(),
+						influences: vec![[(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; positions.len()],
+						positions,
+						normals,
+						material: &asset.material,
+						..base
+					});
+				}
+				(PartShape::Primitive(kind), _) if self.show_blocks => {
+					let geometry = kind.geometry();
+					let (positions, normals) = placed(geometry, &rest, part.scale, [0.0; 3]);
+					out.push(ExportMesh {
+						geometry,
+						groups: vec![0],
+						influences: vec![[(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; positions.len()],
+						positions,
+						normals,
+						..base
+					});
+				}
+				_ => {}
+			}
+		}
+		out
 	}
 
 	/// The parts to draw this frame. `plain` replaces mesh materials when
@@ -1574,6 +1777,49 @@ impl ModelView {
 	}
 }
 
+/// A node of the exported skeleton: a part, a Bone, or a bone only a
+/// skinned mesh has.
+pub struct ExportNode {
+	pub name: String,
+	/// Index of the parent node.
+	pub parent: Option<usize>,
+}
+
+/// One drawn mesh for export, in the rest pose (world space), skinned to
+/// nodes of [`ModelView::export_nodes`].
+pub struct ExportMesh<'a> {
+	/// The part's name.
+	pub name: String,
+	/// Triangles, UVs and groups; its positions are replaced by `positions`.
+	pub geometry: &'a Geometry,
+	pub groups: Vec<usize>,
+	pub positions: Vec<V3>,
+	pub normals: Option<Vec<V3>>,
+	/// The nodes that move it; `influences` index into these.
+	pub joints: Vec<usize>,
+	pub influences: Vec<[(u16, f32); 4]>,
+	pub material: &'a Material,
+	pub colour: Color32,
+	pub surface: Surface,
+}
+
+/// A mesh's vertices and normals placed in the world by `cf`, fitted by
+/// `scale` and `centre`.
+fn placed(geometry: &Geometry, cf: &CFrame, scale: V3, centre: V3) -> (Vec<V3>, Option<Vec<V3>>) {
+	let positions = geometry
+		.positions
+		.iter()
+		.map(|&v| fitted(cf, scale, centre, v))
+		.collect();
+	let normals = geometry.normals.as_ref().map(|normals| {
+		normals
+			.iter()
+			.map(|n| normalize(cf.rotate([n[0] / scale[0], n[1] / scale[1], n[2] / scale[2]])))
+			.collect()
+	});
+	(positions, normals)
+}
+
 fn empty_material() -> &'static Material {
 	static EMPTY: OnceLock<Material> = OnceLock::new();
 	EMPTY.get_or_init(Material::default)
@@ -1719,7 +1965,7 @@ mod tests {
 		assert_eq!(ps.matched, 1);
 		assert_eq!(ps.geometry.positions[0], [0.0, 0.0, 2.0]);
 		// a track named Jaw moving it up by 1
-		let by_name = HashMap::from([("Jaw", CFrame::from_position([0.0, 1.0, 0.0]))]);
+		let by_name = HashMap::from([("Jaw".to_string(), CFrame::from_position([0.0, 1.0, 0.0]))]);
 		ps.update(&rest, &rest, 0, &by_name, &[]);
 		let p = ps.geometry.positions[0];
 		assert!(

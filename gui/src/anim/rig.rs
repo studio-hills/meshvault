@@ -337,6 +337,21 @@ impl Rig {
 		})
 	}
 
+	/// Each part's parent in the joint tree: the part a joint places it
+	/// from. Roots (and parts no joint reaches) have none.
+	pub fn part_parents(&self) -> Vec<Option<usize>> {
+		let mut parents = vec![None; self.parts.len()];
+		for &(i, forward) in &self.motor_order {
+			let m = &self.motors[i];
+			if forward {
+				parents[m.part1] = Some(m.part0);
+			} else {
+				parents[m.part0] = Some(m.part1);
+			}
+		}
+		parents
+	}
+
 	/// The pose the model was exported in: joints at their captured
 	/// transforms (identity for schema 1, which did not record them).
 	pub fn rest(&self) -> Posed {

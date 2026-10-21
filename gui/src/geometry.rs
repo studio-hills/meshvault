@@ -1389,27 +1389,6 @@ fn from_union_physics(mesh: UnionPhysics) -> Loaded {
 	}
 }
 
-/// Writes the visible triangles as a Wavefront OBJ, one object per group.
-pub fn to_obj(geometry: &Geometry, groups: &[usize]) -> String {
-	use std::fmt::Write;
-	let mut out = String::from("# Exported by Meshvault\n");
-	for p in &geometry.positions {
-		let _ = writeln!(out, "v {} {} {}", p[0], p[1], p[2]);
-	}
-	for &g in groups {
-		let label = match geometry.group_kind {
-			GroupKind::Lod => "lod",
-			GroupKind::Hull => "hull",
-			GroupKind::Whole => "mesh",
-		};
-		let _ = writeln!(out, "o {label}_{g}");
-		for t in &geometry.triangles[geometry.groups[g].clone()] {
-			let _ = writeln!(out, "f {} {} {}", t[0] + 1, t[1] + 1, t[2] + 1);
-		}
-	}
-	out
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;

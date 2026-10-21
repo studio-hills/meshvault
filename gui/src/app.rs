@@ -14,6 +14,7 @@ use crate::gpu::{GpuRenderer, GpuScene};
 use crate::import_ui::{self, ImportDialog};
 use crate::maps::Slot;
 use crate::model_view::{MeshSource, ModelView};
+use crate::obj_export::Format;
 use crate::settings_ui::{self, SettingsDialog};
 use crate::texture::{self, Material};
 use crate::ui::theme;
@@ -115,8 +116,11 @@ pub struct App {
 	pub studio_dialog: Option<StudioDialog>,
 	/// Pieces of an export from Studio received so far, out of how many, and when.
 	pub studio_progress: Option<(usize, usize, Instant)>,
-	/// Library models being exported as OBJ on a background thread.
-	exporting: Option<std::sync::mpsc::Receiver<crate::obj_export::Report>>,
+	/// Work on background threads (exports, saved images), each ending
+	/// with a message to show.
+	background: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
+	/// Where the 3D view was last drawn, for the shape of saved images.
+	pub viewport: egui::Rect,
 	last_save: Instant,
 }
 
@@ -162,7 +166,8 @@ impl App {
 			studio_link,
 			studio_dialog: None,
 			studio_progress: None,
-			exporting: None,
+			background: Vec::new(),
+			viewport: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(16.0, 9.0)),
 			last_save: Instant::now(),
 		};
 		if let crate::studio_link::Status::Unavailable(why) = &app.studio_link.status {
@@ -787,9 +792,11 @@ impl App {
 				workspace_ui::Action::RemoveSelection { items, models } => {
 					self.ask(ConfirmAction::RemoveSelection { items, models })
 				}
-				workspace_ui::Action::Export { items, models } => {
-					self.export_library(&items, &models)
-				}
+				workspace_ui::Action::Export {
+					items,
+					models,
+					format,
+				} => self.export_library(&items, &models, format),
 			}
 		}
 	}
@@ -850,14 +857,10 @@ impl App {
 		}
 	}
 
-	/// Exports library meshes and animated models as OBJ files into a
-	/// folder the user picks, on a background thread.
-	pub fn export_library(&mut self, items: &[usize], models: &[usize]) {
+	/// Exports library meshes and animated models into a folder the user
+	/// picks, on a background thread.
+	pub fn export_library(&mut self, items: &[usize], models: &[usize], format: Format) {
 		use crate::obj_export::{MeshJob, ModelJob};
-		if self.exporting.is_some() {
-			self.toasts.info("An export is already running.");
-			return;
-		}
 		let Some(ws) = &self.workspace else { return };
 		let meshes: Vec<MeshJob> = items
 			.iter()
@@ -887,8 +890,12 @@ impl App {
 				.info("Nothing to export: the selected meshes are not downloaded yet.");
 			return;
 		}
+		let what = match format {
+			Format::Glb => "for Blender (.glb)",
+			Format::Obj => "as OBJ",
+		};
 		let Some(dir) = rfd::FileDialog::new()
-			.set_title("Export as OBJ into")
+			.set_title(format!("Export {what} into"))
 			.pick_folder()
 		else {
 			return;
@@ -898,64 +905,320 @@ impl App {
 				"{skipped} selected meshes are not downloaded yet and are skipped."
 			));
 		}
+		self.in_background(move |ctx| {
+			let report = crate::obj_export::export(ctx, &dir, meshes, models, format);
+			let written = plural(report.written, "model");
+			if report.failed.is_empty() {
+				Ok(format!(
+					"Exported {written} {what} to {}",
+					report.dir.display()
+				))
+			} else {
+				Err(format!(
+					"Exported {written}; {} failed:\n{}",
+					report.failed.len(),
+					report.failed.join("\n")
+				))
+			}
+		});
+	}
+
+	/// Runs `work` on a background thread; its message is shown when it ends.
+	fn in_background(
+		&mut self,
+		work: impl FnOnce(&egui::Context) -> Result<String, String> + Send + 'static,
+	) {
 		let (tx, rx) = std::sync::mpsc::channel();
 		let ctx = self.ctx.clone();
 		std::thread::spawn(move || {
-			let _ = tx.send(crate::obj_export::export(&ctx, &dir, meshes, models));
+			let _ = tx.send(work(&ctx));
 			ctx.request_repaint();
 		});
-		self.exporting = Some(rx);
+		self.background.push(rx);
 	}
 
-	pub fn poll_export(&mut self) {
-		let Some(rx) = &self.exporting else { return };
-		let report = match rx.try_recv() {
-			Ok(report) => report,
-			Err(std::sync::mpsc::TryRecvError::Empty) => return,
-			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-				self.exporting = None;
-				self.toasts.error("The export stopped unexpectedly.");
-				return;
+	/// Shows the messages of background work that ended.
+	pub fn poll_background(&mut self) {
+		let mut done = Vec::new();
+		self.background.retain(|rx| match rx.try_recv() {
+			Ok(result) => {
+				done.push(result);
+				false
 			}
-		};
-		self.exporting = None;
-		if report.failed.is_empty() {
-			self.toasts.success(format!(
-				"Exported {} as OBJ to {}",
-				plural(report.written, "model"),
-				report.dir.display()
-			));
-		} else {
-			self.toasts.error(format!(
-				"Exported {}; {} failed:\n{}",
-				plural(report.written, "model"),
-				report.failed.len(),
-				report.failed.join("\n")
-			));
+			Err(std::sync::mpsc::TryRecvError::Empty) => true,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+				done.push(Err("Background work stopped unexpectedly.".into()));
+				false
+			}
+		});
+		for result in done {
+			match result {
+				Ok(message) => self.toasts.success(message),
+				Err(message) => self.toasts.error(message),
+			}
 		}
 	}
 
-	pub fn export_obj(&mut self) {
-		let Some(doc) = &self.doc else { return };
-		let stem = doc
-			.path
-			.file_stem()
+	/// The open mesh's or model's name, for file names.
+	fn shown_name(&self) -> String {
+		if let Some(model) = &self.model {
+			return workspace::sanitize(&model.name);
+		}
+		self.doc
+			.as_ref()
+			.and_then(|d| d.path.file_stem())
 			.map(|s| s.to_string_lossy().into_owned())
-			.unwrap_or_else(|| "mesh".into());
-		let Some(out) = rfd::FileDialog::new()
-			.set_title("Export OBJ")
-			.set_file_name(format!("{stem}.obj"))
-			.add_filter("Wavefront OBJ", &["obj"])
+			.unwrap_or_else(|| "mesh".into())
+	}
+
+	fn save_dialog(&self, title: &str, extension: &str, filter: &str) -> Option<PathBuf> {
+		rfd::FileDialog::new()
+			.set_title(title)
+			.set_file_name(format!("{}.{extension}", self.shown_name()))
+			.add_filter(filter, &[extension])
 			.save_file()
-		else {
+	}
+
+	/// Exports what is shown as binary glTF for Blender: an animated model
+	/// with its skeleton, skin weights and every clip; a mesh with its maps.
+	pub fn export_glb(&mut self) {
+		if let Some(model) = &self.model {
+			let Some(ws) = &self.workspace else { return };
+			let load = model_loader(ws, model.index);
+			let name = model.name.clone();
+			let Some(path) = self.save_dialog("Export for Blender", "glb", "glTF binary") else {
+				return;
+			};
+			self.in_background(move |ctx| {
+				let model = load(ctx)?;
+				crate::gltf_export::export_model(&model, &path)?;
+				Ok(format!(
+					"Exported {name} with {} for Blender to {}. In Blender: File › Import › glTF 2.0.",
+					plural(
+						model.clips.iter().filter(|c| c.clip.is_ok()).count(),
+						"clip"
+					),
+					path.display()
+				))
+			});
+		} else if self.doc.is_some() {
+			let Some(path) = self.save_dialog("Export for Blender", "glb", "glTF binary") else {
+				return;
+			};
+			let Some(doc) = &self.doc else { return };
+			let name = self.shown_name();
+			let result = crate::gltf_export::export_mesh(
+				&doc.loaded.geometry,
+				&doc.visible_groups(),
+				&doc.material,
+				crate::viewport::PART_COLOUR,
+				&name,
+				&path,
+			);
+			match result {
+				Ok(()) => self.toasts.success(format!(
+					"Exported {} for Blender. In Blender: File › Import › glTF 2.0.",
+					path.display()
+				)),
+				Err(e) => self.toasts.error(format!("Export failed: {e}")),
+			}
+		}
+	}
+
+	/// Exports what is shown as OBJ, with an MTL file and its maps beside
+	/// it: the visible LODs or hulls of a mesh, or a model as posed now.
+	pub fn export_obj(&mut self) {
+		if self.doc.is_none() && self.model.is_none() {
+			return;
+		}
+		let Some(path) = self.save_dialog("Export OBJ", "obj", "Wavefront OBJ") else {
 			return;
 		};
-		let obj = geometry::to_obj(&doc.loaded.geometry, &doc.visible_groups());
-		match std::fs::write(&out, obj) {
-			Ok(()) => self.toasts.success(format!("Exported {}", out.display())),
+		let result = if let Some(model) = &mut self.model {
+			crate::obj_export::write_model(&path, model)
+		} else if let Some(doc) = &self.doc {
+			crate::obj_export::write_mesh(
+				&path,
+				&doc.loaded.geometry,
+				&doc.visible_groups(),
+				&doc.material,
+			)
+		} else {
+			return;
+		};
+		match result {
+			Ok(()) => self.toasts.success(format!("Exported {}", path.display())),
 			Err(e) => self.toasts.error(format!("Export failed: {e}")),
 		}
 	}
+
+	/// Draws the view as it is now into `frames` images of `size`; with more
+	/// than one, the camera turns once around the model while a selected
+	/// clip plays on, `step` seconds a frame.
+	fn render_view(
+		&mut self,
+		size: [u32; 2],
+		frames: usize,
+		step: f32,
+	) -> Option<Vec<image::RgbaImage>> {
+		let renderer = self.gpu.clone()?;
+		let p = theme::palette(&self.ctx);
+		let mut settings = self.view_settings(&p);
+		settings.show_grid = false;
+		settings.show_axes = false;
+		let plain_material = self.no_material.clone();
+		let plain = (!self.show_maps).then_some(&plain_material);
+		let turn = |camera: &Camera, k: usize| {
+			let mut camera = camera.clone();
+			camera.yaw += std::f32::consts::TAU * k as f32 / frames as f32;
+			camera
+		};
+		let mut out = Vec::with_capacity(frames);
+		if let Some(model) = &mut self.model {
+			let (camera, start) = (model.camera.clone(), model.time);
+			let duration = model.duration();
+			for k in 0..frames {
+				if frames > 1 && model.current.is_some() && duration > 0.0 {
+					model.set_time((start + k as f32 * step).rem_euclid(duration));
+				}
+				settings.lights = model.scene_lights();
+				let mut parts = model.scene_parts(plain);
+				out.push(crate::viewport::render_image(
+					&mut parts,
+					&turn(&camera, k),
+					&settings,
+					&renderer,
+					size,
+				));
+			}
+			model.set_time(start);
+		} else if let Some(doc) = &mut self.doc {
+			let groups = doc.visible_groups();
+			let geometry = &doc.loaded.geometry;
+			for k in 0..frames {
+				let mut parts = [crate::viewport::ScenePart {
+					geometry,
+					groups: &groups,
+					transform: crate::viewport::IDENTITY,
+					material: plain.unwrap_or(&doc.material),
+					colour_groups: geometry.group_kind == GroupKind::Hull,
+					colour: crate::viewport::PART_COLOUR,
+					scene: &mut doc.gpu,
+					moved: false,
+					surface: crate::viewport::Surface::OPAQUE,
+					decal: None,
+				}];
+				out.push(crate::viewport::render_image(
+					&mut parts,
+					&turn(&doc.camera, k),
+					&settings,
+					&renderer,
+					size,
+				));
+			}
+		} else {
+			return None;
+		}
+		Some(out)
+	}
+
+	/// The viewport's shape, scaled to `height` pixels (even sides).
+	fn frame_size(&self, height: f32) -> [u32; 2] {
+		let aspect = self.viewport.width() / self.viewport.height().max(1.0);
+		let aspect = if aspect.is_finite() && aspect > 0.0 {
+			aspect
+		} else {
+			16.0 / 9.0
+		};
+		let even = |v: f32| ((v / 2.0).round() as u32).max(1) * 2;
+		[even(height * aspect), even(height)]
+	}
+
+	/// Saves the view as it is now as a PNG with a transparent background.
+	pub fn save_image(&mut self) {
+		if self.gpu.is_none() {
+			self.toasts.error("Saving images needs the GPU renderer.");
+			return;
+		}
+		let Some(path) = self.save_dialog("Save image", "png", "PNG image") else {
+			return;
+		};
+		let size = self.frame_size(STILL_HEIGHT);
+		let Some(image) = self.render_view(size, 1, 0.0).and_then(|mut f| f.pop()) else {
+			return;
+		};
+		self.in_background(move |_| {
+			image
+				.save(&path)
+				.map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+			Ok(format!("Saved {}", path.display()))
+		});
+	}
+
+	/// Saves a GIF of the camera turning once around the model, playing
+	/// the selected clip, over the viewport's background.
+	pub fn save_turntable(&mut self) {
+		if self.gpu.is_none() {
+			self.toasts
+				.error("Saving turntables needs the GPU renderer.");
+			return;
+		}
+		let Some(path) = self.save_dialog("Save turntable", "gif", "GIF animation") else {
+			return;
+		};
+		let size = self.frame_size(TURNTABLE_HEIGHT);
+		let delay = 1.0 / TURNTABLE_FPS;
+		let Some(frames) = self.render_view(size, TURNTABLE_FRAMES, delay) else {
+			return;
+		};
+		let p = theme::palette(&self.ctx);
+		let (top, bottom) = (p.viewport_top, p.viewport_bottom);
+		self.in_background(move |_| {
+			use image::codecs::gif::{GifEncoder, Repeat};
+			let file = std::fs::File::create(&path)
+				.map_err(|e| format!("Could not create {}: {e}", path.display()))?;
+			let mut encoder = GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
+			encoder
+				.set_repeat(Repeat::Infinite)
+				.map_err(|e| e.to_string())?;
+			for frame in frames {
+				let frame = over_gradient(&frame, top, bottom);
+				let delay = image::Delay::from_numer_denom_ms((delay * 1000.0).round() as u32, 1);
+				encoder
+					.encode_frame(image::Frame::from_parts(frame, 0, 0, delay))
+					.map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+			}
+			Ok(format!("Saved {}", path.display()))
+		});
+	}
+}
+
+/// Height in pixels of saved images.
+const STILL_HEIGHT: f32 = 1080.0;
+/// A turntable: frame count, rate and height in pixels.
+const TURNTABLE_FRAMES: usize = 72;
+const TURNTABLE_FPS: f32 = 25.0;
+const TURNTABLE_HEIGHT: f32 = 480.0;
+
+/// `image` laid over a vertical gradient from `top` to `bottom`.
+fn over_gradient(
+	image: &image::RgbaImage,
+	top: egui::Color32,
+	bottom: egui::Color32,
+) -> image::RgbaImage {
+	let h = image.height().max(2) - 1;
+	image::RgbaImage::from_fn(image.width(), image.height(), |x, y| {
+		let t = y as f32 / h as f32;
+		let bg = [top.r(), top.g(), top.b()]
+			.iter()
+			.zip([bottom.r(), bottom.g(), bottom.b()])
+			.map(|(&a, b)| a as f32 + (b as f32 - a as f32) * t)
+			.collect::<Vec<f32>>();
+		let px = image.get_pixel(x, y);
+		let a = px[3] as f32 / 255.0;
+		let mix = |k: usize| (px[k] as f32 * a + bg[k] * (1.0 - a)).round() as u8;
+		image::Rgba([mix(0), mix(1), mix(2), 255])
+	})
 }
 
 /// Reads the workspace's model `index` with its downloaded meshes, maps

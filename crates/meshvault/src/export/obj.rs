@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::MeshJob;
+use super::{MeshJob, Names};
 use crate::render::maths::{IDENTITY, apply, apply_dir};
 use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
@@ -14,7 +14,14 @@ use crate::scene::model_view::ModelView;
 use crate::scene::surface::PART_COLOUR;
 use crate::scene::texture::Material;
 
-pub(super) fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), String> {
+/// Writes a batch job as `name.obj` and `name.mtl`, which `names` has
+/// handed out already.
+pub(super) fn export_mesh(
+	dir: &Path,
+	name: &str,
+	job: &MeshJob,
+	names: &mut Names,
+) -> Result<(), String> {
 	let bytes = std::fs::read(&job.mesh).map_err(|e| e.to_string())?;
 	let geometry = geometry::load(&bytes)?.geometry;
 	if geometry.triangles.is_empty() {
@@ -22,8 +29,7 @@ pub(super) fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), S
 	}
 	let groups = geometry.default_groups();
 	write_one(
-		dir,
-		name,
+		Obj::new(dir, name, format!("{name}.mtl"), names),
 		&geometry,
 		&groups,
 		map_of(&job.maps, Slot::Base),
@@ -39,10 +45,9 @@ pub fn write_mesh(
 	groups: &[usize],
 	material: &Material,
 ) -> Result<(), String> {
-	let (dir, name) = split(path)?;
+	let mut names = Names::default();
 	write_one(
-		&dir,
-		&name,
+		Obj::chosen(path, &mut names)?,
 		geometry,
 		groups,
 		map_path(material, Slot::Base),
@@ -50,19 +55,17 @@ pub fn write_mesh(
 	)
 }
 
-/// Writes `groups` of one mesh, unmoved, as the OBJ `name` in `dir`, in
-/// the part colour or showing the colour map `base`, with the maps copied
-/// beside it. A mesh without texture coordinates cannot show maps, so it
-/// gets none, as in the viewer and the glTF export.
+/// Writes `groups` of one mesh, unmoved, into `obj`, in the part colour or
+/// showing the colour map `base`, with the maps copied beside it. A mesh
+/// without texture coordinates cannot show maps, so it gets none, as in
+/// the viewer and the glTF export.
 fn write_one(
-	dir: &Path,
-	name: &str,
+	mut obj: Obj,
 	geometry: &Geometry,
 	groups: &[usize],
 	base: Option<&Path>,
 	normal: Option<&Path>,
 ) -> Result<(), String> {
-	let mut obj = Obj::new(dir, name);
 	let (base, normal) = if geometry.uvs.is_some() {
 		(base, normal)
 	} else {
@@ -70,7 +73,8 @@ fn write_one(
 	};
 	let colour = [PART_COLOUR.r(), PART_COLOUR.g(), PART_COLOUR.b()].map(|c| c as f32 / 255.0);
 	let material = obj.material(base, normal, colour)?;
-	obj.add(name, geometry, groups, &IDENTITY, &material);
+	let name = obj.name.clone();
+	obj.add(&name, geometry, groups, &IDENTITY, &material);
 	obj.write()
 }
 
@@ -83,8 +87,8 @@ fn map_of(maps: &[(Slot, PathBuf)], slot: Slot) -> Option<&Path> {
 
 /// Writes an animated model as posed now to the OBJ file `path`.
 pub fn write_model(path: &Path, model: &mut ModelView) -> Result<(), String> {
-	let (dir, name) = split(path)?;
-	export_model(&dir, &name, model)
+	let mut names = Names::default();
+	write_parts(Obj::chosen(path, &mut names)?, model)
 }
 
 /// A file path's folder and its name without the extension.
@@ -100,8 +104,19 @@ fn split(path: &Path) -> Result<(PathBuf, String), String> {
 	Ok((dir, name))
 }
 
-pub(super) fn export_model(dir: &Path, name: &str, model: &mut ModelView) -> Result<(), String> {
-	let mut obj = Obj::new(dir, name);
+/// Writes a batch job as `name.obj` and `name.mtl`, which `names` has
+/// handed out already.
+pub(super) fn export_model(
+	dir: &Path,
+	name: &str,
+	model: &mut ModelView,
+	names: &mut Names,
+) -> Result<(), String> {
+	write_parts(Obj::new(dir, name, format!("{name}.mtl"), names), model)
+}
+
+/// Writes the parts of `model` as posed now into `obj`.
+fn write_parts(mut obj: Obj, model: &mut ModelView) -> Result<(), String> {
 	let parts = model.scene_parts(None);
 	let mut count = 0;
 	// decals and clothing are drawn over a part; the OBJ has the part alone
@@ -127,15 +142,28 @@ pub(super) fn export_model(dir: &Path, name: &str, model: &mut ModelView) -> Res
 	obj.write()
 }
 
+/// A sidecar's file name: `name` and `tail` (such as `.normal.png`), with
+/// `_n` between them from the second on.
+fn numbered(name: &str, n: usize, tail: &str) -> String {
+	match n {
+		1 => format!("{name}{tail}"),
+		n => format!("{name}_{n}{tail}"),
+	}
+}
+
 fn map_path(material: &Material, slot: Slot) -> Option<&Path> {
 	material.active(slot).map(|t| t.path.as_path())
 }
 
 /// An OBJ file being written, with its MTL. Both are built in `String`s,
 /// which `writeln!` cannot fail to write to, so its results are ignored.
-struct Obj {
+struct Obj<'a> {
 	dir: PathBuf,
 	name: String,
+	/// The MTL's file name.
+	mtl_file: String,
+	/// What the export has written into `dir`, so maps get free names.
+	names: &'a mut Names,
 	obj: String,
 	mtl: String,
 	/// Positions, texture coordinates and normals written so far (OBJ
@@ -147,17 +175,29 @@ struct Obj {
 	copied: HashMap<PathBuf, String>,
 }
 
-impl Obj {
-	fn new(dir: &Path, name: &str) -> Self {
+impl<'a> Obj<'a> {
+	fn new(dir: &Path, name: &str, mtl_file: String, names: &'a mut Names) -> Self {
 		Self {
 			dir: dir.to_path_buf(),
 			name: name.to_string(),
-			obj: format!("# Exported by Meshvault\nmtllib {name}.mtl\n"),
+			obj: format!("# Exported by Meshvault\nmtllib {mtl_file}\n"),
+			mtl_file,
+			names,
 			mtl: "# Exported by Meshvault\n".to_string(),
 			written: [0; 3],
 			materials: HashMap::new(),
 			copied: HashMap::new(),
 		}
+	}
+
+	/// The OBJ file `path` the user chose (replacing it is theirs to
+	/// decide), with its MTL on the first free name of `name.mtl`,
+	/// `name_2.mtl`, ... beside it.
+	fn chosen(path: &Path, names: &'a mut Names) -> Result<Self, String> {
+		let (dir, name) = split(path)?;
+		names.reserve(&format!("{name}.obj"));
+		let mtl_file = names.free(&dir, 1, |n| numbered(&name, n, ".mtl"));
+		Ok(Self::new(&dir, &name, mtl_file, names))
 	}
 
 	/// The material showing `base` (or `colour` without one) and `normal`,
@@ -191,16 +231,17 @@ impl Obj {
 		Ok(name)
 	}
 
-	/// Copies a map beside the OBJ, once.
+	/// Copies a map beside the OBJ, once, numbered by how many came before
+	/// it, or past that to a name no file has.
 	fn copy(&mut self, from: &Path, suffix: &str) -> Result<String, String> {
 		if let Some(file) = self.copied.get(from) {
 			return Ok(file.clone());
 		}
 		let ext = from.extension().and_then(|e| e.to_str()).unwrap_or("png");
-		let file = match self.copied.len() {
-			0 => format!("{}{suffix}.{ext}", self.name),
-			n => format!("{}_{}{suffix}.{ext}", self.name, n + 1),
-		};
+		let tail = format!("{suffix}.{ext}");
+		let file = self.names.free(&self.dir, self.copied.len() + 1, |n| {
+			numbered(&self.name, n, &tail)
+		});
 		std::fs::copy(from, self.dir.join(&file))
 			.map_err(|e| format!("could not copy {}: {e}", from.display()))?;
 		self.copied.insert(from.to_path_buf(), file.clone());
@@ -266,7 +307,7 @@ impl Obj {
 		let obj = self.dir.join(format!("{}.obj", self.name));
 		std::fs::write(&obj, &self.obj)
 			.map_err(|e| format!("could not write {}: {e}", obj.display()))?;
-		let mtl = self.dir.join(format!("{}.mtl", self.name));
+		let mtl = self.dir.join(&self.mtl_file);
 		std::fs::write(&mtl, &self.mtl)
 			.map_err(|e| format!("could not write {}: {e}", mtl.display()))
 	}
@@ -295,11 +336,25 @@ mod tests {
 	#[test]
 	fn parts_with_and_without_uvs_index_their_own_lists() {
 		let dir = TempDir::new("obj_parts");
-		let mut obj = Obj::new(&dir, "parts");
+		let mut names = Names::default();
+		let mut obj = Obj::new(&dir, "parts", "parts.mtl".into(), &mut names);
 		obj.add("a", &triangle(false), &[0], &IDENTITY, "m");
 		obj.add("b", &triangle(true), &[0], &IDENTITY, "m");
 		assert!(obj.obj.contains("f 4/1/4 5/2/5 6/3/6"), "{}", obj.obj);
 		check_indices(&obj.obj);
+	}
+
+	/// Writes group 0 of `geometry` as `name.obj` in `dir`, as the viewer does.
+	fn one(
+		dir: &Path,
+		name: &str,
+		geometry: &Geometry,
+		base: Option<&Path>,
+		normal: Option<&Path>,
+	) {
+		let mut names = Names::default();
+		let obj = Obj::chosen(&dir.join(format!("{name}.obj")), &mut names).unwrap();
+		write_one(obj, geometry, &[0], base, normal).unwrap();
 	}
 
 	fn read(path: PathBuf) -> String {
@@ -318,15 +373,7 @@ mod tests {
 		let dir = TempDir::new("obj_no_uvs");
 		let map = dir.join("source.png");
 		std::fs::write(&map, "png").unwrap();
-		write_one(
-			&dir,
-			"plain",
-			&triangle(false),
-			&[0],
-			Some(&map),
-			Some(&map),
-		)
-		.unwrap();
+		one(&dir, "plain", &triangle(false), Some(&map), Some(&map));
 		let mtl = read(dir.join("plain.mtl"));
 		assert!(mtl.contains(&part_kd()), "{mtl}");
 		assert!(!mtl.contains("map_Kd") && !mtl.contains("norm"), "{mtl}");
@@ -338,13 +385,40 @@ mod tests {
 		let dir = TempDir::new("obj_uvs");
 		let map = dir.join("source.png");
 		std::fs::write(&map, "png").unwrap();
-		write_one(&dir, "mapped", &triangle(true), &[0], Some(&map), None).unwrap();
+		one(&dir, "mapped", &triangle(true), Some(&map), None);
 		let mtl = read(dir.join("mapped.mtl"));
 		assert!(mtl.contains("Kd 1 1 1\nmap_Kd mapped.png\n"), "{mtl}");
 		assert_eq!(read(dir.join("mapped.png")), "png");
-		write_one(&dir, "bare", &triangle(true), &[0], None, None).unwrap();
+		one(&dir, "bare", &triangle(true), None, None);
 		let mtl = read(dir.join("bare.mtl"));
 		assert!(mtl.contains(&part_kd()) && !mtl.contains("map_Kd"), "{mtl}");
+	}
+
+	/// The OBJ is the file the user chose; its MTL and maps go beside it
+	/// without replacing files already there.
+	#[test]
+	fn a_chosen_obj_keeps_the_files_beside_it() {
+		let dir = TempDir::new("obj_chosen");
+		for file in ["mesh.mtl", "mesh.png", "mesh_2.mtl"] {
+			std::fs::write(dir.join(file), "keep").unwrap();
+		}
+		let map = dir.join("source.png");
+		image::RgbaImage::new(1, 1).save(&map).unwrap();
+		let material = crate::scene::texture::load_maps(
+			&eframe::egui::Context::default(),
+			&[(Slot::Base, map.clone())],
+		);
+		let path = dir.join("mesh.obj");
+		write_mesh(&path, &triangle(true), &[0], &material).unwrap();
+		for file in ["mesh.mtl", "mesh.png", "mesh_2.mtl"] {
+			assert_eq!(read(dir.join(file)), "keep", "{file}");
+		}
+		assert!(read(path).contains("mtllib mesh_3.mtl\n"));
+		assert!(read(dir.join("mesh_3.mtl")).contains("map_Kd mesh_2.png\n"));
+		assert_eq!(
+			std::fs::read(dir.join("mesh_2.png")).unwrap(),
+			std::fs::read(&map).unwrap()
+		);
 	}
 
 	#[test]

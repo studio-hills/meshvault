@@ -58,7 +58,8 @@ pub struct Report {
 	pub failed: Vec<String>,
 }
 
-/// Writes each mesh and model into `dir`. Names that clash get a number.
+/// Writes each mesh and model into `dir`. Names that clash, with each
+/// other or with files already there, get a number.
 pub fn export(
 	ctx: &egui::Context,
 	dir: &Path,
@@ -75,7 +76,7 @@ pub fn export(
 	for job in meshes {
 		let name = names.unique(dir, &job.name, format);
 		let result = match format {
-			Format::Obj => export_mesh(dir, &name, &job),
+			Format::Obj => export_mesh(dir, &name, &job, &mut names),
 			Format::Glb => export_mesh_glb(ctx, &dir.join(format!("{name}.glb")), &name, &job),
 		};
 		match result {
@@ -86,7 +87,7 @@ pub fn export(
 	for job in models {
 		let name = names.unique(dir, &job.name, format);
 		let result = (job.load)(ctx).and_then(|mut model| match format {
-			Format::Obj => export_model(dir, &name, &mut model),
+			Format::Obj => export_model(dir, &name, &mut model, &mut names),
 			Format::Glb => {
 				crate::export::gltf::export_model(&model, &dir.join(format!("{name}.glb")))
 			}
@@ -99,24 +100,55 @@ pub fn export(
 	report
 }
 
-/// File names handed out so far, so two models of the same name do not
-/// overwrite each other.
+/// File names in the export folder handed out so far (lower case, as
+/// Windows ignores case), so no file an export writes, the OBJ's MTL and
+/// maps included, replaces another of the same batch or one already there.
 #[derive(Default)]
 struct Names(std::collections::HashSet<String>);
 
 impl Names {
+	/// A name for the files of `name` that are all free: `name.obj` and
+	/// `name.mtl`, or `name.glb`.
 	fn unique(&mut self, dir: &Path, name: &str, format: Format) -> String {
+		let mut extensions = vec![format.extension()];
+		if format == Format::Obj {
+			extensions.push("mtl");
+		}
 		// never empty: a name with nothing usable becomes "_"
 		let base = sanitize(name);
 		let mut name = base.clone();
 		let mut n = 2;
-		let ext = format.extension();
-		while self.0.contains(&name.to_lowercase()) || dir.join(format!("{name}.{ext}")).exists() {
+		while extensions
+			.iter()
+			.any(|ext| self.taken(dir, &format!("{name}.{ext}")))
+		{
 			name = format!("{base} ({n})");
 			n += 1;
 		}
-		self.0.insert(name.to_lowercase());
+		for ext in extensions {
+			self.reserve(&format!("{name}.{ext}"));
+		}
 		name
+	}
+
+	/// The first free file name `file(n)` for `n` counting up from `from`,
+	/// handed out.
+	fn free(&mut self, dir: &Path, from: usize, file: impl Fn(usize) -> String) -> String {
+		let mut n = from;
+		while self.taken(dir, &file(n)) {
+			n += 1;
+		}
+		let file = file(n);
+		self.reserve(&file);
+		file
+	}
+
+	fn taken(&self, dir: &Path, file: &str) -> bool {
+		self.0.contains(&file.to_lowercase()) || dir.join(file).exists()
+	}
+
+	fn reserve(&mut self, file: &str) {
+		self.0.insert(file.to_lowercase());
 	}
 }
 
@@ -285,6 +317,64 @@ mod tests {
 		assert_eq!(Names::default().unique(&dir, "b", Format::Obj), "b (3)");
 		// only files of the format being written count
 		assert_eq!(Names::default().unique(&dir, "b", Format::Glb), "b");
+		// an OBJ's MTL counts too
+		std::fs::write(dir.join("c.mtl"), "").unwrap();
+		assert_eq!(Names::default().unique(&dir, "c", Format::Obj), "c (2)");
+		assert_eq!(Names::default().unique(&dir, "c", Format::Glb), "c");
+	}
+
+	fn map_file(dir: &Path, name: &str) -> PathBuf {
+		let path = dir.join(name);
+		std::fs::write(&path, name).unwrap();
+		path
+	}
+
+	/// A later job's sidecar must not land on an earlier one's: `Tree`'s
+	/// normal map is `Tree_2.normal.png`, which `Tree_2` would also pick.
+	#[test]
+	fn obj_batches_never_overwrite_a_file() {
+		let dir = TempDir::new("obj_batch_sidecars");
+		let maps = TempDir::new("obj_batch_maps");
+		std::fs::write(dir.join("Old.mtl"), "keep").unwrap();
+		std::fs::write(dir.join("Old.png"), "keep").unwrap();
+		let job = |name: &str, maps: Vec<(Slot, PathBuf)>| MeshJob {
+			name: name.into(),
+			mesh: sample_mesh(true),
+			maps,
+		};
+		let jobs = vec![
+			job(
+				"Tree",
+				vec![
+					(Slot::Base, map_file(&maps, "tree base.png")),
+					(Slot::Normal, map_file(&maps, "tree normal.png")),
+				],
+			),
+			job(
+				"Tree_2",
+				vec![(Slot::Normal, map_file(&maps, "tree 2 normal.png"))],
+			),
+			job("Old", vec![(Slot::Base, map_file(&maps, "old base.png"))]),
+		];
+		let report = export(
+			&egui::Context::default(),
+			&dir,
+			jobs,
+			Vec::new(),
+			Format::Obj,
+		);
+		assert_eq!(report.written, 3, "{:?}", report.failed);
+		let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+		assert_eq!(read("Tree.png"), "tree base.png");
+		assert_eq!(read("Tree_2.normal.png"), "tree normal.png");
+		assert!(read("Tree.mtl").contains("norm Tree_2.normal.png"));
+		assert_eq!(read("Tree_2_2.normal.png"), "tree 2 normal.png");
+		assert!(read("Tree_2.mtl").contains("norm Tree_2_2.normal.png"));
+		// the files already there are kept, and the new ones named around them
+		assert_eq!(read("Old.mtl"), "keep");
+		assert_eq!(read("Old.png"), "keep");
+		assert!(read("Old (2).obj").contains("mtllib Old (2).mtl"));
+		assert!(read("Old (2).mtl").contains("map_Kd Old (2).png"));
 	}
 
 	/// Exports every animated model of the workspace at `MESHVAULT_WS`

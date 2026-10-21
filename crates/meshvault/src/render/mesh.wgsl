@@ -13,9 +13,9 @@ struct Uniforms {
 	light_dir: vec4<f32>,
 	// rgb: linear wire colour, a: overlay strength
 	wire_color: vec4<f32>,
-	// x: wire mode (0 none, 1 overlay, 2 wire only)
+	// x: wire mode (0 none, 1 overlay, 2 wire only; WIRE_* in viewport.rs)
 	// y: 1 when the target expects gamma-encoded output
-	// z: roughness used without a roughness map
+	// z: roughness used without a roughness map (DEFAULT_ROUGHNESS)
 	params: vec4<f32>,
 	// has base, normal, roughness, metalness map
 	flags: vec4<u32>,
@@ -24,11 +24,14 @@ struct Uniforms {
 	surface: vec4<f32>,
 	// SurfaceAppearance: rgb tints the colour map; w is the alpha mode
 	// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque, 4 Blend: the map's
-	// alpha blends the surface, for meshes shown on their own)
+	// alpha blends the surface, for meshes shown on their own), from
+	// AlphaMode::shader_value in scene/surface.rs. Each mode is matched
+	// between whole numbers, as GpuRenderer::callback does too
 	tint: vec4<f32>,
 	// decal draws: mesh to part space
 	part_from_mesh: mat4x4<f32>,
-	// x: 0 no decal, 1 Decal, 2 Texture, 3 MaterialVariant, 4 clothing;
+	// x: 0 no decal, 1 Decal, 2 Texture, 3 MaterialVariant, 4 clothing
+	// (DecalDraw::shader_mode in scene/surface.rs);
 	// y: face (Enum.NormalId);
 	// z: transparency
 	decal: vec4<f32>,

@@ -19,7 +19,7 @@ use crate::scene::colour::{linear_rgb, linear_to_srgb, srgb_to_linear, srgb8_to_
 use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::model_view::{ExportMesh, ModelView};
-use crate::scene::surface::{AlphaMode, Surface};
+use crate::scene::surface::{AlphaMode, DEFAULT_ROUGHNESS, Surface};
 use crate::scene::texture::Material;
 
 /// Keyframes per second of baked clips.
@@ -480,7 +480,7 @@ impl Gltf {
 		let mut pbr = json!({
 			"baseColorFactor": [rgb[0], rgb[1], rgb[2], opacity],
 			"metallicFactor": if metal.is_some() || surface.metal { 1.0 } else { 0.0 },
-			"roughnessFactor": if rough.is_some() { 1.0 } else { 0.6 },
+			"roughnessFactor": if rough.is_some() { 1.0 } else { DEFAULT_ROUGHNESS },
 		});
 		let base_texture = base.and_then(|t| match bake(&t.rgba, surface.alpha_mode, tint, part) {
 			Some(baked) => {

@@ -12,6 +12,7 @@ use wgpu::util::DeviceExt;
 use crate::scene::colour::{linear_to_srgb, srgb8_to_linear};
 use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
+use crate::scene::surface::AlphaMode;
 use crate::scene::texture::Material;
 
 /// The window's multisample count (main passes it to `NativeOptions`);
@@ -395,15 +396,16 @@ impl GpuRenderer {
 			.map(|(scene, groups, mut uniforms)| {
 				uniforms.flags = scene.flags;
 				uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
-				// alpha modes: 1 Transparency (a cutout), 4 Blend
+				// the alpha mode, compared as mesh.wgsl does
 				let mode = uniforms.tint[3];
+				let is = |m: AlphaMode| (mode - m.shader_value()).abs() < 0.5;
 				let has_map = scene.flags[0] != 0;
 				Draw {
 					pass: if uniforms.decal[0] > 0.0 {
 						Pass::Decal
-					} else if uniforms.surface[0] < 1.0 || (has_map && (mode - 4.0).abs() < 0.5) {
+					} else if uniforms.surface[0] < 1.0 || (has_map && is(AlphaMode::Blend)) {
 						Pass::SeeThrough
-					} else if has_map && (mode - 1.0).abs() < 0.5 {
+					} else if has_map && is(AlphaMode::Transparency) {
 						Pass::Cutout
 					} else {
 						Pass::Opaque

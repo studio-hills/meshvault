@@ -11,7 +11,7 @@ use crate::render::lighting::{Lighting, SceneLight, light_uniforms};
 use crate::render::maths::{V3, apply, dot, mul, normal_matrix, sub, transpose};
 use crate::scene::colour::{linear_rgb, srgb_to_linear};
 use crate::scene::geometry::Geometry;
-use crate::scene::surface::DecalDraw;
+use crate::scene::surface::{DEFAULT_ROUGHNESS, DecalDraw};
 use crate::scene::texture::Material;
 
 use crate::render::camera::Camera;
@@ -76,6 +76,12 @@ const ZOOM_SPEED: f32 = 0.002;
 /// The closest and farthest the camera may be, in bounding radii.
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 50.0;
+
+/// The wireframe modes, as `params.x` in mesh.wgsl (which compares it with
+/// 0.5 and 1.5): none, over the surface, or the wireframe alone.
+const WIRE_NONE: f32 = 0.0;
+const WIRE_OVERLAY: f32 = 1.0;
+const WIRE_ONLY_MODE: f32 = 2.0;
 
 pub(super) const WIRE_ONLY: Color32 = Color32::from_rgb(140, 200, 255);
 
@@ -298,9 +304,9 @@ fn mesh_callback(
 	let h = linear_rgb(settings.highlight);
 	env[3] = [h[0], h[1], h[2], 0.0];
 	let (wire_mode, wire_colour, wire_strength) = match settings.shading {
-		Shading::Solid => (0.0, [0.0; 3], 0.0),
-		Shading::SolidWireframe => (1.0, [0.01, 0.012, 0.015], 0.7),
-		Shading::Wireframe => (2.0, linear_rgb(WIRE_ONLY), 1.0),
+		Shading::Solid => (WIRE_NONE, [0.0; 3], 0.0),
+		Shading::SolidWireframe => (WIRE_OVERLAY, [0.01, 0.012, 0.015], 0.7),
+		Shading::Wireframe => (WIRE_ONLY_MODE, linear_rgb(WIRE_ONLY), 1.0),
 	};
 	let uniforms = Uniforms {
 		// WGSL matrices are column-major
@@ -315,11 +321,12 @@ fn mesh_callback(
 			wire_colour[2],
 			wire_strength,
 		],
-		params: [wire_mode, 0.0, 0.6, 0.0],
+		params: [wire_mode, 0.0, DEFAULT_ROUGHNESS as f32, 0.0],
 		flags: [0; 4],
 		surface: [1.0, 0.0, 0.0, 0.0],
 		tint: [1.0, 1.0, 1.0, 0.0],
 		part_from_mesh: IDENTITY,
+		// mode 0: no decal
 		decal: [0.0; 4],
 		decal_size: [1.0, 1.0, 1.0, 0.0],
 		decal_tile: [1.0, 1.0, 0.0, 0.0],
@@ -347,15 +354,7 @@ fn mesh_callback(
 			(
 				transpose(d.part_from_mesh),
 				[
-					if d.clothing.is_some() {
-						4.0
-					} else if d.variant {
-						3.0
-					} else if d.tiles.is_some() {
-						2.0
-					} else {
-						1.0
-					},
+					d.shader_mode(),
 					d.face as f32,
 					d.transparency.clamp(0.0, 1.0),
 					0.0,
@@ -383,7 +382,7 @@ fn mesh_callback(
 			],
 			tint: {
 				let linear = s.tint.map(|c| srgb_to_linear(c.clamp(0.0, 1.0)));
-				[linear[0], linear[1], linear[2], s.alpha_mode as u8 as f32]
+				[linear[0], linear[1], linear[2], s.alpha_mode.shader_value()]
 			},
 			env: {
 				let mut env = uniforms.env;

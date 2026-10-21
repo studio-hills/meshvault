@@ -111,6 +111,9 @@ impl Browser {
 						Trailing::Clips(model.playable_clips),
 					);
 					self.drawn(key);
+					if open_model == Some(i) && self.scroll_to_open.replace(false) {
+						response.scroll_to_me(Some(egui::Align::Center));
+					}
 					let response = response.on_hover_text(self.model_hover(ws, model));
 					if response.clicked() {
 						self.click(ui, key, actions);

@@ -67,7 +67,8 @@ impl Browser {
 	}
 
 	/// The heading with the model count, and the view buttons beside it.
-	pub(super) fn header(&mut self, ui: &mut egui::Ui, ws: &Workspace, open_stem: Option<&str>) {
+	/// `can_reveal` is whether a mesh or animated model is open.
+	pub(super) fn header(&mut self, ui: &mut egui::Ui, ws: &Workspace, can_reveal: bool) {
 		let p = palette(ui.ctx());
 		let items = ws.items();
 		ui.horizontal(|ui| {
@@ -84,7 +85,7 @@ impl Browser {
 						self.pending.replace(Some(command));
 					}
 					let reveal = ui
-						.add_enabled_ui(open_stem.is_some(), |ui| {
+						.add_enabled_ui(can_reveal, |ui| {
 							widgets::icon_button(
 								ui,
 								icons::CROSSHAIR_SIMPLE,

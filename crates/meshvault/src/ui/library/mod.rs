@@ -126,9 +126,8 @@ pub struct Browser {
 	built_for: Option<(PathBuf, u64)>,
 	/// Expand/collapse requested while drawing, applied on the next frame.
 	pending: RefCell<Option<FolderCommand>>,
-	/// Open the folders leading to the open model and scroll to it. Only an
-	/// open mesh is revealed today; an open animated model is not, though
-	/// the button's label says "model".
+	/// Open the folders leading to the open mesh or animated model and
+	/// scroll to it.
 	reveal: bool,
 	scroll_to_open: std::cell::Cell<bool>,
 	selection: RefCell<Selection>,
@@ -222,6 +221,29 @@ impl Browser {
 		}
 	}
 
+	/// Shows what the viewer has open in the list: clears the search and
+	/// filters, opens the folders leading to it and scrolls to it.
+	fn reveal_opened(&mut self, ctx: &egui::Context, ws: &Workspace, opened: Opened<'_>) {
+		let item = opened
+			.stem
+			.and_then(|stem| ws.items().iter().find(|i| i.stem == stem));
+		let model = opened.model.filter(|&i| i < ws.models().len());
+		if item.is_none() && model.is_none() {
+			return;
+		}
+		self.search.clear();
+		self.status = StatusFilter::All;
+		self.filters = Filters::default();
+		self.view = View::List;
+		if let Some(item) = item {
+			tree::open_path(ctx, SCOPE, &item.folder);
+		}
+		if model.is_some() {
+			tree::set_open(ctx, list::models_folder_id(), true);
+		}
+		self.scroll_to_open.set(true);
+	}
+
 	pub fn show(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -247,18 +269,11 @@ impl Browser {
 		if let Some(command) = self.pending.borrow_mut().take() {
 			apply_folder_command(&ctx, &command, &self.tree);
 		}
-		if std::mem::take(&mut self.reveal)
-			&& let Some(item) = open_stem.and_then(|stem| items.iter().find(|i| i.stem == stem))
-		{
-			self.search.clear();
-			self.status = StatusFilter::All;
-			self.filters = Filters::default();
-			self.view = View::List;
-			tree::open_path(&ctx, SCOPE, &item.folder);
-			self.scroll_to_open.set(true);
+		if std::mem::take(&mut self.reveal) {
+			self.reveal_opened(&ctx, ws, opened);
 		}
 
-		self.header(ui, ws, open_stem);
+		self.header(ui, ws, open_stem.is_some() || open_model.is_some());
 		if items.is_empty() && ws.models().is_empty() {
 			ui.add_space(8.0);
 			ui.label(
@@ -336,5 +351,45 @@ mod tests {
 		// a folder's own "collapse all inside" leaves the models alone
 		apply_folder_command(&ctx, &FolderCommand::Subtree("Props".into(), false), &tree);
 		assert_eq!(is_open(&ctx, list::models_folder_id()), Some(true));
+	}
+
+	#[test]
+	fn reveal_shows_an_open_animated_model() {
+		let dir = crate::test_support::TempDir::new("reveal");
+		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
+		let model: crate::workspace::ModelItem = serde_json::from_value(serde_json::json!({
+			"name": "Rig", "path": "Workspace.Rig", "folder": [], "file": "Rigs/Rig.rig.json",
+			"meshes": {}, "parts": 1, "clips": 0, "playable_clips": 0,
+		}))
+		.unwrap();
+		ws.set_contents(Vec::new(), vec![model]);
+		let ctx = egui::Context::default();
+		let mut browser = Browser {
+			search: "nothing like it".into(),
+			view: View::Grid,
+			..Default::default()
+		};
+		tree::set_open(&ctx, list::models_folder_id(), false);
+		// it once did nothing unless a mesh was open (bug B43)
+		let opened = Opened {
+			stem: None,
+			model: Some(0),
+		};
+		browser.reveal_opened(&ctx, &ws, opened);
+		assert!(browser.search.is_empty());
+		assert!(browser.view == View::List);
+		assert_eq!(is_open(&ctx, list::models_folder_id()), Some(true));
+		assert!(browser.scroll_to_open.get());
+
+		// nothing open, or a model that has gone: nothing changes
+		let mut browser = Browser {
+			search: "kept".into(),
+			..Default::default()
+		};
+		for model in [None, Some(1)] {
+			browser.reveal_opened(&ctx, &ws, Opened { stem: None, model });
+		}
+		assert_eq!(browser.search, "kept");
+		assert!(!browser.scroll_to_open.get());
 	}
 }

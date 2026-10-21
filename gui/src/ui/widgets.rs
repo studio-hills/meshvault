@@ -184,42 +184,24 @@ pub fn input(text: &mut String) -> egui::TextEdit<'_> {
 		.align(Align2::LEFT_CENTER)
 }
 
-/// A row of mutually exclusive icon options, like a radio group, in a
-/// framed track as tall as the other controls in its row (see
-/// [`text_segmented`]).
+/// A row of mutually exclusive icon options, like a radio group: plain
+/// icon buttons with the chosen one highlighted. No track of its own, so in
+/// a toolbar it sits level with the buttons around it rather than as a
+/// panel inside the panel.
 pub fn segmented<T: PartialEq + Copy>(
 	ui: &mut Ui,
 	value: &mut T,
 	options: &[(T, &str, &str)],
 ) -> bool {
-	let p = palette(ui.ctx());
 	let mut changed = false;
-	// the track (border + padding) is as tall as a control beside it
-	let pad = 2.0;
-	let height = ui.spacing().interact_size.y - 2.0 * (pad + 1.0);
-	// the track is a control of its row, rounded like the others; the
-	// options inside it nest in it
-	let track = control_radius(ui).nw;
-	Frame::NONE
-		.fill(p.raised)
-		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(track))
-		.inner_margin(Margin::same(pad as i8))
-		.show(ui, |ui| {
-			ui.spacing_mut().item_spacing.x = 2.0;
-			ui.spacing_mut().interact_size.y = height;
-			nest(ui, track, pad + 1.0);
-			ui.horizontal(|ui| {
-				for &(option, icon, tooltip) in options {
-					if icon_toggle(ui, icon, tooltip, *value == option).clicked()
-						&& *value != option
-					{
-						*value = option;
-						changed = true;
-					}
-				}
-			});
-		});
+	ui.horizontal(|ui| {
+		for &(option, icon, tooltip) in options {
+			if icon_toggle(ui, icon, tooltip, *value == option).clicked() && *value != option {
+				*value = option;
+				changed = true;
+			}
+		}
+	});
 	changed
 }
 

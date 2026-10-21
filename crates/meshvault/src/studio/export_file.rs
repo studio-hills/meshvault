@@ -336,13 +336,11 @@ mod tests {
 	}
 
 	/// Checks a real export without committing it:
-	/// `RBX_EXPORT=path/to/OUTPUT.json cargo test -p meshvault -- --ignored`
+	/// `MESHVAULT_EXPORT=path/to/export.json cargo test -p meshvault -- --ignored parses_real_export`
 	#[test]
 	#[ignore]
 	fn parses_real_export() {
-		let Ok(path) = std::env::var("RBX_EXPORT") else {
-			return;
-		};
+		let path = crate::test_support::real_export();
 		let export = parse(&std::fs::read_to_string(path).unwrap()).unwrap();
 		assert!(export.skipped.is_empty(), "skipped: {:?}", export.skipped);
 		let tree = FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));

@@ -23,18 +23,15 @@ run from their crate's folder):
 VARIABLE=/absolute/path cargo test -p meshvault -- --ignored <test name> --nocapture
 ```
 
-The `anim` and `scene` tests read an export from `MESHVAULT_EXPORT`; the
-older names `RBX_V1_EXPORT` and `RBX_EXPORT` still work in its place for
-one release. They fail when a variable they need is not set.
-`studio::export_file::tests::parses_real_export` still reads only
-`RBX_EXPORT`, and returns early and reports `ok` without it, so check its
-output says what it tested.
+The tests that read an export take it from `MESHVAULT_EXPORT`; the older
+names `RBX_V1_EXPORT` and `RBX_EXPORT` still work in its place for one
+release. Every test fails when a variable it needs is not set.
 
 | Test | Needs | Where the input comes from |
 | --- | --- | --- |
 | `anim::real_export_tests::rigs_rest_pose_and_binding` | `MESHVAULT_EXPORT` (or `RBX_V1_EXPORT`/`RBX_EXPORT`): an export with models (schema 1 or 2) | an export from Studio, saved by Meshvault or the stand-in link |
 | `scene::model_view::tests::plays_real_export` | `MESHVAULT_EXPORT`, as above | as above |
-| `studio::export_file::tests::parses_real_export` | `RBX_EXPORT`: an export without warnings or skipped entries | as above |
+| `studio::export_file::tests::parses_real_export` | `MESHVAULT_EXPORT`, as above: an export without warnings or skipped entries | as above |
 | `export::gltf::tests::exports_workspace_models` | `MESHVAULT_WS`: a workspace; optional `MESHVAULT_GLB_OUT` (default: the temp folder) | any workspace, e.g. from `make_test_workspace.py` |
 | `export::obj::tests::exports_workspace_models` | `MESHVAULT_WS`, as above | as above |
 | `anim::real_export_tests::matches_studio_samples` | `MESHVAULT_EXPORT` and `MESHVAULT_STUDIO_SAMPLES`; optional `MESHVAULT_DETAIL` (a joint, bone or part name, printed at every sample) | a developer diagnostic: export the test place's models through the stand-in link, then run `sample_animator.luau` against the same models. It prints differences rather than failing. |

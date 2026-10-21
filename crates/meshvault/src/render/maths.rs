@@ -74,12 +74,23 @@ pub(super) fn normal_matrix(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 	out
 }
 
-pub(super) fn apply(m: &[[f32; 4]; 4], p: V3) -> V3 {
+/// The point `p` placed by the row-major transform `m`.
+pub(crate) fn apply(m: &[[f32; 4]; 4], p: V3) -> V3 {
 	[
 		m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
 		m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
 		m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
 	]
+}
+
+/// The direction `d` turned by the upper 3x3 of the row-major transform
+/// `m` (no translation), then scaled to unit length. A length below 1e-12
+/// divides by 1e-12 instead, so a zero vector stays zero. Unlike
+/// [`normal_matrix`], this is the plain 3x3 the OBJ writer uses.
+pub(crate) fn apply_dir(m: &[[f32; 4]; 4], d: V3) -> V3 {
+	let d = [0, 1, 2].map(|r| m[r][0] * d[0] + m[r][1] * d[1] + m[r][2] * d[2]);
+	let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
+	d.map(|c| c / len)
 }
 
 /// Whether two numbers agree to 1e-5, for the render tests.
@@ -142,6 +153,27 @@ mod tests {
 		let mut expected = [[0.0; 4]; 4];
 		expected[3][3] = 1.0;
 		assert_matrix(normal_matrix(m), expected);
+	}
+
+	#[test]
+	fn apply_dir_ignores_the_translation_and_normalises() {
+		let m = [
+			[2.0, 0.0, 0.0, 5.0],
+			[0.0, 4.0, 0.0, 6.0],
+			[0.0, 0.0, 0.5, 7.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+		assert_eq!(apply(&m, [1.0, 1.0, 1.0]), [7.0, 10.0, 7.5]);
+		assert_eq!(apply_dir(&m, [3.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+		let d = apply_dir(&m, [1.0, 1.0, 0.0]);
+		let len = 20f32.sqrt();
+		assert!(
+			close(d[0], 2.0 / len) && close(d[1], 4.0 / len) && d[2] == 0.0,
+			"{d:?}"
+		);
+		// a zero (or vanishing) direction is not blown up
+		assert_eq!(apply_dir(&m, [0.0; 3]), [0.0; 3]);
+		assert_eq!(apply_dir(&IDENTITY, [1e-14, 0.0, 0.0]), [0.01, 0.0, 0.0]);
 	}
 
 	/// The viewport's normalise scales any vector longer than 0, however

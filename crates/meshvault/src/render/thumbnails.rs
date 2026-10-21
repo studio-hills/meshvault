@@ -12,7 +12,7 @@ use eframe::egui;
 
 use crate::render::camera::Camera;
 use crate::render::gpu::GpuRenderer;
-use crate::render::maths::IDENTITY;
+use crate::render::maths::{IDENTITY, apply};
 use crate::render::viewport::{self, ScenePart, Shading, ViewSettings};
 use crate::scene::geometry::{self, Geometry, GroupKind};
 use crate::scene::maps::Slot;
@@ -350,16 +350,13 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 fn drawn_bounds(parts: &[ScenePart]) -> Option<([f32; 3], [f32; 3])> {
 	let mut bounds: Option<([f32; 3], [f32; 3])> = None;
 	for part in parts.iter().filter(|p| p.decal.is_none()) {
-		let m = &part.transform;
 		for &g in part.groups {
 			let Some(range) = part.geometry.groups.get(g) else {
 				continue;
 			};
 			for t in &part.geometry.triangles[range.clone()] {
 				for &i in t {
-					let v = part.geometry.positions[i as usize];
-					let p = [0, 1, 2]
-						.map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2] + m[r][3]);
+					let p = apply(&part.transform, part.geometry.positions[i as usize]);
 					let (lo, hi) = bounds.get_or_insert((p, p));
 					for k in 0..3 {
 						lo[k] = lo[k].min(p[k]);

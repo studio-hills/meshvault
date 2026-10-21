@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::MeshJob;
-use crate::render::maths::IDENTITY;
+use crate::render::maths::{IDENTITY, apply, apply_dir};
 use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
@@ -189,17 +189,8 @@ impl Obj {
 		transform: &[[f32; 4]; 4],
 		material: &str,
 	) {
-		let m = transform;
-		let point = |p: [f32; 3]| {
-			[0, 1, 2].map(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3])
-		};
-		let direction = |n: [f32; 3]| {
-			let d = [0, 1, 2].map(|r| m[r][0] * n[0] + m[r][1] * n[1] + m[r][2] * n[2]);
-			let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
-			d.map(|c| c / len)
-		};
 		for &p in &geometry.positions {
-			let p = point(p);
+			let p = apply(transform, p);
 			let _ = writeln!(self.obj, "v {} {} {}", p[0], p[1], p[2]);
 		}
 		// OBJ's texture origin is the bottom left; Roblox's the top left
@@ -210,7 +201,7 @@ impl Obj {
 		}
 		if let Some(normals) = &geometry.normals {
 			for &n in normals {
-				let n = direction(n);
+				let n = apply_dir(transform, n);
 				let _ = writeln!(self.obj, "vn {} {} {}", n[0], n[1], n[2]);
 			}
 		}

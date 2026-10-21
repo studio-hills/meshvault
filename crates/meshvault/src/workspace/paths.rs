@@ -24,7 +24,8 @@ pub(super) fn rig_stem(file: &str) -> &str {
 	file.strip_suffix(".rig.json").unwrap_or(file)
 }
 
-/// Makes one path component safe on Windows, macOS and Linux.
+/// Makes one path component safe on Windows, macOS and Linux. The result
+/// is never empty: a name with nothing left becomes `_`.
 pub fn sanitize(name: &str) -> String {
 	let mut s: String = name
 		.chars()

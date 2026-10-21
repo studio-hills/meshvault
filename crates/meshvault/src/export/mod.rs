@@ -106,12 +106,8 @@ struct Names(std::collections::HashSet<String>);
 
 impl Names {
 	fn unique(&mut self, dir: &Path, name: &str, format: Format) -> String {
+		// never empty: a name with nothing usable becomes "_"
 		let base = sanitize(name);
-		let base = if base.is_empty() {
-			"model".to_string()
-		} else {
-			base
-		};
 		let mut name = base.clone();
 		let mut n = 2;
 		let ext = format.extension();
@@ -276,7 +272,7 @@ mod tests {
 		// clashes ignore case
 		assert_eq!(names.unique(&dir, "A", Format::Obj), "A (3)");
 		assert_eq!(names.unique(&dir, "a/b", Format::Obj), "a_b");
-		// sanitize never returns an empty name, so this is `_`, not "model"
+		// sanitize never returns an empty name, so this is `_`
 		assert_eq!(names.unique(&dir, "", Format::Obj), "_");
 		assert_eq!(names.unique(&dir, "  ", Format::Obj), "_ (2)");
 	}

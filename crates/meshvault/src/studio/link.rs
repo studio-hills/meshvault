@@ -18,12 +18,16 @@
 //! page that reaches the port under its own name (DNS rebinding) is
 //! refused. There is no authentication: any program on this machine can
 //! still send an export.
+//!
+//! Requests are served one at a time. Each has a capped head (request line
+//! and headers) and body, and deadlines for arriving and for its reply, so
+//! a slow or oversized request is dropped rather than holding the link.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 
@@ -35,9 +39,18 @@ const MAX_EXPORT: usize = 2 * 1024 * 1024 * 1024;
 /// Most pieces one export may say it has, so a bad count cannot make a
 /// huge list of pieces.
 const MAX_PIECES: usize = 100_000;
-/// How long one read of a request may wait before the connection is
-/// dropped, so a sender that stalls does not hold the link.
+/// How long a whole request may take to arrive before the connection is
+/// dropped, so a sender that stalls or trickles does not hold the link.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the reply may take to send, so a sender that stops reading
+/// does not hold the link.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most bytes in a request's head (its request line and headers together).
+/// Studio's are well under 1 KB.
+const MAX_HEAD: usize = 32 * 1024;
+/// Most characters kept of an export's name (`X-Meshvault-Name`), which
+/// names the saved file and is sent back in the reply.
+const MAX_NAME: usize = 100;
 /// The folder (in the workspaces folder) that received exports go to.
 const EXPORTS_FOLDER: &str = "Exports";
 /// What the Studio code says when it cannot fetch the exporter, in two
@@ -245,29 +258,107 @@ fn serve(listener: TcpListener, tx: Sender<Event>, ctx: egui::Context) {
 	let mut pending: HashMap<String, Pending> = HashMap::new();
 	// the port asked for, or the one the system chose (tests ask for any)
 	let port = listener.local_addr().map_or(PORT, |a| a.port());
+	// one connection at a time, each with deadlines, so none can hold the
+	// link for long
 	for stream in listener.incoming().flatten() {
-		let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
-		let reply = match read_request(&stream, port) {
+		let reply = match read_request(Deadline::new(&stream, READ_TIMEOUT), port) {
 			Ok(request) => route(request, &mut pending, &tx),
 			Err(reply) => reply,
 		};
 		ctx.request_repaint();
-		respond(stream, reply);
+		respond(&stream, reply);
 	}
 }
 
-fn respond(mut stream: TcpStream, reply: Reply) {
+fn respond(stream: &TcpStream, reply: Reply) {
+	let mut out = Deadline::new(stream, WRITE_TIMEOUT);
 	let reason = if reply.code == 200 { "OK" } else { "Error" };
 	let _ = write!(
-		stream,
+		out,
 		"HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
 		reply.code,
 		reply.content_type,
 		reply.body.len()
 	);
-	let _ = stream.write_all(&reply.body);
-	let _ = stream.flush();
+	let _ = out.write_all(&reply.body);
+	let _ = out.flush();
 	let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+/// A connection with one deadline for everything read from it or written
+/// to it, rather than a timeout for each read or write: a sender that
+/// trickles bytes, or a reader that takes them slowly, cannot hold the
+/// link past it.
+struct Deadline<'a> {
+	stream: &'a TcpStream,
+	until: Instant,
+}
+
+impl<'a> Deadline<'a> {
+	fn new(stream: &'a TcpStream, within: Duration) -> Self {
+		Self {
+			stream,
+			until: Instant::now() + within,
+		}
+	}
+
+	/// The time left, or an error once there is none.
+	fn left(&self) -> std::io::Result<Duration> {
+		let left = self.until.saturating_duration_since(Instant::now());
+		if left.is_zero() {
+			return Err(ErrorKind::TimedOut.into());
+		}
+		Ok(left)
+	}
+}
+
+impl Read for Deadline<'_> {
+	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+		self.stream.set_read_timeout(Some(self.left()?))?;
+		let mut stream = self.stream;
+		stream.read(buf)
+	}
+}
+
+impl Write for Deadline<'_> {
+	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+		self.stream.set_write_timeout(Some(self.left()?))?;
+		let mut stream = self.stream;
+		stream.write(buf)
+	}
+
+	fn flush(&mut self) -> std::io::Result<()> {
+		let mut stream = self.stream;
+		stream.flush()
+	}
+}
+
+/// The refusal for a read that failed: too slow, or else `otherwise`.
+fn read_failed(e: &std::io::Error, otherwise: &'static str) -> Reply {
+	match e.kind() {
+		// Windows says TimedOut, others WouldBlock
+		ErrorKind::TimedOut | ErrorKind::WouldBlock => Reply::text(408, "request took too long"),
+		_ => Reply::text(400, otherwise),
+	}
+}
+
+/// Reads one line of a request's head (its request line and headers) into
+/// `line`, refusing a head longer than [`MAX_HEAD`] or one the stream ends
+/// in.
+fn head_line<R: Read>(
+	head: &mut std::io::Take<&mut BufReader<R>>,
+	line: &mut String,
+	bad: &'static str,
+) -> Result<(), Reply> {
+	line.clear();
+	head.read_line(line).map_err(|e| read_failed(&e, bad))?;
+	if line.ends_with('\n') {
+		Ok(())
+	} else if head.limit() == 0 {
+		Err(Reply::text(431, "request head too large"))
+	} else {
+		Err(Reply::text(400, "incomplete request"))
+	}
 }
 
 /// Reads a whole request, body included: closing a socket with unread data
@@ -276,10 +367,9 @@ fn respond(mut stream: TcpStream, reply: Reply) {
 /// read.
 fn read_request(stream: impl Read, port: u16) -> Result<Request, Reply> {
 	let mut reader = BufReader::new(stream);
+	let mut head = reader.by_ref().take(MAX_HEAD as u64);
 	let mut line = String::new();
-	reader
-		.read_line(&mut line)
-		.map_err(|_| Reply::text(400, "bad request"))?;
+	head_line(&mut head, &mut line, "bad request")?;
 	let mut words = line.split_whitespace();
 	let method = words.next().unwrap_or("").to_string();
 	let target = words.next().unwrap_or("");
@@ -294,10 +384,7 @@ fn read_request(stream: impl Read, port: u16) -> Result<Request, Reply> {
 	// every Host header, so a second one cannot hide behind the last
 	let mut hosts = Vec::new();
 	loop {
-		line.clear();
-		reader
-			.read_line(&mut line)
-			.map_err(|_| Reply::text(400, "bad headers"))?;
+		head_line(&mut head, &mut line, "bad headers")?;
 		let header = line.trim_end();
 		if header.is_empty() {
 			break;
@@ -323,7 +410,7 @@ fn read_request(stream: impl Read, port: u16) -> Result<Request, Reply> {
 	let mut body = vec![0; length];
 	reader
 		.read_exact(&mut body)
-		.map_err(|_| Reply::text(400, "body shorter than Content-Length"))?;
+		.map_err(|e| read_failed(&e, "body shorter than Content-Length"))?;
 	Ok(Request {
 		method,
 		path,
@@ -422,7 +509,7 @@ fn receive_piece(
 		return Err(Reply::text(400, "piece count changed"));
 	}
 	if let Some(name) = headers.get("x-meshvault-name") {
-		entry.name = name.clone();
+		entry.name = name.chars().take(MAX_NAME).collect();
 	}
 	entry.size += request.body.len();
 	if entry.size > MAX_EXPORT {
@@ -741,10 +828,6 @@ mod tests {
 		);
 		assert!(r.query.is_empty());
 		assert!(r.body.is_empty());
-		// a stream that ends inside the headers is an empty request (pinned until
-		// B10 is fixed; nothing at all is refused now, as it has no Host)
-		let r = parsed(b"GET / HTTP/1.1\r\nHost: localhost:34875\r\n");
-		assert!(r.body.is_empty());
 		// a missing target is an empty path
 		assert_eq!(parsed(b"GET\r\nHost: localhost:34875\r\n\r\n").path, "");
 	}
@@ -752,7 +835,21 @@ mod tests {
 	#[test]
 	fn refuses_bad_requests() {
 		for (bytes, code, text) in [
-			(&b"GET \xff HTTP/1.1\r\n\r\n"[..], 400, "bad request"),
+			// a stream that ends before the blank line after the headers is not
+			// a request, however much of one it has
+			(&b""[..], 400, "incomplete request"),
+			(b"GET / HTTP/1.1", 400, "incomplete request"),
+			(
+				b"GET / HTTP/1.1\r\nHost: localhost:34875\r\n",
+				400,
+				"incomplete request",
+			),
+			(
+				b"GET / HTTP/1.1\r\nHost: localhost:34875\r\n\r",
+				400,
+				"incomplete request",
+			),
+			(b"GET \xff HTTP/1.1\r\n\r\n", 400, "bad request"),
 			(b"GET / HTTP/1.1\r\nX-A: \xff\r\n\r\n", 400, "bad headers"),
 			(
 				b"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length: x\r\n\r\n",
@@ -829,17 +926,87 @@ mod tests {
 		assert!(ip.ends_with("Meshvault Studio link"), "{ip}");
 	}
 
-	// Pinned until bug B10 is fixed: request and header lines have no length
-	// limit.
+	// The request line and headers together are capped, so a line with no
+	// end, or endless headers, cannot grow without bound.
 	#[test]
-	fn reads_any_line_length() {
+	fn refuses_heads_past_the_limit() {
+		let too_large = (431, "request head too large".to_string());
+		// a head of exactly the limit, blank line included, is read
+		let start = "GET / HTTP/1.1\r\nHost: localhost:34875\r\nX-Pad: ";
+		let pad = "a".repeat(MAX_HEAD - start.len() - "\r\n\r\n".len());
+		let full = format!("{start}{pad}\r\n\r\n");
+		assert_eq!(full.len(), MAX_HEAD);
+		assert_eq!(parsed(full.as_bytes()).headers["x-pad"], pad);
+		// one byte more is not
+		let over = format!("{start}{pad}a\r\n\r\n");
+		assert_eq!(refusal(read(over.as_bytes())), too_large);
+		// nor is a long request line, or many short headers
 		let long = "a".repeat(1 << 20);
-		let r = parsed(
-			format!("GET /{long} HTTP/1.1\r\nHost: localhost:34875\r\nX-Long: {long}\r\n\r\n")
-				.as_bytes(),
+		let line = format!("GET /{long} HTTP/1.1\r\nHost: localhost:34875\r\n\r\n");
+		assert_eq!(refusal(read(line.as_bytes())), too_large);
+		let many = format!(
+			"GET / HTTP/1.1\r\nHost: localhost:34875\r\n{}\r\n",
+			"X-A: b\r\n".repeat(MAX_HEAD)
 		);
-		assert_eq!(r.path.len(), long.len() + 1);
-		assert_eq!(r.headers["x-long"].len(), long.len());
+		assert_eq!(refusal(read(many.as_bytes())), too_large);
+		// the body is not part of the head
+		let body = "b".repeat(MAX_HEAD * 2);
+		let post = format!(
+			"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length: {}\r\n\r\n{body}",
+			body.len()
+		);
+		assert_eq!(parsed(post.as_bytes()).body.len(), body.len());
+	}
+
+	/// Both ends of a connection over loopback.
+	fn connected() -> (TcpStream, TcpStream) {
+		let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+		let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+		let (server, _) = listener.accept().unwrap();
+		(client, server)
+	}
+
+	// The deadline is for the whole request, so a sender that keeps sending a
+	// little at a time, each piece well within it, is still cut off.
+	#[test]
+	fn a_request_that_trickles_in_is_cut_off_at_the_deadline() {
+		let (mut client, server) = connected();
+		let (stop, stopped) = mpsc::channel::<()>();
+		let sender = std::thread::spawn(move || {
+			write!(client, "GET / HTTP/1.1\r\nHost: localhost:34875\r\n").unwrap();
+			// a header every 10 ms, never the blank line, for up to 5 s
+			for _ in 0..500 {
+				if stopped.try_recv().is_ok() || client.write_all(b"X-A: b\r\n").is_err() {
+					return;
+				}
+				std::thread::sleep(Duration::from_millis(10));
+			}
+		});
+		let started = Instant::now();
+		let result = read_request(Deadline::new(&server, Duration::from_millis(200)), PORT);
+		let took = started.elapsed();
+		let _ = stop.send(());
+		sender.join().unwrap();
+		// had there been no deadline, the request would have ended with the
+		// sender, as an incomplete one
+		assert_eq!(refusal(result), (408, "request took too long".to_string()));
+		assert!(took < Duration::from_secs(4), "{took:?}");
+	}
+
+	#[test]
+	fn nothing_is_read_or_written_after_the_deadline() {
+		let (mut client, server) = connected();
+		client.write_all(b"GET").unwrap();
+		let mut late = Deadline::new(&server, Duration::ZERO);
+		assert_eq!(
+			late.read(&mut [0; 8]).unwrap_err().kind(),
+			ErrorKind::TimedOut
+		);
+		assert_eq!(late.write(b"x").unwrap_err().kind(), ErrorKind::TimedOut);
+		assert_eq!(
+			refusal(read_request(late, PORT)),
+			(408, "request took too long".to_string())
+		);
 	}
 
 	fn piece(headers: &[(&str, &str)], body: &[u8]) -> Request {
@@ -998,6 +1165,30 @@ mod tests {
 					.as_path()
 			)
 		);
+	}
+
+	// The name becomes the file name and comes back in the reply, so only its
+	// start is kept.
+	#[test]
+	fn a_long_name_is_cut_short() {
+		let mut pending = HashMap::new();
+		let long = "é".repeat(MAX_NAME * 10);
+		let Ok(Some(done)) = receive_piece(
+			piece(
+				&[
+					("x-meshvault-export", "a"),
+					("x-meshvault-chunk", "1/1"),
+					("x-meshvault-name", &long),
+				],
+				b"{}",
+			),
+			&mut pending,
+		) else {
+			panic!("one piece is the whole export");
+		};
+		assert_eq!(done.name, "é".repeat(MAX_NAME));
+		let file = done.path.file_name().unwrap().to_str().unwrap();
+		assert!(file.starts_with(&format!("{}-", done.name)), "{file}");
 	}
 
 	#[test]

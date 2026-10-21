@@ -410,9 +410,10 @@ fn translation_scales(
 	(joint_scale, bone_scale)
 }
 
-/// A warning when clips move parts no exported joint connects (the
-/// exporters do read AnimationConstraints, so these are other or broken
-/// joints).
+/// A warning when clips move parts no exported joint connects. The
+/// exporters read Motor6Ds, AnimationConstraints, welds (JointInstances,
+/// enabled WeldConstraints and RigidConstraints) inside the model, so
+/// these are other constraints or broken joints.
 fn stranded_warning(rig: &Rig, clips: &[ClipSlot]) -> Option<String> {
 	let joined: HashSet<usize> = rig.joints.iter().flat_map(|m| [m.part0, m.part1]).collect();
 	let loose: HashSet<&str> = rig
@@ -429,7 +430,7 @@ fn stranded_warning(rig: &Rig, clips: &[ClipSlot]) -> Option<String> {
 		.collect::<BTreeSet<_>>();
 	(!stranded.is_empty()).then(|| {
 		format!(
-			"Its clips animate {} parts that no exported joint connects, so they stay still. Rigs built with AnimationConstraints (newer avatars) or other joint types are not in the export.",
+			"Its clips animate {} parts that no exported joint connects, so they stay still. The export has the model's Motor6Ds, AnimationConstraints and welds; other constraints, disabled welds and joints missing a part are left out.",
 			stranded.len()
 		)
 	})
@@ -1074,6 +1075,42 @@ mod tests {
 		assert_eq!(view.export_nodes()[1].name, "Jaw");
 		assert_eq!(view.export_frame(None, 0.0)[1].pos, [0.0; 3]);
 		assert_eq!(view.export_frame(Some(0), 0.0)[1].pos, [0.0, -1.0, 0.0]);
+	}
+
+	/// A clip track for a part no joint reaches is called out, without
+	/// claiming AnimationConstraints are not exported (they are).
+	#[test]
+	fn stranded_tracks_name_what_the_export_leaves_out() {
+		use crate::anim::rig::Binding;
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![
+				placed_part(Some("Part"), Some("Block"), "Torso", [0.0; 3]),
+				placed_part(Some("Part"), Some("Block"), "Arm", [1.0, 0.0, 0.0]),
+			],
+			..Default::default()
+		};
+		let rig = Rig::build(&model);
+		let slot = |unmatched: &[&str]| ClipSlot {
+			name: "Wave".into(),
+			status: ClipStatus::KeyframeSequence,
+			priority: String::new(),
+			animation_id: String::new(),
+			clip: Err(String::new()),
+			binding: Binding {
+				targets: Vec::new(),
+				unmatched: unmatched.iter().map(|n| n.to_string()).collect(),
+			},
+			mesh_bone_tracks: 0,
+		};
+		assert_eq!(stranded_warning(&rig, &[slot(&["Hat"])]), None);
+		assert_eq!(
+			stranded_warning(&rig, &[slot(&["Arm", "Hat"]), slot(&["Arm"])]).as_deref(),
+			Some(
+				"Its clips animate 1 parts that no exported joint connects, so they stay still. The export has the model's Motor6Ds, AnimationConstraints and welds; other constraints, disabled welds and joints missing a part are left out."
+			)
+		);
 	}
 
 	// ---------------------------------------------- characterisation (SCN-11a)

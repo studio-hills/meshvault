@@ -28,6 +28,10 @@ pub struct Config {
 	pub theme: ThemeMode,
 	/// How the 3D view is lit.
 	pub lighting: crate::render::lighting::Lighting,
+	/// A settings file that could not be read nor moved aside when it was
+	/// loaded. No save replaces it until it has been moved aside.
+	#[serde(skip)]
+	unreadable: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -39,6 +43,7 @@ impl Default for Config {
 			concurrency: DEFAULT_CONCURRENCY,
 			theme: ThemeMode::Dark,
 			lighting: Default::default(),
+			unreadable: None,
 		}
 	}
 }
@@ -64,8 +69,8 @@ fn read_config(path: &Path) -> Result<Option<Config>, String> {
 }
 
 /// Moves a settings file that could not be read out of the way, so the
-/// next save does not overwrite it, and says what happened.
-fn set_aside(path: &Path, why: &str) -> String {
+/// next save does not overwrite it. Returns where it was kept.
+fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
 	let name = path.file_name().unwrap_or_default().to_string_lossy();
 	let kept = (1..)
 		.map(|n| match n {
@@ -74,17 +79,7 @@ fn set_aside(path: &Path, why: &str) -> String {
 		})
 		.find(|p| !p.exists())
 		.expect("an unused name");
-	match std::fs::rename(path, &kept) {
-		Ok(()) => format!(
-			"Could not read the settings in {} ({why}). The file was kept as {}.",
-			path.display(),
-			kept.display()
-		),
-		Err(e) => format!(
-			"Could not read the settings in {} ({why}), nor move the file aside: {e}",
-			path.display()
-		),
-	}
+	std::fs::rename(path, &kept).map(|()| kept)
 }
 
 impl Config {
@@ -98,17 +93,32 @@ impl Config {
 	/// A `primary` that cannot be read is moved aside, not overwritten.
 	fn load_from(primary: Option<PathBuf>, legacy: Option<PathBuf>) -> (Self, Vec<String>) {
 		let mut problems = Vec::new();
+		let mut unreadable = None;
 		if let Some(path) = &primary {
 			match read_config(path) {
 				Ok(Some(config)) => return (config, problems),
 				Ok(None) => {}
-				Err(why) => problems.push(set_aside(path, &why)),
+				Err(why) => match set_aside(path) {
+					Ok(kept) => problems.push(format!(
+						"Could not read the settings in {} ({why}). The file was kept as {}.",
+						path.display(),
+						kept.display()
+					)),
+					Err(e) => {
+						problems.push(format!(
+							"Could not read the settings in {} ({why}), nor move the file aside: {e}",
+							path.display()
+						));
+						unreadable = Some(path.clone());
+					}
+				},
 			}
 		}
 		// the old file is never written, so one that does not read is left be
 		let old = legacy.and_then(|path| read_config(&path).ok().flatten());
 		let config = match old {
-			Some(config) => {
+			Some(mut config) => {
+				config.unreadable = unreadable;
 				if let Some(path) = &primary
 					&& let Err(e) = config.save_to(path)
 				{
@@ -116,12 +126,15 @@ impl Config {
 				}
 				config
 			}
-			None => Self::default(),
+			None => Self {
+				unreadable,
+				..Self::default()
+			},
 		};
 		(config, problems)
 	}
 
-	pub fn save(&self) -> Result<(), String> {
+	pub fn save(&mut self) -> Result<(), String> {
 		let path = config_path().ok_or("Could not find the user's config folder")?;
 		self.save_to(&path)
 	}
@@ -129,8 +142,23 @@ impl Config {
 	/// Writes the settings to `path`, making its folder first. The write is
 	/// tried even when the folder cannot be made, and its error is the one
 	/// reported. The file is written beside `path` and then renamed over
-	/// it, so a failed write never leaves half a file.
-	fn save_to(&self, path: &Path) -> Result<(), String> {
+	/// it, so a failed write never leaves half a file. A settings file that
+	/// could not be read is first moved aside; until it can be, nothing is
+	/// saved.
+	fn save_to(&mut self, path: &Path) -> Result<(), String> {
+		if let Some(bad) = &self.unreadable {
+			match set_aside(bad) {
+				Ok(_) => {}
+				Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+				Err(e) => {
+					return Err(format!(
+						"Could not save the settings: {} could not be read nor moved aside, so it was kept: {e}",
+						bad.display()
+					));
+				}
+			}
+			self.unreadable = None;
+		}
 		if let Some(dir) = path.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
@@ -480,7 +508,7 @@ mod tests {
 		let dir = TempDir::new("config");
 		let path = dir.join("config.json");
 		std::fs::write(&path, "old").unwrap();
-		let config = Config {
+		let mut config = Config {
 			place_id: Some(1),
 			..Default::default()
 		};
@@ -513,5 +541,55 @@ mod tests {
 				.any(|p| p.starts_with("Could not save the settings")),
 			"{problems:?}"
 		);
+	}
+
+	/// A settings file that cannot be read nor moved aside (here another
+	/// program has it open without allowing it to be moved) is not saved
+	/// over, by the carry-over or by any later save, until it has been
+	/// moved aside (once, a failed move aside left the next save free to
+	/// replace it: bug B08).
+	#[cfg(windows)]
+	#[test]
+	fn a_file_that_cannot_be_moved_aside_is_not_saved_over() {
+		use std::os::windows::fs::OpenOptionsExt;
+		const FILE_SHARE_READ: u32 = 1;
+		let dir = TempDir::new("config");
+		let primary = dir.join("config.json");
+		let legacy = dir.join("old.json");
+		std::fs::write(&primary, "not json").unwrap();
+		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
+		let held = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(FILE_SHARE_READ)
+			.open(&primary)
+			.unwrap();
+
+		let (mut config, problems) = Config::load_from(Some(primary.clone()), Some(legacy));
+		assert_eq!(config.place_id, Some(3));
+		assert!(
+			problems
+				.iter()
+				.any(|p| p.contains("nor move the file aside")),
+			"{problems:?}"
+		);
+		assert_eq!(std::fs::read_to_string(&primary).unwrap(), "not json");
+		config.theme = ThemeMode::Light;
+		let err = config.save_to(&primary).unwrap_err();
+		assert!(err.starts_with("Could not save the settings"), "{err}");
+
+		// once nothing holds it, the next save moves it aside first
+		drop(held);
+		assert_eq!(std::fs::read_to_string(&primary).unwrap(), "not json");
+		config.save_to(&primary).unwrap();
+		assert_eq!(
+			std::fs::read_to_string(dir.join("config.json.bad")).unwrap(),
+			"not json"
+		);
+		assert_eq!(load(Some(primary.clone()), None).theme, ThemeMode::Light);
+		// and from then on saves replace the file as usual
+		config.place_id = Some(4);
+		config.save_to(&primary).unwrap();
+		assert_eq!(load(Some(primary), None).place_id, Some(4));
+		assert!(!dir.join("config.json.bad2").exists());
 	}
 }

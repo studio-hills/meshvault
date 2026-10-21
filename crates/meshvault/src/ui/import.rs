@@ -340,15 +340,8 @@ impl ImportDialog {
 				let both =
 					!self.models.is_empty() && self.rows.iter().any(|r| matches!(r, Row::Mesh(_)));
 				ui.spacing_mut().item_spacing.x = 0.0;
-				if widgets::icon_button(ui, icons::ARROWS_IN_LINE_VERTICAL, "Collapse all folders")
-					.clicked()
-				{
-					self.pending = Some(FolderCommand::All(false));
-				}
-				if widgets::icon_button(ui, icons::ARROWS_OUT_LINE_VERTICAL, "Expand all folders")
-					.clicked()
-				{
-					self.pending = Some(FolderCommand::All(true));
+				if let Some(command) = tree::expand_collapse_buttons(ui) {
+					self.pending = Some(command);
 				}
 				if both {
 					ui.add_space(8.0);
@@ -589,25 +582,8 @@ impl ImportDialog {
 					});
 					response.context_menu(|ui| {
 						widgets::menu_style(ui);
-						if ui
-							.button(format!(
-								"{}  Expand all inside",
-								icons::ARROWS_OUT_LINE_VERTICAL
-							))
-							.clicked()
-						{
-							self.pending = Some(FolderCommand::Subtree(path.clone(), true));
-							ui.close();
-						}
-						if ui
-							.button(format!(
-								"{}  Collapse all inside",
-								icons::ARROWS_IN_LINE_VERTICAL
-							))
-							.clicked()
-						{
-							self.pending = Some(FolderCommand::Subtree(path.clone(), false));
-							ui.close();
+						if let Some(command) = tree::subtree_menu_items(ui, &path) {
+							self.pending = Some(command);
 						}
 					});
 				})

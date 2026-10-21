@@ -1,11 +1,14 @@
 //! Open/closed state for folder trees, keyed by each folder's full path so
 //! folders can be expanded or collapsed from anywhere (e.g. "expand all"),
 //! not just from the widget that draws them. Also the folder hierarchy
-//! itself ([`FolderTree`]) and its display order ([`natural_cmp`]).
+//! itself ([`FolderTree`]), its display order ([`natural_cmp`]) and the
+//! expand/collapse controls the library and the import dialog share.
 
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Id};
+
+use crate::ui::{icons, widgets};
 
 /// Folder hierarchy over a list of entries, for tree views.
 #[derive(Default)]
@@ -152,6 +155,55 @@ impl FolderCommand {
 	}
 }
 
+/// The "Collapse all folders" and "Expand all folders" buttons, in that
+/// order. The caller owns the layout (direction, spacing, height).
+pub fn expand_collapse_buttons(ui: &mut egui::Ui) -> Option<FolderCommand> {
+	let mut command = None;
+	if widgets::icon_button(ui, icons::ARROWS_IN_LINE_VERTICAL, "Collapse all folders").clicked() {
+		command = Some(FolderCommand::All(false));
+	}
+	if widgets::icon_button(ui, icons::ARROWS_OUT_LINE_VERTICAL, "Expand all folders").clicked() {
+		command = Some(FolderCommand::All(true));
+	}
+	command
+}
+
+/// The "Expand all inside" and "Collapse all inside" items of a folder's
+/// context menu. Closes the menu when one is chosen.
+pub fn subtree_menu_items(ui: &mut egui::Ui, path: &str) -> Option<FolderCommand> {
+	let mut command = None;
+	if ui
+		.button(format!(
+			"{}  Expand all inside",
+			icons::ARROWS_OUT_LINE_VERTICAL
+		))
+		.clicked()
+	{
+		command = Some(FolderCommand::Subtree(path.to_owned(), true));
+		ui.close();
+	}
+	if ui
+		.button(format!(
+			"{}  Collapse all inside",
+			icons::ARROWS_IN_LINE_VERTICAL
+		))
+		.clicked()
+	{
+		command = Some(FolderCommand::Subtree(path.to_owned(), false));
+		ui.close();
+	}
+	command
+}
+
+/// Flips the folder `id` open or closed. A folder that has never been
+/// drawn has no state yet and is left alone.
+pub fn toggle(ui: &egui::Ui, id: Id) {
+	if let Some(mut state) = egui::collapsing_header::CollapsingState::load(ui.ctx(), id) {
+		state.toggle(ui);
+		state.store(ui.ctx());
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -238,5 +290,28 @@ mod tests {
 
 		// unknown paths are ignored
 		FolderCommand::Subtree("Nope/Missing".into(), true).apply(&ctx, "t", &tree);
+	}
+
+	#[test]
+	fn toggle_flips_stored_folders_and_ignores_unknown_ones() {
+		let ctx = egui::Context::default();
+		let (shut, open, unknown) = (
+			folder_id("t", "a"),
+			folder_id("t", "b"),
+			folder_id("t", "c"),
+		);
+		set_open(&ctx, shut, false);
+		set_open(&ctx, open, true);
+		let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			toggle(ui, shut);
+			toggle(ui, open);
+			toggle(ui, unknown);
+		});
+		// the font atlas upload is never applied here
+		output.textures_delta.clear();
+		let state = |id| egui::collapsing_header::CollapsingState::load(&ctx, id);
+		assert!(state(shut).is_some_and(|s| s.is_open()));
+		assert!(state(open).is_some_and(|s| !s.is_open()));
+		assert!(state(unknown).is_none(), "an unknown folder gets no state");
 	}
 }

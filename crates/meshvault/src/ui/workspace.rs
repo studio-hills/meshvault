@@ -759,11 +759,8 @@ impl Browser {
 				}
 			});
 		widgets::pointer(arrow);
-		if clicked
-			&& let Some(mut state) = egui::collapsing_header::CollapsingState::load(ui.ctx(), id)
-		{
-			state.toggle(ui);
-			state.store(ui.ctx());
+		if clicked {
+			tree::toggle(ui, id);
 		}
 	}
 
@@ -809,23 +806,8 @@ impl Browser {
 				ui.spacing_mut().item_spacing.x = 0.0;
 				ui.spacing_mut().interact_size.y = CONTROL_XXS;
 				if self.view == View::List {
-					if widgets::icon_button(
-						ui,
-						icons::ARROWS_IN_LINE_VERTICAL,
-						"Collapse all folders",
-					)
-					.clicked()
-					{
-						self.pending.replace(Some(FolderCommand::All(false)));
-					}
-					if widgets::icon_button(
-						ui,
-						icons::ARROWS_OUT_LINE_VERTICAL,
-						"Expand all folders",
-					)
-					.clicked()
-					{
-						self.pending.replace(Some(FolderCommand::All(true)));
+					if let Some(command) = tree::expand_collapse_buttons(ui) {
+						self.pending.replace(Some(command));
 					}
 					let reveal = ui
 						.add_enabled_ui(open_stem.is_some(), |ui| {
@@ -1099,27 +1081,8 @@ impl Browser {
 							}
 						}
 						ui.separator();
-						if ui
-							.button(format!(
-								"{}  Expand all inside",
-								icons::ARROWS_OUT_LINE_VERTICAL
-							))
-							.clicked()
-						{
-							self.pending
-								.replace(Some(FolderCommand::Subtree(path.clone(), true)));
-							ui.close();
-						}
-						if ui
-							.button(format!(
-								"{}  Collapse all inside",
-								icons::ARROWS_IN_LINE_VERTICAL
-							))
-							.clicked()
-						{
-							self.pending
-								.replace(Some(FolderCommand::Subtree(path.clone(), false)));
-							ui.close();
+						if let Some(command) = tree::subtree_menu_items(ui, &path) {
+							self.pending.replace(Some(command));
 						}
 						ui.separator();
 						if widgets::danger_item(
@@ -1135,12 +1098,8 @@ impl Browser {
 				})
 				.body(|ui| self.folder(ui, ws, child, &path, open_stem, actions));
 			widgets::pointer(arrow);
-			if clicked
-				&& let Some(mut state) =
-					egui::collapsing_header::CollapsingState::load(ui.ctx(), id)
-			{
-				state.toggle(ui);
-				state.store(ui.ctx());
+			if clicked {
+				tree::toggle(ui, id);
 			}
 		}
 		for &i in &node.items {

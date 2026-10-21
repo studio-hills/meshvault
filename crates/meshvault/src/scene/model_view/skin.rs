@@ -32,7 +32,7 @@ pub struct PartSkin {
 	pub(super) rest_positions: Vec<V3>,
 	pub(super) rest_normals: Option<Vec<V3>>,
 	/// World-space vertices in the current pose.
-	pub geometry: Geometry,
+	pub(super) geometry: Geometry,
 	pub(super) moved: bool,
 	/// The part's mesh scale, applied to clip translations of mesh-only bones.
 	pub(super) unit_scale: f32,

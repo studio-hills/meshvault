@@ -51,12 +51,12 @@ pub struct MeshSource {
 /// One mesh, shared by every part that uses it.
 pub struct MeshAsset {
 	pub name: String,
-	pub geometry: Geometry,
+	geometry: Geometry,
 	/// Groups drawn: the finest LOD, or every hull or group.
-	pub groups: Vec<usize>,
+	groups: Vec<usize>,
 	/// `Ok(None)` when the mesh is not skinned.
-	pub skin: Result<Option<Skin>, String>,
-	pub material: Material,
+	skin: Result<Option<Skin>, String>,
+	material: Material,
 }
 
 pub enum PartShape {

@@ -59,7 +59,11 @@ impl App {
 					ui.add_space(6.0);
 					ui.horizontal_wrapped(|ui| {
 						ui.label(RichText::new(icons::INFO).color(p.accent));
-						ui.label(RichText::new(note).color(p.text_weak));
+						ui.label(
+							RichText::new(note)
+								.color(p.text_weak)
+								.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+						);
 					});
 				}
 				ui.add_space(10.0);

@@ -5,7 +5,7 @@
 use eframe::egui::{self, Id, Key, RichText, Vec2};
 
 use super::layout::SHORTCUTS;
-use super::theme::{dialog_frame, display, palette};
+use super::theme::{BODY_LINE_HEIGHT, dialog_frame, display, palette};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::maps::Slot;
@@ -228,7 +228,7 @@ impl App {
 					egui::Label::new(
 						RichText::new(&confirm.body)
 							.color(p.text_weak)
-							.line_height(Some(20.0)),
+							.line_height(Some(BODY_LINE_HEIGHT)),
 					)
 					.wrap(),
 				);

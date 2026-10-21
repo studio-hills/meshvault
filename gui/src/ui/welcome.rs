@@ -274,7 +274,7 @@ fn subtitle(ui: &mut egui::Ui, text: &str) {
 			RichText::new(text)
 				.color(p.text_weak)
 				.size(14.0)
-				.line_height(Some(20.0)),
+				.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
 		)
 		.wrap(),
 	);

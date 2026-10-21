@@ -102,7 +102,13 @@ impl Toasts {
 							ui.horizontal(|ui| {
 								ui.spacing_mut().interact_size.y = 24.0;
 								ui.label(RichText::new(icon).size(18.0).color(colour));
-								ui.add(egui::Label::new(&toast.text).wrap());
+								ui.add(
+									egui::Label::new(
+										egui::RichText::new(&toast.text)
+											.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+									)
+									.wrap(),
+								);
 								if widgets::icon_button(ui, icons::X, "Dismiss").clicked() {
 									dismiss = Some(i);
 								}

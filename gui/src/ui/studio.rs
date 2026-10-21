@@ -63,8 +63,19 @@ impl App {
 						.inner_margin(Margin::symmetric(12, 10))
 						.show(ui, |ui| {
 							ui.horizontal_top(|ui| {
-								ui.label(RichText::new(icons::WARNING).size(16.0).color(p.warning));
-								ui.add(egui::Label::new(unavailable_text(why)).wrap());
+								ui.label(
+									RichText::new(icons::WARNING)
+										.size(16.0)
+										.color(p.warning)
+										.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+								);
+								ui.add(
+									egui::Label::new(
+										egui::RichText::new(unavailable_text(why))
+											.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+									)
+									.wrap(),
+								);
 							});
 						});
 					ui.add_space(12.0);

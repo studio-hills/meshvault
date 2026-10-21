@@ -5,7 +5,7 @@ use eframe::egui::{
 	self, Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Order, RichText, Stroke, Vec2,
 };
 
-use super::theme::{CONTROL_RADIUS, ROW, palette, semibold};
+use super::theme::{BODY_LINE_HEIGHT, CONTROL_RADIUS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
@@ -141,9 +141,18 @@ impl App {
 					widgets::section(ui, "model_warnings", &title, true, |ui| {
 						for w in &model.warnings {
 							ui.horizontal_top(|ui| {
-								ui.label(RichText::new(icons::WARNING).color(p.warning));
+								ui.label(
+									RichText::new(icons::WARNING)
+										.color(p.warning)
+										.line_height(Some(BODY_LINE_HEIGHT)),
+								);
 								ui.add(
-									egui::Label::new(RichText::new(w).color(p.text_weak)).wrap(),
+									egui::Label::new(
+										RichText::new(w)
+											.color(p.text_weak)
+											.line_height(Some(BODY_LINE_HEIGHT)),
+									)
+									.wrap(),
 								);
 							});
 						}

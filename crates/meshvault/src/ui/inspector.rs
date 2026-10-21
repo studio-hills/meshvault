@@ -105,7 +105,7 @@ impl App {
 						{
 							ui.label(
 								RichText::new(
-									"GPU rendering is unavailable, so only the base color is shown.",
+									"GPU rendering is unavailable, so only the base colour is shown.",
 								)
 								.small()
 								.color(p.warning),

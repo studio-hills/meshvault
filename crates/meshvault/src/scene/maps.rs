@@ -74,7 +74,7 @@ impl Slot {
 
 	pub fn label(self) -> &'static str {
 		match self {
-			Slot::Base => "Base color",
+			Slot::Base => "Base colour",
 			Slot::Normal => "Normal",
 			Slot::Roughness => "Roughness",
 			Slot::Metalness => "Metalness",

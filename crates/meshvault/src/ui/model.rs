@@ -259,12 +259,10 @@ fn clip_details(ui: &mut egui::Ui, p: &Palette, slot: &ClipSlot) {
 		rows.push(("Animation".into(), slot.animation_id.clone()));
 	}
 	widgets::properties(ui, "model_clip_grid", &rows);
-	let unmatched = slot.binding.unmatched.len() - slot.mesh_bone_tracks;
-	if unmatched > 0 {
+	if let Some((count, names)) = unmatched_tracks(slot) {
 		ui.add_space(4.0);
 		ui.collapsing(
-			RichText::new(format!("{unmatched} tracks match nothing in this model"))
-				.color(p.warning),
+			RichText::new(format!("{count} tracks match nothing in this model")).color(p.warning),
 			|ui| {
 				ui.label(
 					RichText::new(
@@ -273,13 +271,23 @@ fn clip_details(ui: &mut egui::Ui, p: &Palette, slot: &ClipSlot) {
 					.small()
 					.color(p.text_weak),
 				);
-				let mut names = slot.binding.unmatched.clone();
-				names.sort();
-				names.dedup();
-				ui.label(names.join(", "));
+				ui.label(names);
 			},
 		);
 	}
+}
+
+/// How many of the clip's tracks move nothing, with their names, each
+/// once in order; `None` when every track moves something. Tracks for
+/// bones inside skinned meshes are bound, so neither part counts them.
+fn unmatched_tracks(slot: &ClipSlot) -> Option<(usize, String)> {
+	if slot.unmatched.is_empty() {
+		return None;
+	}
+	let mut names = slot.unmatched.clone();
+	names.sort();
+	names.dedup();
+	Some((slot.unmatched.len(), names.join(", ")))
 }
 
 fn transport(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
@@ -643,5 +651,36 @@ fn part_tag(part: &PartView, p: &Palette) -> (&'static str, Color32, String) {
 			),
 		},
 		PartShape::Missing(why) => ("missing", p.danger, why.clone()),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::anim::rig::Binding;
+
+	#[test]
+	fn unmatched_track_names_leave_out_mesh_bones_as_the_count_does() {
+		// "Jaw" is a bone inside a skinned mesh, moved by its name
+		let slot = ClipSlot {
+			name: "Talk".into(),
+			status: ClipStatus::KeyframeSequence,
+			priority: String::new(),
+			animation_id: String::new(),
+			clip: Err("not needed".into()),
+			binding: Binding {
+				targets: vec![None; 4],
+				unmatched: vec!["Tail".into(), "Jaw".into(), "Hat".into(), "Tail".into()],
+			},
+			mesh_bone_tracks: 1,
+			unmatched: vec!["Tail".into(), "Hat".into(), "Tail".into()],
+		};
+		// the names once listed Jaw too (bug B46)
+		assert_eq!(unmatched_tracks(&slot), Some((3, "Hat, Tail".into())));
+		let bound = ClipSlot {
+			unmatched: Vec::new(),
+			..slot
+		};
+		assert_eq!(unmatched_tracks(&bound), None);
 	}
 }

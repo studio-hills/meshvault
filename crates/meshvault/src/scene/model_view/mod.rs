@@ -106,6 +106,9 @@ pub struct ClipSlot {
 	pub binding: Binding,
 	/// Tracks for bones that exist only inside skinned meshes.
 	pub mesh_bone_tracks: usize,
+	/// The binding's unmatched track names less the mesh-bone ones: the
+	/// tracks that move nothing.
+	pub unmatched: Vec<String>,
 }
 
 pub struct ModelView {
@@ -359,11 +362,12 @@ fn clip_slots(model: &AnimatedModel, rig: &Rig, parts: &[PartView]) -> Vec<ClipS
 					_ => None,
 				})
 				.collect();
-			let mesh_bone_tracks = binding
+			let (mesh_bones, unmatched): (Vec<String>, Vec<String>) = binding
 				.unmatched
 				.iter()
-				.filter(|n| mesh_names.contains(n.as_str()))
-				.count();
+				.cloned()
+				.partition(|n| mesh_names.contains(n.as_str()));
+			let mesh_bone_tracks = mesh_bones.len();
 			ClipSlot {
 				name: record.name.clone(),
 				status: record.status,
@@ -372,6 +376,7 @@ fn clip_slots(model: &AnimatedModel, rig: &Rig, parts: &[PartView]) -> Vec<ClipS
 				clip,
 				binding,
 				mesh_bone_tracks,
+				unmatched,
 			}
 		})
 		.collect()
@@ -941,6 +946,7 @@ mod tests {
 			}),
 			binding: Binding::default(),
 			mesh_bone_tracks: 0,
+			unmatched: Vec::new(),
 		});
 		view.select(Some(0));
 		view.playing = true;

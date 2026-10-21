@@ -25,15 +25,17 @@
 //! What is kept for the app is bounded too: a few exports may arrive at
 //! once, one that stops part-way is forgotten after a while, and pieces
 //! still arriving plus received exports the app has not taken share one
-//! byte limit.
+//! byte limit. Only received exports wait in the app's bounded queue;
+//! progress is kept as the latest count of each export, so however many
+//! pieces arrive while the app is busy, they never crowd out an export.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -51,7 +53,8 @@ const MAX_PENDING: usize = 8;
 /// Most bytes held for the app at once: pieces of exports still arriving,
 /// and received exports the app has not taken yet.
 const MAX_HELD: usize = MAX_EXPORT;
-/// Most events waiting for the app to take them.
+/// Most received exports waiting for the app to take them, and most
+/// exports whose progress is waiting.
 const MAX_EVENTS: usize = 64;
 /// How long an export may go without a new piece before it is forgotten,
 /// as one whose sender stopped part-way.
@@ -234,6 +237,8 @@ pub struct StudioLink {
 	rx: Receiver<Event>,
 	/// Bytes of received exports waiting in `rx` (see [`Exports::queued`]).
 	queued: Arc<AtomicUsize>,
+	/// See [`Exports::progress`].
+	progress: Arc<Mutex<Vec<Progress>>>,
 }
 
 impl StudioLink {
@@ -242,6 +247,7 @@ impl StudioLink {
 		let exports =
 			Exports::new(crate::config::Config::default_workspaces_dir().join(EXPORTS_FOLDER));
 		let queued = exports.queued.clone();
+		let progress = exports.progress.clone();
 		let status = match TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) {
 			Ok(listener) => {
 				let ctx = ctx.clone();
@@ -253,7 +259,12 @@ impl StudioLink {
 			)),
 			Err(e) => Status::Unavailable(format!("port {PORT} could not be opened ({e})")),
 		};
-		Self { status, rx, queued }
+		Self {
+			status,
+			rx,
+			queued,
+			progress,
+		}
 	}
 
 	pub fn is_listening(&self) -> bool {
@@ -262,7 +273,20 @@ impl StudioLink {
 
 	/// What happened since the last call.
 	pub fn poll(&self) -> Vec<Event> {
-		let events: Vec<Event> = self.rx.try_iter().collect();
+		// progress first: an export's progress is all from before it was
+		// received, and the lock keeps the link from adding progress or an
+		// export meanwhile
+		let mut progress = locked(&self.progress);
+		let mut events: Vec<Event> = progress
+			.drain(..)
+			.map(|(export, done, count)| Event::Progress {
+				export,
+				done,
+				count,
+			})
+			.collect();
+		events.extend(self.rx.try_iter());
+		drop(progress);
 		for event in &events {
 			if let Event::Received(received) = event {
 				// the app has it now, so the link may take more
@@ -274,6 +298,13 @@ impl StudioLink {
 	}
 }
 
+/// An export's id, and how many of its pieces have arrived of how many.
+type Progress = (String, usize, usize);
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+	mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// What the server keeps between requests.
 struct Exports {
 	/// Exports still arriving, by id.
@@ -281,6 +312,10 @@ struct Exports {
 	/// Bytes of received exports sent to the app and not yet taken by it,
 	/// shared with [`StudioLink::poll`] so they count towards [`MAX_HELD`].
 	queued: Arc<AtomicUsize>,
+	/// The latest progress of each export, oldest news first, until the app
+	/// takes it (see [`StudioLink::poll`]). Apart from the app's queue of
+	/// received exports, so progress can never fill that.
+	progress: Arc<Mutex<Vec<Progress>>>,
 	/// The folder received exports are saved in.
 	folder: PathBuf,
 	/// The second of the file names last handed out, and those names, so
@@ -293,6 +328,7 @@ impl Exports {
 		Self {
 			pending: HashMap::new(),
 			queued: Arc::default(),
+			progress: Arc::default(),
 			folder,
 			named: (0, HashSet::new()),
 		}
@@ -618,6 +654,10 @@ fn route(request: Request, exports: &mut Exports, tx: &SyncSender<Event>) -> Rep
 					// counted until the app takes it; never wait for the app, as
 					// that would hold the link
 					let size = done.json.len();
+					// its progress is over; while locked, so the app cannot take
+					// that progress after the export
+					let mut progress = locked(&exports.progress);
+					progress.retain(|(id, ..)| *id != done.export);
 					exports.queued.fetch_add(size, Ordering::Relaxed);
 					if tx.try_send(Event::Received(done)).is_err() {
 						exports.queued.fetch_sub(size, Ordering::Relaxed);
@@ -627,15 +667,21 @@ fn route(request: Request, exports: &mut Exports, tx: &SyncSender<Event>) -> Rep
 				}
 				Ok(None) => {
 					// how far this export has got (only this one: the others have
-					// not changed); dropped if the app is behind
+					// not changed), replacing its last count and moved to the end
+					// as the newest; dropped if too many exports are waiting
 					if let Some(id) = id
 						&& let Some(p) = exports.pending.get(&id)
 					{
-						let _ = tx.try_send(Event::Progress {
-							export: id,
-							done: p.chunks.iter().filter(|c| c.is_some()).count(),
-							count: p.chunks.len(),
-						});
+						let now = (
+							id,
+							p.chunks.iter().filter(|c| c.is_some()).count(),
+							p.chunks.len(),
+						);
+						let mut progress = locked(&exports.progress);
+						progress.retain(|(id, ..)| *id != now.0);
+						if progress.len() < MAX_EVENTS {
+							progress.push(now);
+						}
 					}
 					Reply::text(200, "ok")
 				}
@@ -1419,64 +1465,116 @@ mod tests {
 		));
 	}
 
-	// With two exports arriving at once, each piece reports only its own
-	// export's progress, named, and the finished export says which it was.
-	#[test]
-	fn progress_is_for_the_export_that_moved() {
+	/// The app's side of the link, taking what `exports` hands it.
+	fn link(exports: &Exports) -> (SyncSender<Event>, StudioLink) {
 		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
-		let mut exports = exports();
-		let mut send = |id: &str, chunk_of: &str| {
-			let reply = route(chunk(id, chunk_of, b"x"), &mut exports, &tx);
-			assert_eq!(reply.code, 200);
-			let events: Vec<Event> = rx.try_iter().collect();
-			match &events[..] {
-				[
-					Event::Progress {
-						export,
-						done,
-						count,
-					},
-				] => format!("{export} {done}/{count}"),
-				[Event::Received(r)] => format!("{} received", r.export),
-				_ => panic!("{} events", events.len()),
-			}
-		};
-		assert_eq!(send("a", "1/3"), "a 1/3");
-		assert_eq!(send("b", "1/2"), "b 1/2");
-		assert_eq!(send("a", "2/3"), "a 2/3");
-		assert_eq!(send("b", "2/2"), "b received");
-		assert_eq!(send("a", "3/3"), "a received");
-	}
-
-	// The app's queue is bounded: when it is full, a finished export is
-	// refused (Studio then prints it) rather than the link waiting for the
-	// app, and the app taking an export frees its bytes.
-	#[test]
-	fn received_exports_wait_in_a_bounded_queue() {
-		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
-		let mut exports = exports();
 		let link = StudioLink {
 			status: Status::Listening,
 			rx,
 			queued: exports.queued.clone(),
+			progress: exports.progress.clone(),
 		};
-		for _ in 0..MAX_EVENTS {
-			tx.try_send(Event::Progress {
-				export: "x".into(),
-				done: 0,
-				count: 1,
+		(tx, link)
+	}
+
+	fn describe(events: &[Event]) -> Vec<String> {
+		events
+			.iter()
+			.map(|event| match event {
+				Event::Progress {
+					export,
+					done,
+					count,
+				} => format!("{export} {done}/{count}"),
+				Event::Received(r) => format!("{} received", r.export),
 			})
-			.unwrap();
+			.collect()
+	}
+
+	// With two exports arriving at once, each piece reports only its own
+	// export's progress, named, and the finished export says which it was.
+	#[test]
+	fn progress_is_for_the_export_that_moved() {
+		let mut exports = exports();
+		let (tx, link) = link(&exports);
+		let mut send = |id: &str, chunk_of: &str| {
+			let reply = route(chunk(id, chunk_of, b"x"), &mut exports, &tx);
+			assert_eq!(reply.code, 200);
+			describe(&link.poll())
+		};
+		assert_eq!(send("a", "1/3"), ["a 1/3"]);
+		assert_eq!(send("b", "1/2"), ["b 1/2"]);
+		assert_eq!(send("a", "2/3"), ["a 2/3"]);
+		assert_eq!(send("b", "2/2"), ["b received"]);
+		assert_eq!(send("a", "3/3"), ["a received"]);
+	}
+
+	// Progress waiting for a busy app is only each export's latest count, the
+	// export that moved last coming last, and an export's progress goes once
+	// it is received.
+	#[test]
+	fn waiting_progress_is_the_latest_of_each_export() {
+		let mut exports = exports();
+		let (tx, link) = link(&exports);
+		for (id, chunk_of) in [("a", "1/3"), ("b", "1/3"), ("a", "2/3"), ("c", "1/1")] {
+			assert_eq!(
+				route(chunk(id, chunk_of, b"x"), &mut exports, &tx).code,
+				200
+			);
 		}
+		assert_eq!(describe(&link.poll()), ["b 1/3", "a 2/3", "c received"]);
+		assert_eq!(route(chunk("b", "2/3", b"x"), &mut exports, &tx).code, 200);
+		assert_eq!(route(chunk("b", "3/3", b"x"), &mut exports, &tx).code, 200);
+		assert_eq!(describe(&link.poll()), ["b received"]);
+	}
+
+	// Bug: progress shared the app's queue with received exports, so 64
+	// pieces arriving while the app was busy (a 128 MiB export, in Studio's
+	// 2 MiB pieces) filled it and the export's last piece was refused.
+	#[test]
+	fn progress_never_crowds_out_a_received_export() {
+		let mut exports = exports();
+		let (tx, link) = link(&exports);
+		let count = MAX_EVENTS + 1;
+		for i in 1..=count {
+			let reply = route(
+				chunk("big", &format!("{i}/{count}"), b"x"),
+				&mut exports,
+				&tx,
+			);
+			assert_eq!(reply.code, 200, "piece {i}");
+		}
+		let events = link.poll();
+		// its progress went when it was received
+		assert_eq!(describe(&events), ["big received"]);
+		assert!(matches!(&events[0], Event::Received(r) if r.json.len() == count));
+		assert_eq!(exports.held(), 0);
+	}
+
+	// The app's queue is bounded: when it is full of received exports, a
+	// finished export is refused (Studio then prints it) rather than the link
+	// waiting for the app, and the app taking an export frees its bytes.
+	#[test]
+	fn received_exports_wait_in_a_bounded_queue() {
+		let mut exports = exports();
+		let (tx, link) = link(&exports);
+		for i in 0..MAX_EVENTS {
+			let reply = route(chunk(&format!("r{i}"), "1/1", b"x"), &mut exports, &tx);
+			assert_eq!(reply.code, 200);
+		}
+		assert_eq!(exports.held(), MAX_EVENTS);
 		let reply = route(chunk("a", "1/1", b"{}"), &mut exports, &tx);
 		assert_eq!(reply.code, 503);
 		assert_eq!(reply.body, b"Meshvault is busy, send it again later");
-		assert_eq!(exports.held(), 0);
+		assert_eq!(exports.held(), MAX_EVENTS);
 		assert!(exports.pending.is_empty());
-		// a part-way export's progress is dropped, not waited for
+		// a part-way export still makes progress
 		let reply = route(chunk("b", "1/2", b"{"), &mut exports, &tx);
 		assert_eq!(reply.code, 200);
-		assert_eq!(link.poll().len(), MAX_EVENTS);
+		let events = link.poll();
+		assert_eq!(events.len(), MAX_EVENTS + 1);
+		assert_eq!(describe(&events[..1]), ["b 1/2"]);
+		assert_eq!(exports.held(), 1);
 		let reply = route(chunk("b", "2/2", b"}"), &mut exports, &tx);
 		assert_eq!(reply.code, 200);
 		assert_eq!(exports.held(), 2);

@@ -9,9 +9,14 @@
 //!   (a name for the saved file). Once all `n` pieces have arrived they are
 //!   joined in order and handed to the app.
 //!
-//! Only connections from this machine are accepted, and requiring custom
-//! headers means a web page cannot send an export (browsers would need a
-//! CORS preflight, which is never answered).
+//! What is checked today: the server binds the IPv4 loopback address
+//! (127.0.0.1), so only programs on this machine can connect, and pieces
+//! must carry the custom headers above. A web page on another origin can
+//! only send those after a CORS preflight, which is never approved (OPTIONS
+//! gets a 404 without CORS headers). The `Host` header is not checked and
+//! there is no authentication, so a page that reaches the port under its
+//! own origin (DNS rebinding) is not stopped; whether a browser lets it is
+//! up to the browser.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};

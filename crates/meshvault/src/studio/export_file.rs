@@ -22,7 +22,7 @@ pub const SCHEMA_VERSION: u32 = 2;
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct RawEntry {
-	/// `Meshes[].Id` in schema 1.
+	/// `Meshes[].Id` in schemas 1 and 2.
 	#[serde(default)]
 	id: Option<u32>,
 	name: String,
@@ -62,13 +62,13 @@ pub struct Entry {
 	pub mesh_id: u64,
 	/// Asset id of each map this model references.
 	pub maps: BTreeMap<MapKind, u64>,
-	/// `Meshes[].Id` in a schema 1 export, which `Parts[].MeshRef` refers to.
+	/// `Meshes[].Id` in a schema 1 or 2 export, which `Parts[].MeshRef` refers to.
 	pub source_id: Option<u32>,
 }
 
 pub struct Export {
 	pub entries: Vec<Entry>,
-	/// Animated models (schema 1).
+	/// Animated models (schemas 1 and 2).
 	pub models: Vec<AnimatedModel>,
 	/// Entries that were skipped, with the reason.
 	pub skipped: Vec<String>,

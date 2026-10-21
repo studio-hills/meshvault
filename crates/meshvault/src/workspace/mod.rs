@@ -32,7 +32,7 @@ use crate::studio::export_file::Entry;
 pub use self::manifest::{AssetState, Item, MapRef, ModelItem};
 use self::manifest::{MANIFEST_VERSION, Manifest};
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
-use self::paths::{MODELS_DIR, RIGS_DIR, image_stem, rig_stem};
+use self::paths::{MODELS_DIR, RIGS_DIR, image_id, image_stem, rig_stem};
 use self::rig_file::write_rig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -440,7 +440,7 @@ impl Workspace {
 	pub fn set_state(&mut self, stem: &str, kind: AssetKind, state: AssetState) {
 		if kind == AssetKind::Image {
 			// every model using the image
-			let id = stem.rsplit('/').next().and_then(|s| s.parse::<u64>().ok());
+			let id = image_id(stem);
 			for model in &mut self.manifest.models {
 				if let Some(slot) = id.and_then(|id| model.images.get_mut(&id)) {
 					*slot = state.clone();

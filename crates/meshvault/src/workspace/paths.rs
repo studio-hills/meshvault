@@ -15,6 +15,12 @@ pub(super) fn image_stem(asset_id: u64) -> String {
 	format!("{IMAGES_DIR}/{asset_id}")
 }
 
+/// The asset id back from an [`image_stem`]. Only the part after the last
+/// `/` is read, so any folder (or none) is accepted.
+pub(super) fn image_id(stem: &str) -> Option<u64> {
+	stem.rsplit('/').next().and_then(|s| s.parse::<u64>().ok())
+}
+
 /// Where the raw download of an asset is kept, shared by every item using it.
 pub fn cache_path(root: &Path, asset_id: u64) -> PathBuf {
 	root.join(CACHE_DIR).join(asset_id.to_string())
@@ -68,5 +74,22 @@ mod tests {
 		assert_eq!(sanitize("con.txt"), "con.txt_");
 		assert_eq!(sanitize("a/b\\c"), "a_b_c");
 		assert_eq!(sanitize("   "), "_");
+	}
+
+	#[test]
+	fn image_ids_round_trip() {
+		for id in [0, 77, u64::MAX] {
+			assert_eq!(image_id(&image_stem(id)), Some(id));
+		}
+		assert_eq!(image_id("Images/decal"), None);
+		assert_eq!(image_id("Images/"), None);
+	}
+
+	/// Today only the last part is read, so these parse too.
+	#[test]
+	fn image_ids_ignore_the_folder() {
+		assert_eq!(image_id("77"), Some(77));
+		assert_eq!(image_id("Other/77"), Some(77));
+		assert_eq!(image_id("Images/sub/77"), Some(77));
 	}
 }

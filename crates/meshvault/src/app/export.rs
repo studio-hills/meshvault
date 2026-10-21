@@ -6,7 +6,7 @@ use super::App;
 use crate::export::Format;
 use crate::ui::format::plural;
 use crate::workspace::view_loader::{item_maps, model_loader};
-use crate::workspace::{self, AssetState};
+use crate::workspace::{self, AssetKind};
 
 impl App {
 	/// Exports library meshes and animated models into a folder the user
@@ -18,9 +18,7 @@ impl App {
 			.iter()
 			.filter_map(|&i| {
 				let item = ws.items().get(i)?;
-				let AssetState::Done { path } = &item.mesh else {
-					return None;
-				};
+				let path = item.done_path(AssetKind::Mesh)?;
 				Some(MeshJob {
 					name: item.name.clone(),
 					mesh: ws.root.join(path),

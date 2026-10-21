@@ -39,24 +39,37 @@ impl Document {
 	}
 
 	pub fn name(&self) -> String {
-		self.path
-			.file_name()
-			.map(|s| s.to_string_lossy().into_owned())
-			.unwrap_or_default()
+		file_name(&self.path)
 	}
 }
 
+/// The last part of `path`, lossily as text; empty if it has none.
+fn file_name(path: &Path) -> String {
+	path.file_name()
+		.map(|n| n.to_string_lossy().into_owned())
+		.unwrap_or_default()
+}
+
 impl App {
+	/// Reads the file at `path`, or reports why it could not be read.
+	pub(super) fn read_or_report(&mut self, path: &Path) -> Option<Vec<u8>> {
+		match std::fs::read(path) {
+			Ok(bytes) => Some(bytes),
+			Err(e) => {
+				self.toasts
+					.error(format!("Could not read {}: {e}", path.display()));
+				None
+			}
+		}
+	}
+
 	pub fn open(&mut self, path: &Path) {
 		if path.is_dir() {
 			self.open_workspace(path);
 			return;
 		}
-		match std::fs::read(path) {
-			Ok(bytes) => self.open_bytes(path.to_path_buf(), &bytes),
-			Err(e) => self
-				.toasts
-				.error(format!("Could not read {}: {e}", path.display())),
+		if let Some(bytes) = self.read_or_report(path) {
+			self.open_bytes(path.to_path_buf(), &bytes);
 		}
 	}
 
@@ -137,10 +150,7 @@ impl App {
 				true
 			}
 			Err(e) => {
-				let name = path
-					.file_name()
-					.map(|n| n.to_string_lossy().into_owned())
-					.unwrap_or_default();
+				let name = file_name(&path);
 				self.toasts.error(format!("Could not open {name}: {e}"));
 				false
 			}
@@ -148,11 +158,8 @@ impl App {
 	}
 
 	pub fn load_map(&mut self, slot: Slot, path: &Path) {
-		match std::fs::read(path) {
-			Ok(bytes) => self.set_map(slot, path, &bytes),
-			Err(e) => self
-				.toasts
-				.error(format!("Could not read {}: {e}", path.display())),
+		if let Some(bytes) = self.read_or_report(path) {
+			self.set_map(slot, path, &bytes);
 		}
 	}
 

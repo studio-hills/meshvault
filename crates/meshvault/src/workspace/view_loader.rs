@@ -48,10 +48,7 @@ pub fn model_loader(
 	let images: HashMap<u64, PathBuf> = item
 		.images
 		.iter()
-		.filter_map(|(&id, state)| match state {
-			AssetState::Done { path } => Some((id, ws.root.join(path))),
-			_ => None,
-		})
+		.filter_map(|(&id, state)| Some((id, ws.root.join(state.done_path()?))))
 		.collect();
 	let file = ws.root.join(&item.file);
 	Some(move |ctx: &egui::Context| {

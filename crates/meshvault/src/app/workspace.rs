@@ -120,20 +120,17 @@ impl App {
 				return;
 			}
 		};
+		// owned, so the workspace is no longer borrowed when reading
 		let maps = item_maps(&ws.root, item);
 		let stem = item.stem.clone();
-		match std::fs::read(&mesh_path) {
-			Ok(bytes) => {
-				if self.load_mesh(mesh_path, &bytes) {
-					self.open_stem = Some(stem);
-					for (slot, path) in maps {
-						self.load_map(slot, &path);
-					}
-				}
+		let Some(bytes) = self.read_or_report(&mesh_path) else {
+			return;
+		};
+		if self.load_mesh(mesh_path, &bytes) {
+			self.open_stem = Some(stem);
+			for (slot, path) in maps {
+				self.load_map(slot, &path);
 			}
-			Err(e) => self
-				.toasts
-				.error(format!("Could not read {}: {e}", mesh_path.display())),
 		}
 	}
 

@@ -27,6 +27,16 @@ pub enum AssetState {
 	},
 }
 
+impl AssetState {
+	/// Path of the downloaded file, relative to the workspace root.
+	pub fn done_path(&self) -> Option<&str> {
+		match self {
+			AssetState::Done { path } => Some(path),
+			_ => None,
+		}
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MapRef {
 	pub id: u64,
@@ -92,10 +102,7 @@ impl Item {
 			// images belong to models, not items
 			AssetKind::Image => return None,
 		};
-		match state {
-			AssetState::Done { path } => Some(path.as_str()),
-			_ => None,
-		}
+		state.done_path()
 	}
 }
 

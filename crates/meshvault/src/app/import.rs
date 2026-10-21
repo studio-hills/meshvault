@@ -22,13 +22,9 @@ impl App {
 			.set_title("Import export JSON")
 			.add_filter("Export JSON", &["json"])
 			.pick_file()
+			&& let Some(bytes) = self.read_or_report(&path)
 		{
-			match std::fs::read(&path) {
-				Ok(bytes) => self.start_import(path, &bytes),
-				Err(e) => self
-					.toasts
-					.error(format!("Could not read {}: {e}", path.display())),
-			}
+			self.start_import(path, &bytes);
 		}
 	}
 

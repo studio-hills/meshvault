@@ -3,10 +3,10 @@
 //! A clip becomes a list of tracks, each driving one named target (a
 //! Motor6D's `Part1` or a Bone) with a local transform over time.
 
-use super::math::CFrame;
+use super::math::{CFrame, euler_axes};
 use super::schema::{
-	AnimationClip, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle, FaceControlPose,
-	Pose, RotationKey, ScalarKey,
+	AnimationClip, CFrame12, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle,
+	FaceControlPose, Pose, RotationKey, ScalarKey,
 };
 
 /// One face control (JawDrop, ..) over time: NumberPoses of a keyframe
@@ -20,7 +20,7 @@ pub struct FaceTrack {
 #[derive(Clone, Debug)]
 enum FaceKeys {
 	Poses(Vec<FaceKey>),
-	Curve(Vec<ScalarKey>),
+	Curve(Vec<CurveKey>),
 }
 
 /// A face control's value at one keyframe.
@@ -64,21 +64,60 @@ struct PoseKey {
 	direction: EasingDirection,
 }
 
+/// How a curve key's segment runs to the next key: a key's
+/// `Interpolation`, read once when the clip is built. Names the player does
+/// not know (and a missing one) run linearly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Interpolation {
+	Linear,
+	Constant,
+	Cubic,
+}
+
+impl Interpolation {
+	fn of(name: &str) -> Interpolation {
+		match name {
+			"Constant" => Interpolation::Constant,
+			"Cubic" => Interpolation::Cubic,
+			_ => Interpolation::Linear,
+		}
+	}
+}
+
+/// A float curve key, ready to sample.
+#[derive(Clone, Debug)]
+struct CurveKey {
+	time: f32,
+	value: f32,
+	interpolation: Interpolation,
+	left_tangent: f32,
+	right_tangent: f32,
+}
+
+/// A rotation curve key, ready to sample.
+#[derive(Clone, Debug)]
+struct CurveRotationKey {
+	time: f32,
+	value: CFrame12,
+	interpolation: Interpolation,
+}
+
 #[derive(Clone, Debug)]
 enum Rotation {
 	None,
 	Euler {
-		order: String,
-		channels: [Vec<ScalarKey>; 3],
+		/// The rotation order, from `math::euler_axes`.
+		axes: [usize; 3],
+		channels: [Vec<CurveKey>; 3],
 	},
-	Keys(Vec<RotationKey>),
+	Keys(Vec<CurveRotationKey>),
 }
 
 #[derive(Clone, Debug)]
 enum Sampler {
 	Poses(Vec<PoseKey>),
 	Curves {
-		position: Option<[Vec<ScalarKey>; 3]>,
+		position: Option<[Vec<CurveKey>; 3]>,
 		rotation: Rotation,
 	},
 }
@@ -185,7 +224,7 @@ impl Clip {
 
 	fn add_curves(&mut self, record: &AnimationClip) {
 		// target, its X/Y/Z position channels, and its rotation
-		type Gathered = (TargetKey, Option<[Vec<ScalarKey>; 3]>, Rotation);
+		type Gathered = (TargetKey, Option<[Vec<CurveKey>; 3]>, Rotation);
 		let mut by_target: Vec<Gathered> = Vec::new();
 		for track in &record.curves {
 			let name = track
@@ -218,12 +257,13 @@ impl Clip {
 					channels,
 				} => {
 					entry.2 = Rotation::Euler {
-						order: rotation_order.clone(),
+						axes: euler_axes(rotation_order),
 						channels: channels_of(channels),
 					}
 				}
 				CurveData::RotationCurve { keys } => {
-					let mut keys = keys.clone();
+					let mut keys: Vec<CurveRotationKey> =
+						keys.iter().map(curve_rotation_key).collect();
 					sort_by_time(&mut keys, |k| k.time);
 					entry.2 = Rotation::Keys(keys);
 				}
@@ -231,11 +271,9 @@ impl Clip {
 				CurveData::FloatCurve { keys }
 					if track.path.rsplit('/').next() == Some("FaceControls") =>
 				{
-					let mut keys = keys.clone();
-					sort_by_time(&mut keys, |k| k.time);
 					self.face.push(FaceTrack {
 						control: track.name.clone(),
-						keys: FaceKeys::Curve(keys),
+						keys: FaceKeys::Curve(curve_keys(keys)),
 					});
 				}
 				CurveData::FloatCurve { .. } | CurveData::Unknown => self.skipped_curves += 1,
@@ -267,17 +305,37 @@ impl Clip {
 	}
 }
 
-fn channels_of(channels: &Channels) -> [Vec<ScalarKey>; 3] {
-	let sorted = |keys: &Option<Vec<ScalarKey>>| {
-		let mut keys = keys.clone().unwrap_or_default();
-		sort_by_time(&mut keys, |k| k.time);
-		keys
-	};
+fn channels_of(channels: &Channels) -> [Vec<CurveKey>; 3] {
+	let sorted = |keys: &Option<Vec<ScalarKey>>| curve_keys(keys.as_deref().unwrap_or_default());
 	[
 		sorted(&channels.x),
 		sorted(&channels.y),
 		sorted(&channels.z),
 	]
+}
+
+/// A float curve's keys, sorted by time and ready to sample.
+fn curve_keys(keys: &[ScalarKey]) -> Vec<CurveKey> {
+	let mut keys: Vec<CurveKey> = keys
+		.iter()
+		.map(|k| CurveKey {
+			time: k.time,
+			value: k.value,
+			interpolation: Interpolation::of(&k.interpolation),
+			left_tangent: k.left_tangent,
+			right_tangent: k.right_tangent,
+		})
+		.collect();
+	sort_by_time(&mut keys, |k| k.time);
+	keys
+}
+
+fn curve_rotation_key(key: &RotationKey) -> CurveRotationKey {
+	CurveRotationKey {
+		time: key.time,
+		value: key.value,
+		interpolation: Interpolation::of(&key.interpolation),
+	}
 }
 
 /// Adds every face control pose in a pose tree to `found`, each pose's
@@ -361,13 +419,13 @@ impl Track {
 				};
 				let rot = match rotation {
 					Rotation::None => CFrame::IDENTITY,
-					Rotation::Euler { order, channels } => CFrame::from_euler(
+					Rotation::Euler { axes, channels } => CFrame::from_euler_axes(
 						[
 							sample_scalar(&channels[0], time).unwrap_or(0.0),
 							sample_scalar(&channels[1], time).unwrap_or(0.0),
 							sample_scalar(&channels[2], time).unwrap_or(0.0),
 						],
-						order,
+						*axes,
 					),
 					Rotation::Keys(keys) => sample_rotation(keys, time),
 				};
@@ -534,7 +592,7 @@ fn bounce_out(x: f32) -> f32 {
 
 /// Samples a float curve. Each key's interpolation shapes the segment that
 /// starts at it; cubic segments use the keys' tangents (value per second).
-fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
+fn sample_scalar(keys: &[CurveKey], time: f32) -> Option<f32> {
 	if keys.is_empty() {
 		return None;
 	}
@@ -544,9 +602,9 @@ fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
 			let (a, b) = (&keys[i], &keys[i + 1]);
 			let span = b.time - a.time;
 			let s = fraction(a.time, b.time, time);
-			match a.interpolation.as_str() {
-				"Constant" => a.value,
-				"Cubic" => {
+			match a.interpolation {
+				Interpolation::Constant => a.value,
+				Interpolation::Cubic => {
 					// cubic Hermite with tangents scaled to the segment length
 					let (s2, s3) = (s * s, s * s * s);
 					let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
@@ -557,13 +615,13 @@ fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
 						+ h10 * span * a.right_tangent
 						+ h01 * b.value + h11 * span * b.left_tangent
 				}
-				_ => a.value + (b.value - a.value) * s,
+				Interpolation::Linear => a.value + (b.value - a.value) * s,
 			}
 		}
 	})
 }
 
-fn sample_rotation(keys: &[RotationKey], time: f32) -> CFrame {
+fn sample_rotation(keys: &[CurveRotationKey], time: f32) -> CFrame {
 	if keys.is_empty() {
 		return CFrame::IDENTITY;
 	}
@@ -575,7 +633,7 @@ fn sample_rotation(keys: &[RotationKey], time: f32) -> CFrame {
 				CFrame::from_components(&a.value),
 				CFrame::from_components(&b.value),
 			);
-			if a.interpolation == "Constant" {
+			if a.interpolation == Interpolation::Constant {
 				return ca;
 			}
 			let s = fraction(a.time, b.time, time);
@@ -614,20 +672,59 @@ mod tests {
 
 	#[test]
 	fn scalar_interpolation_modes() {
-		let keys = vec![
+		let keys = curve_keys(&[
 			key(0.0, 0.0, "Linear"),
 			key(1.0, 10.0, "Constant"),
 			key(2.0, 20.0, "Linear"),
-		];
+		]);
 		assert_eq!(sample_scalar(&keys, -1.0), Some(0.0));
 		assert_eq!(sample_scalar(&keys, 0.25), Some(2.5));
 		assert_eq!(sample_scalar(&keys, 1.5), Some(10.0), "constant holds");
 		assert_eq!(sample_scalar(&keys, 9.0), Some(20.0));
 		assert_eq!(sample_scalar(&[], 1.0), None);
 		// cubic with zero tangents eases in and out; endpoints are exact
-		let cubic = vec![key(0.0, 0.0, "Cubic"), key(1.0, 1.0, "Linear")];
+		let cubic = curve_keys(&[key(0.0, 0.0, "Cubic"), key(1.0, 1.0, "Linear")]);
 		assert!((sample_scalar(&cubic, 0.5).unwrap() - 0.5).abs() < 1e-6);
 		assert!(sample_scalar(&cubic, 0.25).unwrap() < 0.25);
+	}
+
+	#[test]
+	fn unknown_and_missing_interpolations_run_linearly() {
+		for name in ["Linear", "", "Bezier", "constant"] {
+			let keys = curve_keys(&[key(0.0, 0.0, name), key(1.0, 10.0, "Linear")]);
+			assert_eq!(keys[0].interpolation, Interpolation::Linear, "{name:?}");
+			assert_eq!(sample_scalar(&keys, 0.25), Some(2.5), "{name:?}");
+		}
+		assert_eq!(Interpolation::of("Constant"), Interpolation::Constant);
+		assert_eq!(Interpolation::of("Cubic"), Interpolation::Cubic);
+	}
+
+	#[test]
+	fn rotation_keys_hold_or_turn_smoothly() {
+		let turn = |time: f32, angle: f32, interpolation: &str| RotationKey {
+			time,
+			value: CFrame::axis_rotation(1, angle).components(),
+			interpolation: interpolation.into(),
+			..Default::default()
+		};
+		let quarter = std::f32::consts::FRAC_PI_2;
+		for (name, want) in [
+			("Constant", 0.0),
+			// cubic rotation keys are approximated by a spherical lerp
+			("Cubic", quarter / 2.0),
+			("Linear", quarter / 2.0),
+			("", quarter / 2.0),
+			("Bezier", quarter / 2.0),
+		] {
+			let keys: Vec<CurveRotationKey> = [turn(0.0, 0.0, name), turn(1.0, quarter, "Linear")]
+				.iter()
+				.map(curve_rotation_key)
+				.collect();
+			assert!(
+				sample_rotation(&keys, 0.5).approx_eq(&CFrame::axis_rotation(1, want), 1e-5),
+				"{name:?}"
+			);
+		}
 	}
 
 	#[test]

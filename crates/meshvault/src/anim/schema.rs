@@ -424,3 +424,36 @@ pub enum CurveData {
 	#[serde(other)]
 	Unknown,
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Stored models write their keys back out, so an interpolation name
+	/// must come back as it was read, even one the player does not know, and
+	/// a missing one as "".
+	#[test]
+	fn key_interpolations_are_written_back_as_read() {
+		let identity = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1];
+		for (read, written) in [
+			(Some("Linear"), "Linear"),
+			(Some("Constant"), "Constant"),
+			(Some("Cubic"), "Cubic"),
+			(Some("Bezier"), "Bezier"),
+			(None, ""),
+		] {
+			let mut scalar = serde_json::json!({"Time": 1, "Value": 2});
+			let mut rotation = serde_json::json!({"Time": 1, "Value": identity});
+			if let Some(name) = read {
+				scalar["Interpolation"] = name.into();
+				rotation["Interpolation"] = name.into();
+			}
+			let scalar: ScalarKey = serde_json::from_value(scalar).unwrap();
+			let out = serde_json::to_value(&scalar).unwrap();
+			assert_eq!(out["Interpolation"], written, "{read:?}");
+			let rotation: RotationKey = serde_json::from_value(rotation).unwrap();
+			let out = serde_json::to_value(&rotation).unwrap();
+			assert_eq!(out["Interpolation"], written, "{read:?}");
+		}
+	}
+}

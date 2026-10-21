@@ -207,20 +207,16 @@ impl CFrame {
 
 	/// `CFrame.fromEulerAngles(x, y, z, order)`: the rotations are multiplied
 	/// in the order the letters appear, so `"XYZ"` is `Rx * Ry * Rz`.
+	#[cfg(test)]
 	pub fn from_euler(angles: V3, order: &str) -> CFrame {
+		CFrame::from_euler_axes(angles, euler_axes(order))
+	}
+
+	/// The rotations about `axes` (from [`euler_axes`]), multiplied in that
+	/// order, each by its own angle in `angles`.
+	pub fn from_euler_axes(angles: V3, axes: [usize; 3]) -> CFrame {
 		let mut out = CFrame::IDENTITY;
-		let letters: Vec<char> = order.chars().filter(|c| "XYZ".contains(*c)).collect();
-		let letters = if letters.len() == 3 {
-			letters
-		} else {
-			vec!['X', 'Y', 'Z']
-		};
-		for letter in letters {
-			let axis = match letter {
-				'X' => 0,
-				'Y' => 1,
-				_ => 2,
-			};
+		for axis in axes {
 			out = out.mul(&CFrame::axis_rotation(axis, angles[axis]));
 		}
 		out
@@ -257,6 +253,28 @@ fn normalize4(q: [f32; 4]) -> [f32; 4] {
 	} else {
 		[0.0, 0.0, 0.0, 1.0]
 	}
+}
+
+/// The axes (0 = X, 1 = Y, 2 = Z) of a curve's `RotationOrder`, in order:
+/// its uppercase X, Y and Z letters when there are exactly three of them
+/// (other characters are ignored and repeats count), otherwise XYZ.
+pub fn euler_axes(order: &str) -> [usize; 3] {
+	let mut axes = [0; 3];
+	let mut found = 0;
+	for letter in order.chars() {
+		let axis = match letter {
+			'X' => 0,
+			'Y' => 1,
+			'Z' => 2,
+			_ => continue,
+		};
+		if found == 3 {
+			return [0, 1, 2];
+		}
+		axes[found] = axis;
+		found += 1;
+	}
+	if found == 3 { axes } else { [0, 1, 2] }
 }
 
 /// Shortest-path spherical interpolation.
@@ -334,6 +352,59 @@ mod tests {
 		assert!(e.approx_eq(&manual, 1e-6));
 		let yxz = CFrame::from_euler([0.3, 0.4, 0.5], "YXZ");
 		assert!(!yxz.approx_eq(&e, 1e-3), "order must matter");
+	}
+
+	/// The rotation order parser as it was before the axes were worked out
+	/// once per curve, to check `euler_axes` against.
+	fn from_euler_by_letters(angles: V3, order: &str) -> CFrame {
+		let mut out = CFrame::IDENTITY;
+		let letters: Vec<char> = order.chars().filter(|c| "XYZ".contains(*c)).collect();
+		let letters = if letters.len() == 3 {
+			letters
+		} else {
+			vec!['X', 'Y', 'Z']
+		};
+		for letter in letters {
+			let axis = match letter {
+				'X' => 0,
+				'Y' => 1,
+				_ => 2,
+			};
+			out = out.mul(&CFrame::axis_rotation(axis, angles[axis]));
+		}
+		out
+	}
+
+	#[test]
+	fn rotation_orders_are_read_as_before() {
+		let cases: [(&str, [usize; 3]); 15] = [
+			("XYZ", [0, 1, 2]),
+			("XZY", [0, 2, 1]),
+			("YXZ", [1, 0, 2]),
+			("YZX", [1, 2, 0]),
+			("ZXY", [2, 0, 1]),
+			("ZYX", [2, 1, 0]),
+			// repeats are kept and other characters skipped
+			("XXZ", [0, 0, 2]),
+			("ZZZ", [2, 2, 2]),
+			("Z-Y-X", [2, 1, 0]),
+			("Enum.RotationOrder.ZYX", [2, 1, 0]),
+			// anything without exactly three uppercase letters is XYZ
+			("", [0, 1, 2]),
+			("ZY", [0, 1, 2]),
+			("zyx", [0, 1, 2]),
+			("ZYXZ", [0, 1, 2]),
+			("Enum.RotationOrder.ZXYX", [0, 1, 2]),
+		];
+		let angles = [0.3, -0.9, 1.7];
+		for (order, axes) in cases {
+			assert_eq!(euler_axes(order), axes, "{order}");
+			assert_eq!(
+				CFrame::from_euler(angles, order),
+				from_euler_by_letters(angles, order),
+				"{order}"
+			);
+		}
 	}
 
 	#[test]

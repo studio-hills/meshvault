@@ -386,12 +386,20 @@ impl App {
 					}
 					let d = &self.downloader;
 					let progress = d.completed as f32 / d.total.max(1) as f32;
-					ui.add(
+					let bar = ui.add(
 						egui::ProgressBar::new(progress)
 							.desired_width(160.0)
 							.desired_height(14.0)
-							.fill(p.accent)
-							.text(RichText::new(format!("{}/{}", d.completed, d.total)).size(10.5)),
+							.fill(p.accent),
+					);
+					// the count's digits keep their width as it climbs
+					widgets::paint_tabular(
+						ui.painter(),
+						bar.rect.center(),
+						Align2::CENTER_CENTER,
+						&format!("{}/{}", d.completed, d.total),
+						&egui::FontId::proportional(10.5),
+						p.text,
 					);
 					let mut text = format!("{}  Downloading", icons::CLOUD_ARROW_DOWN);
 					if d.failed > 0 {

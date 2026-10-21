@@ -367,11 +367,19 @@ fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 		}
 		// room between the controls and the seeker with its time
 		ui.add_space(12.0);
-		ui.label(
-			RichText::new(time_text)
-				.size(12.0)
-				.color(p.text_weak)
-				.family(semibold()),
+		// a slot as wide as the clip's own length, so the time (and the
+		// scrubber beside it) does not shift as it counts
+		let font = egui::FontId::new(12.0, semibold());
+		let widest = format!("{duration:.2} / {duration:.2} s");
+		let size = widgets::tabular_size(ui, &widest, &font);
+		let (slot, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+		widgets::paint_tabular(
+			ui.painter(),
+			slot.right_center(),
+			egui::Align2::RIGHT_CENTER,
+			&time_text,
+			&font,
+			p.text_weak,
 		);
 		ui.add_space(4.0);
 		// the scrubber takes the remaining width

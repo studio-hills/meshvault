@@ -398,6 +398,68 @@ pub fn stat_strip(ui: &mut Ui, stats: &[(String, &str)]) {
 		});
 }
 
+/// Lays `text` out with tabular figures: every digit takes the widest
+/// digit's width, so a number that changes keeps its width. Cal Sans's own
+/// digits are proportional, and egui cannot switch on a font's tabular
+/// figures. Returns each glyph with the width it takes, and the total size.
+fn tabular_glyphs(
+	painter: &egui::Painter,
+	text: &str,
+	font: &FontId,
+	colour: Color32,
+) -> (Vec<(std::sync::Arc<egui::Galley>, f32)>, Vec2) {
+	let digit = ('0'..='9')
+		.map(|d| {
+			painter
+				.layout_no_wrap(d.to_string(), font.clone(), colour)
+				.size()
+				.x
+		})
+		.fold(0.0, f32::max);
+	let mut size = Vec2::ZERO;
+	let glyphs = text
+		.chars()
+		.map(|c| {
+			let galley = painter.layout_no_wrap(c.to_string(), font.clone(), colour);
+			let width = if c.is_ascii_digit() {
+				digit
+			} else {
+				galley.size().x
+			};
+			size.x += width;
+			size.y = size.y.max(galley.size().y);
+			(galley, width)
+		})
+		.collect();
+	(glyphs, size)
+}
+
+/// The size `text` takes with tabular figures (see [`paint_tabular`]).
+pub fn tabular_size(ui: &Ui, text: &str, font: &FontId) -> Vec2 {
+	tabular_glyphs(ui.painter(), text, font, Color32::WHITE).1
+}
+
+/// Paints `text` with tabular figures, placed by `align` at `at`, so a
+/// changing number (a timer, a count) does not jitter.
+pub fn paint_tabular(
+	painter: &egui::Painter,
+	at: egui::Pos2,
+	align: Align2,
+	text: &str,
+	font: &FontId,
+	colour: Color32,
+) {
+	let (glyphs, size) = tabular_glyphs(painter, text, font, colour);
+	let rect = align.anchor_size(at, size);
+	let mut x = rect.left();
+	for (galley, width) in glyphs {
+		// a digit is centred in its cell
+		let left = x + (width - galley.size().x) / 2.0;
+		painter.galley(egui::pos2(left, rect.top()), galley, colour);
+		x += width;
+	}
+}
+
 /// A dashed rounded rectangle, used as a drop target.
 pub fn dashed_rect(ui: &Ui, rect: egui::Rect, colour: Color32) {
 	let r = rect.shrink(1.0);

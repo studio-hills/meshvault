@@ -16,6 +16,7 @@
 
 pub mod download;
 pub mod facts;
+pub mod view_loader;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};

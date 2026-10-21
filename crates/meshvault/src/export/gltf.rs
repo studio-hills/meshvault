@@ -1043,7 +1043,7 @@ mod tests {
 		let ws = crate::workspace::Workspace::open(Path::new(&root)).unwrap();
 		let ctx = eframe::egui::Context::default();
 		for i in 0..ws.models().len() {
-			let model = crate::app::model_loader(&ws, i)(&ctx).unwrap();
+			let model = crate::workspace::view_loader::model_loader(&ws, i)(&ctx).unwrap();
 			let path = out.join(format!("{}.glb", ws.models()[i].name));
 			export_model(&model, &path).unwrap();
 			println!(

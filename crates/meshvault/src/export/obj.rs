@@ -41,7 +41,7 @@ pub struct MeshJob {
 	pub maps: Vec<(Slot, PathBuf)>,
 }
 
-/// Reads an animated model (see [`crate::app::model_loader`]).
+/// Reads an animated model (see [`crate::workspace::view_loader::model_loader`]).
 pub type ModelLoader = Box<dyn FnOnce(&egui::Context) -> Result<ModelView, String> + Send>;
 
 /// A model to export: its name, and what reads it.
@@ -551,7 +551,7 @@ mod tests {
 		let models = (0..ws.models().len())
 			.map(|i| ModelJob {
 				name: ws.models()[i].name.clone(),
-				load: Box::new(crate::app::model_loader(&ws, i)),
+				load: Box::new(crate::workspace::view_loader::model_loader(&ws, i)),
 			})
 			.collect();
 		let dir = std::env::temp_dir().join("meshvault-obj-test-models");

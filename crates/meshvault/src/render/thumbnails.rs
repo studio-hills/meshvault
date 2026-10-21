@@ -16,6 +16,7 @@ use crate::scene::geometry::{self, Geometry, GroupKind};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
 use crate::scene::texture::{self, Material};
+use crate::workspace::view_loader::{item_maps, model_loader};
 use crate::workspace::{AssetState, CACHE_DIR, Workspace};
 
 /// Pixels on each side of a thumbnail.
@@ -163,9 +164,12 @@ impl Thumbnails {
 			(Ok(prepared), Some(renderer)) => {
 				let image = draw(renderer, prepared);
 				// a thumbnail that cannot be saved is still shown
-				let _ = std::fs::create_dir_all(&self.dir).map(|_| image.save(&job.file));
+				if std::fs::create_dir_all(&self.dir).is_ok() {
+					let _ = image.save(&job.file);
+				}
 				State::Ready(texture(ctx, &job.subject, &image))
 			}
+			// the reader's reason is not shown anywhere
 			_ => State::Failed,
 		};
 		self.states.insert(job.subject, state);
@@ -182,7 +186,7 @@ fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 				return None;
 			};
 			let mesh = ws.root.join(path);
-			let maps = crate::app::item_maps(&ws.root, item);
+			let maps = item_maps(&ws.root, item);
 			let mut files = vec![mesh.clone()];
 			files.extend(maps.iter().map(|(_, p)| p.clone()));
 			Some((Source::Mesh { mesh, maps }, files))
@@ -252,7 +256,7 @@ fn spawn(
 			});
 		}
 		Source::Model(index) => {
-			let load = crate::app::model_loader(ws, index);
+			let load = model_loader(ws, index);
 			std::thread::spawn(move || {
 				let _ = tx.send(load(&ctx).map(|m| Prepared::Model(Box::new(m))));
 				ctx.request_repaint();
@@ -282,9 +286,10 @@ fn read_mesh(
 	})
 }
 
-/// Draws a thumbnail from a front three-quarter view, as the viewer opens.
-fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
-	let mut settings = ViewSettings {
+/// Thumbnails ignore the viewer's choices: solid shading on black, no grid
+/// or axes, default lighting and no model lights (a model adds its own).
+fn thumbnail_settings() -> ViewSettings {
+	ViewSettings {
 		shading: Shading::Solid,
 		cull_backfaces: false,
 		show_axes: false,
@@ -294,7 +299,12 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 		lights: Vec::new(),
 		lighting: Default::default(),
 		highlight: egui::Color32::BLACK,
-	};
+	}
+}
+
+/// Draws a thumbnail from a front three-quarter view, as the viewer opens.
+fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
+	let mut settings = thumbnail_settings();
 	let big = [SIZE * SUPERSAMPLE; 2];
 	let image = match prepared {
 		Prepared::Mesh {

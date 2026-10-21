@@ -387,7 +387,7 @@ fn unit_corner_wedge() -> Geometry {
 }
 
 /// A unit cube: the Block primitive, and the BLOCK physics shape.
-pub fn unit_cube() -> Geometry {
+pub(super) fn unit_cube() -> Geometry {
 	let positions = (0..8)
 		.map(|i| {
 			[

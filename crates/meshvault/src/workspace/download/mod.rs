@@ -30,6 +30,9 @@ pub enum Event {
 	},
 	/// Credentials were rejected; the rest of the queue was cancelled.
 	AuthFailed(String),
+	/// The run's last worker has stopped: every event of the run came
+	/// before this one.
+	Stopped,
 }
 
 /// What a worker sends: an event, and the run it came from.
@@ -213,25 +216,30 @@ impl Downloader {
 	/// dropped, and only the latest run's are counted or report a
 	/// credential failure.
 	pub fn poll(&mut self, root: Option<&Path>) -> Vec<Event> {
-		let mut events = Vec::new();
-		for Message { run, event } in self.rx.try_iter() {
-			if root != Some(run.root.as_path()) {
-				continue;
-			}
-			let latest = self.run.as_ref().is_some_and(|r| Arc::ptr_eq(r, &run));
-			match &event {
-				Event::Finished { result, .. } if latest => {
-					self.completed += 1;
-					if result.is_err() {
-						self.failed += 1;
-					}
-				}
-				Event::AuthFailed(_) if !latest => continue,
-				_ => {}
-			}
-			events.push(event);
+		let messages: Vec<Message> = self.rx.try_iter().collect();
+		messages
+			.into_iter()
+			.filter_map(|message| self.accept(message, root))
+			.collect()
+	}
+
+	/// The event in `message` if [`Self::poll`] returns it, counted.
+	fn accept(&mut self, Message { run, event }: Message, root: Option<&Path>) -> Option<Event> {
+		if root != Some(run.root.as_path()) {
+			return None;
 		}
-		events
+		let latest = self.run.as_ref().is_some_and(|r| Arc::ptr_eq(r, &run));
+		match &event {
+			Event::Finished { result, .. } if latest => {
+				self.completed += 1;
+				if result.is_err() {
+					self.failed += 1;
+				}
+			}
+			Event::AuthFailed(_) | Event::Stopped if !latest => return None,
+			_ => {}
+		}
+		Some(event)
 	}
 }
 
@@ -256,7 +264,13 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 			match next {
 				Some(job) => job,
 				None => {
-					run.workers.fetch_sub(1, Ordering::SeqCst);
+					let last = run.workers.fetch_sub(1, Ordering::SeqCst) == 1;
+					drop(queue);
+					// a run with no workers is never restarted, so this is
+					// its last event
+					if last {
+						send(Event::Stopped);
+					}
 					return;
 				}
 			}
@@ -530,7 +544,6 @@ mod tests {
 	use super::*;
 	use crate::scene::maps::MapKind;
 	use crate::test_support::{SAMPLE_MESHES, TempDir};
-	use std::time::Duration;
 
 	/// Full pipeline: export entries -> workspace -> worker pool -> organized files.
 	#[test]
@@ -602,13 +615,8 @@ mod tests {
 			ws.pending_jobs(),
 			3,
 		);
-		let deadline = std::time::Instant::now() + Duration::from_secs(20);
-		let mut events = Vec::new();
-		while downloader.is_running() || events.len() < 4 {
-			assert!(std::time::Instant::now() < deadline, "downloads timed out");
-			events.extend(downloader.poll(Some(&dir)));
-			std::thread::sleep(Duration::from_millis(20));
-		}
+		let events = run_to_end(&mut downloader, &dir);
+		assert_eq!(events.len(), 4);
 		for event in events {
 			let Event::Finished { job, result } = event else {
 				panic!("auth failure")
@@ -763,18 +771,20 @@ mod tests {
 		}
 	}
 
-	/// Polls until the downloader has stopped, returning every event.
+	/// Waits for the latest run to stop, returning every event polled for
+	/// `root` until then, without the final [`Event::Stopped`].
 	fn run_to_end(downloader: &mut Downloader, root: &Path) -> Vec<Event> {
-		let deadline = std::time::Instant::now() + test_server::WATCHDOG;
 		let mut events = Vec::new();
 		loop {
-			events.extend(downloader.poll(Some(root)));
-			if !downloader.is_running() {
-				events.extend(downloader.poll(Some(root)));
-				return events;
+			let message = downloader
+				.rx
+				.recv_timeout(test_server::WATCHDOG)
+				.expect("downloads timed out");
+			match downloader.accept(message, Some(root)) {
+				Some(Event::Stopped) => return events,
+				Some(event) => events.push(event),
+				None => {}
 			}
-			assert!(std::time::Instant::now() < deadline, "downloads timed out");
-			std::thread::sleep(Duration::from_millis(5));
 		}
 	}
 
@@ -1003,18 +1013,41 @@ mod tests {
 		send(&old, Event::AuthFailed("old".into()));
 		send(&latest, finished(3));
 		send(&latest, Event::AuthFailed("latest".into()));
+		send(&old, Event::Stopped);
+		send(&latest, Event::Stopped);
 		let events = downloader.poll(Some(&b));
 		let seen: Vec<String> = events
 			.iter()
 			.map(|e| match e {
 				Event::Finished { job, .. } => format!("finished {}", job.asset_id),
 				Event::AuthFailed(m) => format!("auth {m}"),
+				Event::Stopped => "stopped".into(),
 			})
 			.collect();
-		assert_eq!(seen, ["finished 2", "finished 3", "auth latest"]);
+		assert_eq!(seen, ["finished 2", "finished 3", "auth latest", "stopped"]);
 		assert_eq!((downloader.completed, downloader.failed), (1, 0));
 		// with no workspace open, nothing is returned
 		send(&latest, finished(4));
 		assert!(downloader.poll(None).is_empty());
+	}
+
+	/// A run ends with one Stopped event, after all its other events and
+	/// once no worker is left, so the app's final save and summary can key
+	/// off it rather than guess from is_running between polls (B17).
+	#[test]
+	fn a_run_ends_with_one_stopped_event_after_its_results() {
+		let dir = TempDir::new("download_stopped");
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let jobs = vec![mesh_job(1, "Models/One"), mesh_job(2, "Models/Two")];
+		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 2);
+		let events = run_to_end(&mut downloader, &dir);
+		assert!(!downloader.is_running());
+		assert_eq!(events.len(), 2);
+		assert!(events.iter().all(|e| matches!(e, Event::Finished { .. })));
+		assert_eq!((downloader.total, downloader.completed), (2, 2));
+		// the stopped run sends nothing more
+		assert!(downloader.rx.try_recv().is_err());
 	}
 }

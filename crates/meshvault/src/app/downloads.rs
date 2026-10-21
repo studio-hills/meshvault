@@ -70,6 +70,7 @@ impl App {
 		let root = self.workspace.as_ref().map(|ws| ws.root.as_path());
 		let events = self.downloader.poll(root);
 		let had_events = !events.is_empty();
+		let mut finished = false;
 		for event in events {
 			match event {
 				Event::Finished { job, result } => {
@@ -82,10 +83,10 @@ impl App {
 					self.toasts.error(format!("Downloads stopped: {message}"));
 					self.open_settings(Some(message));
 				}
+				Event::Stopped => finished = true,
 			}
 		}
 		// save progress regularly, and once everything has finished
-		let finished = had_events && !self.downloader.is_running();
 		if finished || (had_events && self.last_save.elapsed() > DOWNLOAD_SAVE_INTERVAL) {
 			self.save_workspace();
 		}

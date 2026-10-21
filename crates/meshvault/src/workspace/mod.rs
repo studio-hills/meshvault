@@ -16,6 +16,7 @@
 
 pub mod download;
 pub mod facts;
+mod store;
 pub mod view_loader;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -638,7 +639,7 @@ impl Workspace {
 
 	/// Records a finished download: the files it wrote become `Done`, or
 	/// every target of the job becomes `Failed` with the error.
-	pub fn record_download(&mut self, job: &Job, result: Result<Vec<download::Stored>, String>) {
+	pub fn record_download(&mut self, job: &Job, result: Result<Vec<store::Stored>, String>) {
 		match result {
 			Ok(written) => {
 				for w in written {

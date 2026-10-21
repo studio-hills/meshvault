@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use self::client::{AuthMethod, Client, Credentials, Endpoints, FetchError};
 pub use crate::workspace::store::{Stored, sniff_extension};
@@ -39,6 +39,17 @@ struct Shared {
 	workers: AtomicUsize,
 }
 
+impl Shared {
+	/// The job queue. Only short queue edits run under this lock, so it is
+	/// poisoned only if one of them panicked part-way; the queue and the
+	/// totals can then no longer be trusted, so this panics too.
+	fn queue(&self) -> MutexGuard<'_, VecDeque<Job>> {
+		self.queue
+			.lock()
+			.expect("download queue lock poisoned: a queue edit panicked")
+	}
+}
+
 pub struct Downloader {
 	shared: Arc<Shared>,
 	tx: Sender<Event>,
@@ -67,7 +78,8 @@ impl Downloader {
 		self.shared.workers.load(Ordering::SeqCst) > 0
 	}
 
-	/// Queues jobs (skipping ones already queued) and starts workers.
+	/// Queues jobs; a job already queued gains the new targets. Starts
+	/// workers up to `concurrency`.
 	pub fn start(
 		&mut self,
 		ctx: &eframe::egui::Context,
@@ -82,7 +94,7 @@ impl Downloader {
 			self.failed = 0;
 			self.shared.cancel.store(false, Ordering::SeqCst);
 		}
-		let mut queue = self.shared.queue.lock().unwrap();
+		let mut queue = self.shared.queue();
 		for job in jobs {
 			// already queued: make sure every target gets written
 			if let Some(queued) = queue.iter_mut().find(|q| q.asset_id == job.asset_id) {
@@ -117,7 +129,7 @@ impl Downloader {
 	pub fn cancel(&mut self) {
 		self.shared.cancel.store(true, Ordering::SeqCst);
 		let dropped = {
-			let mut queue = self.shared.queue.lock().unwrap();
+			let mut queue = self.shared.queue();
 			let n = queue.len();
 			queue.clear();
 			n
@@ -150,7 +162,7 @@ fn worker(
 		if shared.cancel.load(Ordering::SeqCst) {
 			return;
 		}
-		let Some(job) = shared.queue.lock().unwrap().pop_front() else {
+		let Some(job) = shared.queue().pop_front() else {
 			return;
 		};
 		let cache = crate::workspace::cache_path(root, job.asset_id);
@@ -159,6 +171,9 @@ fn worker(
 			Err(_) => {
 				match client.fetch_with_retry(job.asset_id, job.wants_image(), &shared.cancel) {
 					Ok(bytes) => {
+						// best effort: the organised files are written from
+						// these bytes, so a failed cache write only means
+						// downloading again next time
 						if let Some(dir) = cache.parent() {
 							let _ = std::fs::create_dir_all(dir);
 						}
@@ -167,7 +182,7 @@ fn worker(
 					}
 					Err(FetchError::Auth(message)) => {
 						shared.cancel.store(true, Ordering::SeqCst);
-						shared.queue.lock().unwrap().clear();
+						shared.queue().clear();
 						let _ = tx.send(Event::AuthFailed(message));
 						ctx.request_repaint();
 						return;

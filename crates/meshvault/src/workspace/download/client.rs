@@ -285,6 +285,8 @@ impl Client {
 					// sleep in slices so cancelling stays responsive
 					let mut left = wait.min(MAX_RETRY_WAIT);
 					while !left.is_zero() {
+						// Relaxed is enough: the flag publishes no other data,
+						// it only ends this wait early
 						if cancel.load(Ordering::Relaxed) {
 							return Err(FetchError::Transient(msg, None));
 						}

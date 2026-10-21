@@ -36,7 +36,14 @@ pub enum Event {
 struct Shared {
 	queue: Mutex<VecDeque<Job>>,
 	cancel: AtomicBool,
+	/// Workers that have not yet decided to stop. Only changed with the
+	/// queue locked, so a worker that finds the queue empty stops counting
+	/// at once, and `start` never counts on a worker that is stopping.
 	workers: AtomicUsize,
+	/// Called once, by the first worker to stop, after it has decided to
+	/// stop and before it is gone, so a test can act in that gap.
+	#[cfg(test)]
+	on_stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Shared {
@@ -109,7 +116,6 @@ impl Downloader {
 			}
 		}
 		let wanted = concurrency.clamp(1, MAX_WORKERS).min(queue.len());
-		drop(queue);
 		while self.shared.workers.load(Ordering::SeqCst) < wanted {
 			self.shared.workers.fetch_add(1, Ordering::SeqCst);
 			let shared = self.shared.clone();
@@ -119,10 +125,14 @@ impl Downloader {
 			let client = client.clone();
 			std::thread::spawn(move || {
 				worker(&shared, &tx, &ctx, &root, &client);
-				shared.workers.fetch_sub(1, Ordering::SeqCst);
+				#[cfg(test)]
+				if let Some(on_stop) = shared.on_stop.lock().unwrap().take() {
+					on_stop();
+				}
 				ctx.request_repaint();
 			});
 		}
+		drop(queue);
 	}
 
 	/// Stops after the downloads in flight; queued jobs stay pending.
@@ -159,11 +169,21 @@ fn worker(
 	client: &Client,
 ) {
 	loop {
-		if shared.cancel.load(Ordering::SeqCst) {
-			return;
-		}
-		let Some(job) = shared.queue().pop_front() else {
-			return;
+		// deciding to stop and no longer counting happen under one lock
+		let job = {
+			let mut queue = shared.queue();
+			let next = if shared.cancel.load(Ordering::SeqCst) {
+				None
+			} else {
+				queue.pop_front()
+			};
+			match next {
+				Some(job) => job,
+				None => {
+					shared.workers.fetch_sub(1, Ordering::SeqCst);
+					return;
+				}
+			}
 		};
 		let bytes = match store::read_cache(root, job.asset_id) {
 			Some(bytes) => Ok(bytes),
@@ -178,11 +198,11 @@ fn worker(
 						shared.queue().clear();
 						let _ = tx.send(Event::AuthFailed(message));
 						ctx.request_repaint();
-						return;
+						continue;
 					}
 					// cancelled mid-retry: leave the item pending
 					Err(FetchError::Transient(..)) if shared.cancel.load(Ordering::SeqCst) => {
-						return;
+						continue;
 					}
 					Err(e) => Err(e.to_string()),
 				}
@@ -716,5 +736,52 @@ mod tests {
 		assert_eq!(names, ["8"]);
 		let cached = std::fs::read(crate::workspace::cache_path(&dir, 8)).unwrap();
 		assert_eq!(cached, b"version 4.00\nEIGHT");
+	}
+
+	/// Makes the first worker to stop wait, once it has decided to stop,
+	/// until the returned sender sends (or is dropped). The receiver hears
+	/// when it gets there.
+	fn pause_first_stop(downloader: &Downloader) -> (Receiver<()>, Sender<()>) {
+		let (stopping_tx, stopping) = channel();
+		let (go, go_rx) = channel::<()>();
+		*downloader.shared.on_stop.lock().unwrap() = Some(Box::new(move || {
+			let _ = stopping_tx.send(());
+			let _ = go_rx.recv_timeout(test_server::WATCHDOG);
+		}));
+		(stopping, go)
+	}
+
+	/// A job queued just as the last worker finds the queue empty and
+	/// stops is still downloaded: the worker no longer counts as running
+	/// once it has decided to stop, so a new one is started (B04).
+	#[test]
+	fn a_job_queued_as_the_last_worker_stops_is_downloaded() {
+		let dir = TempDir::new("download_stop_gap");
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let (stopping, go) = pause_first_stop(&downloader);
+		let root = dir.to_path_buf();
+		downloader.start(
+			&ctx,
+			root.clone(),
+			assets.client(),
+			vec![mesh_job(1, "Models/One")],
+			1,
+		);
+		stopping
+			.recv_timeout(test_server::WATCHDOG)
+			.expect("the worker never stopped");
+		downloader.start(
+			&ctx,
+			root,
+			assets.client(),
+			vec![mesh_job(2, "Models/Two")],
+			1,
+		);
+		drop(go);
+		run_to_end(&mut downloader);
+		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
+		assert!(dir.join("Models/Two.mesh").is_file());
 	}
 }

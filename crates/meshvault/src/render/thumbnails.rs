@@ -86,7 +86,20 @@ struct Job {
 	/// What it is drawn from, and the workspace generation then.
 	files: Vec<PathBuf>,
 	generation: u64,
+	/// The [`versions`] of `files` just before they were read.
+	read: Vec<Version>,
 	rx: Receiver<Result<Prepared, String>>,
+}
+
+/// A file's modified time and length, or `None` if it cannot be read.
+type Version = Option<(SystemTime, u64)>;
+
+fn versions(files: &[PathBuf]) -> Vec<Version> {
+	let version = |f: &PathBuf| {
+		let meta = std::fs::metadata(f).ok()?;
+		Some((meta.modified().ok()?, meta.len()))
+	};
+	files.iter().map(version).collect()
 }
 
 pub struct Thumbnails {
@@ -137,7 +150,10 @@ impl Thumbnails {
 	pub fn update(&mut self, ctx: &egui::Context, ws: &Workspace, renderer: Option<&GpuRenderer>) {
 		let wanted = std::mem::take(&mut self.wanted);
 		self.generation = ws.generation();
-		self.finish_job(ctx, renderer);
+		self.finish_job(ctx, |prepared| match renderer {
+			Some(renderer) => draw(renderer, prepared),
+			None => Err("no GPU".into()),
+		});
 		let mut loads = 0;
 		let mut waiting = false;
 		for subject in wanted {
@@ -175,12 +191,14 @@ impl Thumbnails {
 			}
 			match renderer {
 				Some(_) if self.job.is_none() => {
+					let read = versions(&files);
 					let rx = spawn(ctx, ws, source);
 					self.job = Some(Job {
 						subject,
 						file,
 						files,
 						generation,
+						read,
 						rx,
 					});
 				}
@@ -197,7 +215,12 @@ impl Thumbnails {
 		}
 	}
 
-	fn finish_job(&mut self, ctx: &egui::Context, renderer: Option<&GpuRenderer>) {
+	/// Takes the job's result once it is read, drawing it with `draw`.
+	fn finish_job(
+		&mut self,
+		ctx: &egui::Context,
+		draw: impl FnOnce(Prepared) -> Result<image::RgbaImage, String>,
+	) {
 		let Some(job) = &self.job else { return };
 		let result = match job.rx.try_recv() {
 			Ok(result) => result,
@@ -205,15 +228,19 @@ impl Thumbnails {
 			Err(TryRecvError::Disconnected) => Err("the reader stopped".into()),
 		};
 		let Some(job) = self.job.take() else { return };
-		let state = match (result, renderer) {
-			(Ok(prepared), Some(renderer)) => {
-				match keep(&self.dir, &job.file, &job.files, draw(renderer, prepared)) {
-					Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
-					None => State::Failed,
-				}
-			}
+		// a file changed while it was read (a re-import, say): what was read
+		// is out of date, and saved now the picture would look newer than
+		// the change, so it is dropped and drawn again
+		if versions(&job.files) != job.read {
+			return;
+		}
+		let state = match result {
+			Ok(prepared) => match keep(&self.dir, &job.file, &job.files, draw(prepared)) {
+				Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
+				None => State::Failed,
+			},
 			// the reader's (or the GPU's) reason is not shown anywhere
-			_ => State::Failed,
+			Err(_) => State::Failed,
 		};
 		let generation = job.generation;
 		self.states.insert(job.subject, Entry { state, generation });
@@ -697,6 +724,75 @@ mod tests {
 		assert!(thumbnails.get(&subject).is_some());
 		thumbnails.update(&ctx, &ws, None);
 		assert!(thumbnails.get(&subject).is_none());
+	}
+
+	/// A job whose files changed after they were read is dropped, not
+	/// drawn: saving the old picture after the change would make it look
+	/// fresh for good. Bug: a model re-imported while its thumbnail was
+	/// being read kept the old picture, even after a restart.
+	#[test]
+	fn a_job_read_before_its_files_changed_is_not_kept() {
+		let (dir, ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		let rig = dir.join("Rigs").join("M.rig.json");
+		std::fs::create_dir_all(rig.parent().unwrap()).unwrap();
+		let now = SystemTime::now();
+		let ctx = egui::Context::default();
+		let subject = Subject::Model("Workspace.M".into());
+		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let prepared = || {
+			let geometry = geometry();
+			let groups = geometry.default_groups();
+			Ok(Prepared::Mesh {
+				geometry,
+				groups,
+				material: Material::default(),
+			})
+		};
+		// a job started with the rig as it was, and the result it sends
+		let start = |thumbnails: &mut Thumbnails| {
+			let (tx, rx) = std::sync::mpsc::channel();
+			let files = vec![rig.clone()];
+			thumbnails.job = Some(Job {
+				subject: subject.clone(),
+				file: thumbnails.file(&subject),
+				read: versions(&files),
+				files,
+				generation: ws.generation(),
+				rx,
+			});
+			tx
+		};
+		std::fs::write(&rig, "rig A").unwrap();
+		std::fs::File::options()
+			.write(true)
+			.open(&rig)
+			.unwrap()
+			.set_modified(now - Duration::from_secs(60))
+			.unwrap();
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let file = thumbnails.file(&subject);
+		let tx = start(&mut thumbnails);
+		// re-imported (same path, a little later, still older than any new
+		// thumbnail) before the old result is taken
+		std::fs::write(&rig, "rig B, moved").unwrap();
+		std::fs::File::options()
+			.write(true)
+			.open(&rig)
+			.unwrap()
+			.set_modified(now - Duration::from_secs(30))
+			.unwrap();
+		tx.send(prepared()).unwrap();
+		thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+		assert!(thumbnails.job.is_none());
+		assert!(!is_fresh(&file, std::slice::from_ref(&rig)));
+		assert!(!file.exists() && !drawn_from(&file).exists());
+		assert!(thumbnails.get(&subject).is_none());
+		// a job read after the change is kept, and fresh
+		let tx = start(&mut thumbnails);
+		tx.send(prepared()).unwrap();
+		thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+		assert!(thumbnails.get(&subject).is_some());
+		assert!(is_fresh(&file, std::slice::from_ref(&rig)));
 	}
 
 	#[test]

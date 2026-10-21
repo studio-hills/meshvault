@@ -658,8 +658,12 @@ fn same(a: &CFrame, b: &CFrame) -> bool {
 }
 
 #[cfg(test)]
+// geometry groups are lists of ranges, so one-element lists are intended
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
 	use super::*;
+	use crate::export::fixtures::parse_glb;
+	use crate::test_support::TempDir;
 
 	#[test]
 	fn key_times_increase_and_end_on_the_clip() {
@@ -677,8 +681,360 @@ mod tests {
 		}
 	}
 
-	/// Exports every animated model of the workspace at `MESHVAULT_WS` to
-	/// `MESHVAULT_GLB_OUT` (or the temp folder).
+	fn map(pixels: &[[u8; 4]]) -> image::RgbaImage {
+		let mut image = image::RgbaImage::new(pixels.len() as u32, 1);
+		for (x, p) in pixels.iter().enumerate() {
+			image.put_pixel(x as u32, 0, image::Rgba(*p));
+		}
+		image
+	}
+
+	fn pixels(image: &image::RgbaImage) -> Vec<[u8; 4]> {
+		image.pixels().map(|p| p.0).collect()
+	}
+
+	const ALL_MODES: [AlphaMode; 5] = [
+		AlphaMode::Overlay,
+		AlphaMode::Transparency,
+		AlphaMode::TintMask,
+		AlphaMode::Opaque,
+		AlphaMode::Blend,
+	];
+
+	/// `bake` takes linear colours; the maps hold sRGB.
+	const BLACK: [f32; 3] = [0.0; 3];
+	const WHITE: [f32; 3] = [1.0; 3];
+
+	#[test]
+	fn bake_leaves_an_opaque_untinted_map_alone() {
+		let opaque = map(&[[200, 100, 50, 255], [0, 0, 0, 255]]);
+		for mode in ALL_MODES {
+			assert!(bake(&opaque, mode, WHITE, BLACK).is_none(), "{mode:?}");
+		}
+	}
+
+	/// Transparency and Blend keep the map's alpha, so untinted they show
+	/// the map as it is; the other modes have to flatten it.
+	#[test]
+	fn bake_of_an_untinted_see_through_map_depends_on_the_mode() {
+		let see_through = map(&[[200, 100, 50, 128]]);
+		for mode in ALL_MODES {
+			let keeps_alpha = matches!(mode, AlphaMode::Transparency | AlphaMode::Blend);
+			assert_eq!(
+				bake(&see_through, mode, WHITE, BLACK).is_none(),
+				keeps_alpha,
+				"{mode:?}"
+			);
+		}
+	}
+
+	/// Overlay lays the map over the part colour in linear light and
+	/// encodes the result as sRGB: white at half alpha over black is 188,
+	/// not the byte average 128.
+	#[test]
+	fn bake_overlay_blends_in_linear_light() {
+		let half = map(&[[255, 255, 255, 128], [10, 20, 30, 0], [10, 20, 30, 255]]);
+		let baked = bake(&half, AlphaMode::Overlay, WHITE, BLACK).unwrap();
+		assert_eq!(
+			pixels(&baked),
+			vec![[188, 188, 188, 255], [0, 0, 0, 255], [10, 20, 30, 255]]
+		);
+		// fully transparent shows the part's colour
+		let part = [linear(1.0), linear(128.0 / 255.0), 0.0];
+		let baked = bake(&half, AlphaMode::Overlay, WHITE, part).unwrap();
+		assert_eq!(pixels(&baked)[1], [255, 128, 0, 255]);
+	}
+
+	/// TintMask tints where the map is opaque. Where alpha is 0 the colour
+	/// is kept, but the pixel becomes opaque.
+	#[test]
+	fn bake_tint_mask_tints_by_alpha_and_drops_it() {
+		let tint = [linear(128.0 / 255.0), 1.0, 1.0];
+		let mask = map(&[[255, 255, 255, 0], [255, 255, 255, 255], [200, 100, 50, 0]]);
+		let baked = bake(&mask, AlphaMode::TintMask, tint, BLACK).unwrap();
+		assert_eq!(
+			pixels(&baked),
+			vec![
+				[255, 255, 255, 255],
+				[128, 255, 255, 255],
+				[200, 100, 50, 255]
+			]
+		);
+	}
+
+	/// Transparency (and Blend) tint the colour and keep the alpha; it takes
+	/// a tint to change anything (untinted, the map is used as it is).
+	#[test]
+	fn bake_transparency_tints_and_keeps_alpha() {
+		let tint = [linear(128.0 / 255.0), 1.0, linear(0.0)];
+		let see_through = map(&[[255, 255, 255, 77], [255, 255, 255, 255]]);
+		for mode in [AlphaMode::Transparency, AlphaMode::Blend] {
+			let baked = bake(&see_through, mode, tint, WHITE).unwrap();
+			assert_eq!(
+				pixels(&baked),
+				vec![[128, 255, 0, 77], [128, 255, 0, 255]],
+				"{mode:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn bake_opaque_drops_alpha() {
+		let see_through = map(&[[200, 100, 50, 0]]);
+		let baked = bake(&see_through, AlphaMode::Opaque, WHITE, BLACK).unwrap();
+		assert_eq!(pixels(&baked), vec![[200, 100, 50, 255]]);
+	}
+
+	#[test]
+	fn min_max_is_per_component() {
+		let (lo, hi) = min_max(&[1.0, 5.0, -2.0, 3.0, -1.0, 4.0], 3);
+		assert_eq!((lo, hi), (vec![1.0, -1.0, -2.0], vec![3.0, 5.0, 4.0]));
+		let (lo, hi) = min_max(&[2.0, 7.0], 1);
+		assert_eq!((lo, hi), (vec![2.0], vec![7.0]));
+		// no values: the starting extremes, as they are
+		assert_eq!(min_max(&[], 2), (vec![f32::MAX; 2], vec![f32::MIN; 2]));
+	}
+
+	#[test]
+	fn column_major_of_identity_is_identity() {
+		let mut identity = [0.0; 16];
+		for k in 0..4 {
+			identity[k * 5] = 1.0;
+		}
+		assert_eq!(column_major(&CFrame::IDENTITY), identity);
+	}
+
+	#[test]
+	fn column_major_puts_translation_last() {
+		let cf = CFrame::from_components(&[
+			1.0, 2.0, 3.0, //
+			0.0, -1.0, 0.0, //
+			1.0, 0.0, 0.0, //
+			0.0, 0.0, 1.0,
+		]);
+		assert_eq!(
+			column_major(&cf),
+			[
+				0.0, 1.0, 0.0, 0.0, //
+				-1.0, 0.0, 0.0, 0.0, //
+				0.0, 0.0, 1.0, 0.0, //
+				1.0, 2.0, 3.0, 1.0,
+			]
+		);
+	}
+
+	#[test]
+	fn same_allows_differences_under_1e5() {
+		let a = CFrame::from_position([1.0, 2.0, 3.0]);
+		assert!(same(&a, &a));
+		let mut b = a;
+		b.pos[2] += 5e-6;
+		b.rot[1][0] = -9e-6;
+		assert!(same(&a, &b));
+		let mut b = a;
+		b.pos[0] += 2e-5;
+		assert!(!same(&a, &b));
+		let mut b = a;
+		b.rot[2][1] = 2e-5;
+		assert!(!same(&a, &b));
+	}
+
+	fn triangle(uvs: bool) -> Geometry {
+		Geometry {
+			positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, -1.0], [0.0, 3.0, 0.0]],
+			uvs: uvs.then(|| vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+			normals: Some(vec![[0.0, 0.0, 2.0]; 3]),
+			triangles: vec![[0, 1, 2]],
+			groups: vec![0..1],
+			group_kind: GroupKind::Whole,
+		}
+	}
+
+	fn floats(doc: &Value, bin: &[u8], accessor: &Value) -> Vec<f32> {
+		let view = &doc["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+		let at = view["byteOffset"].as_u64().unwrap() as usize;
+		let len = view["byteLength"].as_u64().unwrap() as usize;
+		bin[at..at + len]
+			.chunks(4)
+			.map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+			.collect()
+	}
+
+	#[test]
+	fn export_mesh_writes_one_coloured_mesh() {
+		let dir = TempDir::new("glb_mesh");
+		let path = dir.join("tri.glb");
+		let colour = Color32::from_rgb(163, 162, 165);
+		export_mesh(
+			&triangle(false),
+			&[0],
+			&Material::default(),
+			colour,
+			"Tri",
+			&path,
+		)
+		.unwrap();
+		let glb = std::fs::read(&path).unwrap();
+		let (doc, bin) = parse_glb(&glb);
+		assert_eq!(doc["scene"], 0);
+		assert_eq!(doc["scenes"], json!([{ "nodes": [0] }]));
+		assert_eq!(doc["nodes"], json!([{ "name": "Tri", "mesh": 0 }]));
+		assert_eq!(doc["buffers"][0]["byteLength"], bin.len());
+		let primitive = &doc["meshes"][0]["primitives"][0];
+		let attributes = &primitive["attributes"];
+		assert!(attributes.get("TEXCOORD_0").is_none());
+		let position = &doc["accessors"][attributes["POSITION"].as_u64().unwrap() as usize];
+		assert_eq!(position["count"], 3);
+		assert_eq!(position["min"], json!([0.0, 0.0, -1.0]));
+		assert_eq!(position["max"], json!([2.0, 3.0, 0.0]));
+		// normals are written normalised
+		let normal = &doc["accessors"][attributes["NORMAL"].as_u64().unwrap() as usize];
+		assert_eq!(floats(&doc, bin, normal), [0.0, 0.0, 1.0].repeat(3));
+		let indices = &doc["accessors"][primitive["indices"].as_u64().unwrap() as usize];
+		assert_eq!(
+			(indices["count"].as_u64(), indices["componentType"].as_u64()),
+			(Some(3), Some(5125))
+		);
+		// no map: the part colour, in linear light, opaque
+		let pbr = &doc["materials"][0]["pbrMetallicRoughness"];
+		let factor: Vec<f32> = serde_json::from_value(pbr["baseColorFactor"].clone()).unwrap();
+		let expected = [163, 162, 165].map(|c| linear(c as f32 / 255.0));
+		assert_eq!(factor, [expected[0], expected[1], expected[2], 1.0]);
+		assert_eq!(
+			(
+				pbr["metallicFactor"].as_f64(),
+				pbr["roughnessFactor"].as_f64()
+			),
+			(Some(0.0), Some(0.6))
+		);
+		assert!(doc["materials"][0].get("alphaMode").is_none());
+		assert!(doc.get("textures").is_none() && doc.get("samplers").is_none());
+	}
+
+	#[test]
+	fn export_mesh_without_triangles_fails() {
+		let dir = TempDir::new("glb_empty");
+		let path = dir.join("none.glb");
+		let mut g = triangle(false);
+		g.groups = vec![0..0];
+		let result = export_mesh(
+			&g,
+			&[0],
+			&Material::default(),
+			Color32::WHITE,
+			"None",
+			&path,
+		);
+		assert_eq!(result, Err("the mesh has no triangles".into()));
+		// a group index past the geometry's groups draws nothing either
+		let result = export_mesh(
+			&triangle(false),
+			&[3],
+			&Material::default(),
+			Color32::WHITE,
+			"None",
+			&path,
+		);
+		assert_eq!(result, Err("the mesh has no triangles".into()));
+		assert!(!path.exists());
+	}
+
+	fn material_with_map(dir: &Path, pixels: &[[u8; 4]]) -> (Material, PathBuf) {
+		let file = dir.join("map.png");
+		map(pixels).save(&file).unwrap();
+		let bytes = std::fs::read(&file).unwrap();
+		let texture =
+			crate::scene::texture::load(&eframe::egui::Context::default(), &file, &bytes).unwrap();
+		let mut material = Material::default();
+		material.set(Slot::Base, texture);
+		(material, file)
+	}
+
+	fn image_bytes<'a>(doc: &Value, bin: &'a [u8], texture: usize) -> &'a [u8] {
+		let image = doc["textures"][texture]["source"].as_u64().unwrap() as usize;
+		let view =
+			&doc["bufferViews"][doc["images"][image]["bufferView"].as_u64().unwrap() as usize];
+		let at = view["byteOffset"].as_u64().unwrap() as usize;
+		&bin[at..at + view["byteLength"].as_u64().unwrap() as usize]
+	}
+
+	/// An opaque PNG map is embedded byte for byte, over a white factor.
+	#[test]
+	fn export_mesh_embeds_an_opaque_png_as_it_is() {
+		let dir = TempDir::new("glb_map");
+		let (material, file) = material_with_map(&dir, &[[200, 100, 50, 255], [1, 2, 3, 255]]);
+		let path = dir.join("tri.glb");
+		export_mesh(&triangle(true), &[0], &material, Color32::RED, "Tri", &path).unwrap();
+		let glb = std::fs::read(&path).unwrap();
+		let (doc, bin) = parse_glb(&glb);
+		assert!(
+			doc["meshes"][0]["primitives"][0]["attributes"]
+				.get("TEXCOORD_0")
+				.is_some()
+		);
+		let pbr = &doc["materials"][0]["pbrMetallicRoughness"];
+		assert_eq!(pbr["baseColorFactor"], json!([1.0, 1.0, 1.0, 1.0]));
+		assert_eq!(pbr["baseColorTexture"], json!({ "index": 0 }));
+		assert_eq!(doc["images"][0]["mimeType"], "image/png");
+		assert_eq!(image_bytes(&doc, bin, 0), std::fs::read(&file).unwrap());
+		assert_eq!(doc["samplers"].as_array().unwrap().len(), 1);
+	}
+
+	/// A see-through map is baked over the part colour (Overlay) and
+	/// embedded as a new PNG.
+	#[test]
+	fn export_mesh_bakes_a_see_through_map() {
+		let dir = TempDir::new("glb_baked");
+		let (material, _) = material_with_map(&dir, &[[255, 255, 255, 128], [9, 9, 9, 0]]);
+		let path = dir.join("tri.glb");
+		export_mesh(
+			&triangle(true),
+			&[0],
+			&material,
+			Color32::BLACK,
+			"Tri",
+			&path,
+		)
+		.unwrap();
+		let glb = std::fs::read(&path).unwrap();
+		let (doc, bin) = parse_glb(&glb);
+		let png = image::load_from_memory(image_bytes(&doc, bin, 0))
+			.unwrap()
+			.to_rgba8();
+		assert_eq!(pixels(&png), vec![[188, 188, 188, 255], [0, 0, 0, 255]]);
+		assert!(doc["materials"][0].get("alphaMode").is_none());
+	}
+
+	/// Without texture coordinates the map is left out.
+	#[test]
+	fn export_mesh_without_uvs_ignores_the_map() {
+		let dir = TempDir::new("glb_no_uvs");
+		let (material, _) = material_with_map(&dir, &[[200, 100, 50, 255]]);
+		let path = dir.join("tri.glb");
+		export_mesh(
+			&triangle(false),
+			&[0],
+			&material,
+			Color32::WHITE,
+			"Tri",
+			&path,
+		)
+		.unwrap();
+		let (doc, _) = parse_glb(&std::fs::read(&path).unwrap());
+		assert!(doc.get("textures").is_none());
+		assert_eq!(
+			doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"],
+			json!([1.0, 1.0, 1.0, 1.0])
+		);
+	}
+
+	/// Exports every animated model of the workspace at `MESHVAULT_WS`,
+	/// calling the glTF writer directly, to the folder `MESHVAULT_GLB_OUT`
+	/// (default: `meshvault-glb-test` in the temp folder, not emptied first;
+	/// files of the same name are overwritten and left there to inspect).
+	/// Ignored as it needs a real workspace; run it with
+	/// `MESHVAULT_WS=<workspace folder> cargo test -p meshvault -- --ignored gltf::tests`.
+	/// The OBJ counterpart is `obj::tests::exports_workspace_models`.
 	#[test]
 	#[ignore]
 	fn exports_workspace_models() {

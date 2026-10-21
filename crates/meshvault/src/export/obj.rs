@@ -401,6 +401,7 @@ impl Obj {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::export::fixtures::{parse_glb, sample_mesh};
 	use crate::test_support::TempDir;
 
 	fn triangle(uvs: bool) -> Geometry {
@@ -444,17 +445,7 @@ mod tests {
 
 	#[test]
 	fn exports_a_sample_mesh() {
-		let samples = crate::test_support::SAMPLE_MESHES;
-		let mesh = std::fs::read_dir(samples)
-			.unwrap()
-			.map(|e| e.unwrap().path())
-			.find(|p| {
-				std::fs::read(p)
-					.ok()
-					.and_then(|b| geometry::load(&b).ok())
-					.is_some_and(|l| !l.geometry.triangles.is_empty() && l.geometry.uvs.is_some())
-			})
-			.expect("a sample mesh with UVs");
+		let mesh = sample_mesh(true);
 		let dir = TempDir::new("obj_sample");
 		let job = MeshJob {
 			name: "Sample".into(),
@@ -477,17 +468,7 @@ mod tests {
 
 	#[test]
 	fn exports_a_sample_mesh_as_glb() {
-		let samples = crate::test_support::SAMPLE_MESHES;
-		let mesh = std::fs::read_dir(samples)
-			.unwrap()
-			.map(|e| e.unwrap().path())
-			.find(|p| {
-				std::fs::read(p)
-					.ok()
-					.and_then(|b| geometry::load(&b).ok())
-					.is_some_and(|l| !l.geometry.triangles.is_empty())
-			})
-			.expect("a sample mesh");
+		let mesh = sample_mesh(false);
 		let dir = TempDir::new("glb_sample");
 		let job = MeshJob {
 			name: "Sample".into(),
@@ -503,14 +484,72 @@ mod tests {
 		);
 		assert_eq!(report.written, 1, "{:?}", report.failed);
 		let glb = std::fs::read(dir.join("Sample.glb")).unwrap();
-		assert_eq!(&glb[..4], b"glTF");
+		let (doc, bin) = parse_glb(&glb);
+		assert_eq!(doc["asset"]["generator"], "Meshvault");
+		assert_eq!(doc["buffers"][0]["byteLength"], bin.len());
+		assert_eq!(doc["nodes"][0]["name"], "Sample");
+		assert_eq!(doc["meshes"][0]["name"], "Sample");
+		assert_eq!(doc["meshes"].as_array().unwrap().len(), 1);
+	}
+
+	#[test]
+	fn names_are_sanitised_and_numbered() {
+		let dir = TempDir::new("obj_names");
+		let mut names = Names::default();
+		assert_eq!(names.unique(&dir, "a", Format::Obj), "a");
+		assert_eq!(names.unique(&dir, "a", Format::Obj), "a (2)");
+		// clashes ignore case
+		assert_eq!(names.unique(&dir, "A", Format::Obj), "A (3)");
+		assert_eq!(names.unique(&dir, "a/b", Format::Obj), "a_b");
+		// sanitize never returns an empty name, so this is `_`, not "model"
+		assert_eq!(names.unique(&dir, "", Format::Obj), "_");
+		assert_eq!(names.unique(&dir, "  ", Format::Obj), "_ (2)");
+	}
+
+	#[test]
+	fn names_avoid_files_already_there() {
+		let dir = TempDir::new("obj_names_files");
+		std::fs::write(dir.join("b.obj"), "").unwrap();
+		std::fs::write(dir.join("b (2).obj"), "").unwrap();
+		assert_eq!(Names::default().unique(&dir, "b", Format::Obj), "b (3)");
+		// only files of the format being written count
+		assert_eq!(Names::default().unique(&dir, "b", Format::Glb), "b");
+	}
+
+	#[test]
+	fn split_gives_the_folder_and_stem() {
+		let path = Path::new("out").join("mesh.obj");
+		assert_eq!(split(&path), Ok((PathBuf::from("out"), "mesh".into())));
+		// a bare file name has an empty folder, which is fine
 		assert_eq!(
-			u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize,
-			glb.len()
+			split(Path::new("mesh.obj")),
+			Ok((PathBuf::new(), "mesh".into()))
+		);
+		assert_eq!(
+			split(Path::new("mesh")),
+			Ok((PathBuf::new(), "mesh".into()))
 		);
 	}
 
-	/// Exports every animated model of the workspace at `MESHVAULT_WS`.
+	#[test]
+	fn split_rejects_a_path_without_folder_or_name() {
+		for path in ["", "/"] {
+			assert_eq!(
+				split(Path::new(path)),
+				Err("no folder to write into".into()),
+				"{path:?}"
+			);
+		}
+		assert_eq!(split(Path::new("out/..")), Err("no file name".into()));
+	}
+
+	/// Exports every animated model of the workspace at `MESHVAULT_WS`
+	/// through the batch export, and checks each OBJ's face indices.
+	/// Ignored as it needs a real workspace; run it with
+	/// `MESHVAULT_WS=<workspace folder> cargo test -p meshvault -- --ignored obj::tests`.
+	/// It writes to `meshvault-obj-test-models` in the temp folder (emptied
+	/// first) and leaves the files there to inspect. The glTF counterpart
+	/// is `gltf::tests::exports_workspace_models`.
 	#[test]
 	#[ignore]
 	fn exports_workspace_models() {

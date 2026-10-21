@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use rbx_mesh::mesh::{Chunk6, Chunks6, CoreMeshChunk, Mesh, Vertices2};
 
-use super::{Geometry, GroupKind, Loaded, detail};
+use super::{Geometry, GroupKind, Loaded, detail, single_group};
 
 fn faces2(faces: &[rbx_mesh::mesh::Face2]) -> Vec<[u32; 3]> {
 	faces
@@ -45,7 +45,7 @@ fn lod_groups(lods: &[rbx_mesh::mesh::Lod3], face_count: usize) -> Vec<Range<usi
 		.filter(|r| r.start < r.end)
 		.collect();
 	if groups.is_empty() {
-		vec![0..face_count]
+		single_group(face_count)
 	} else {
 		groups
 	}
@@ -280,7 +280,7 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 			details.push(detail("LOD type", format!("{:?}", lods.lod_type)));
 			groups
 		}
-		None => vec![0..triangles.len()],
+		None => single_group(triangles.len()),
 	};
 	if let Some(skinning) = m.skinning() {
 		details.push(detail("Bones", skinning.bones.len()));

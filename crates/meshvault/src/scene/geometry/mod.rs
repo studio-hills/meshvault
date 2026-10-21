@@ -1,9 +1,6 @@
 //! Converts every format rbx_mesh can decode into one flat triangle list
 //! that the viewer can draw and export.
 
-// Geometry::groups is a list of triangle ranges, so a one-element list is intended.
-#![allow(clippy::single_range_in_vec_init)]
-
 use std::io::Cursor;
 use std::ops::Range;
 
@@ -65,7 +62,7 @@ impl Geometry {
 	}
 
 	pub(super) fn whole(positions: Vec<[f32; 3]>, triangles: Vec<[u32; 3]>) -> Self {
-		let groups = vec![0..triangles.len()];
+		let groups = single_group(triangles.len());
 		Self {
 			positions,
 			uvs: None,
@@ -137,6 +134,14 @@ impl Geometry {
 			(lo, hi)
 		}))
 	}
+}
+
+/// One group of every triangle, for `len` triangles.
+// `Geometry::groups` is a list of triangle ranges, so a one-range list is
+// what is meant here
+#[allow(clippy::single_range_in_vec_init)]
+fn single_group(len: usize) -> Vec<Range<usize>> {
+	vec![0..len]
 }
 
 #[derive(Clone, Debug)]

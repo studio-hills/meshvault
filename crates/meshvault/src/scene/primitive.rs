@@ -1,5 +1,7 @@
 //! Roblox part shapes as unit solids.
 
+use std::sync::{Mutex, OnceLock};
+
 use crate::scene::geometry::Geometry;
 
 /// Roblox part shapes, as unit-sized solids centred on the origin; a part
@@ -30,23 +32,6 @@ pub enum Primitive {
 
 impl Primitive {
 	pub fn geometry(self) -> &'static Geometry {
-		use std::sync::{Mutex, OnceLock};
-		if let Primitive::Truss { segments, axis } = self {
-			// one per segment count and axis ever drawn, leaked and kept for
-			// the life of the process: closing a model frees none of them.
-			// Each grows with its segment count, and the 4096 clamp in
-			// model_view bounds one shape, not the sum. Deliberate: trusses
-			// are rare and few lengths recur, so this trades memory for not
-			// rebuilding them; any budget or eviction is separate work.
-			static TRUSSES: Mutex<Vec<((u16, u8), &'static Geometry)>> = Mutex::new(Vec::new());
-			let mut built = TRUSSES.lock().unwrap_or_else(|e| e.into_inner());
-			if let Some((_, g)) = built.iter().find(|(k, _)| *k == (segments, axis)) {
-				return g;
-			}
-			let g: &'static Geometry = Box::leak(Box::new(unit_truss(segments, axis)));
-			built.push(((segments, axis), g));
-			return g;
-		}
 		static SHAPES: [OnceLock<Geometry>; 6] = [const { OnceLock::new() }; 6];
 		let (slot, make): (usize, fn() -> Geometry) = match self {
 			Primitive::Block => (0, unit_cube),
@@ -55,7 +40,7 @@ impl Primitive {
 			Primitive::Head => (3, unit_head),
 			Primitive::Wedge => (4, unit_wedge),
 			Primitive::CornerWedge => (5, unit_corner_wedge),
-			Primitive::Truss { .. } => unreachable!(),
+			Primitive::Truss { segments, axis } => return truss_geometry(segments, axis),
 		};
 		SHAPES[slot].get_or_init(make)
 	}
@@ -72,6 +57,24 @@ impl Primitive {
 			Primitive::CornerWedge => "corner wedge",
 		}
 	}
+}
+
+/// The truss of `segments` along `axis`, built the first time it is asked for.
+fn truss_geometry(segments: u16, axis: u8) -> &'static Geometry {
+	// one per segment count and axis ever drawn, leaked and kept for the
+	// life of the process: closing a model frees none of them. Each grows
+	// with its segment count, and the 4096 clamp in model_view bounds one
+	// shape, not the sum. Deliberate: trusses are rare and few lengths
+	// recur, so this trades memory for not rebuilding them; any budget or
+	// eviction is separate work.
+	static TRUSSES: Mutex<Vec<((u16, u8), &'static Geometry)>> = Mutex::new(Vec::new());
+	let mut built = TRUSSES.lock().unwrap_or_else(|e| e.into_inner());
+	if let Some((_, g)) = built.iter().find(|(k, _)| *k == (segments, axis)) {
+		return g;
+	}
+	let g: &'static Geometry = Box::leak(Box::new(unit_truss(segments, axis)));
+	built.push(((segments, axis), g));
+	g
 }
 
 /// Turns every triangle of a convex solid centred on the origin to face

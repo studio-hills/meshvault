@@ -4,7 +4,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Sense, Stroke, V
 
 use super::list::nothing_matches;
 use super::menus::item_hover;
-use super::{Action, Browser, Key, Status, status, status_dot};
+use super::{Action, Browser, Key, Opened, Status, status, status_dot};
 use crate::render::thumbnails::Subject;
 use crate::ui::theme::{CAPTION, CARD_RADIUS, palette};
 use crate::ui::{icons, widgets};
@@ -62,8 +62,7 @@ impl Browser {
 		&mut self,
 		ui: &mut egui::Ui,
 		ws: &Workspace,
-		open_stem: Option<&str>,
-		open_model: Option<usize>,
+		opened: Opened<'_>,
 		actions: &mut Vec<Action>,
 	) {
 		let items = ws.items();
@@ -93,7 +92,7 @@ impl Browser {
 				ui.horizontal(|ui| {
 					ui.spacing_mut().item_spacing.x = GAP;
 					for &key in row {
-						self.tile(ui, ws, key, side, open_stem, open_model, actions);
+						self.tile(ui, ws, key, side, opened, actions);
 					}
 				});
 				ui.add_space(GAP - ui.spacing().item_spacing.y);
@@ -101,15 +100,13 @@ impl Browser {
 		}
 	}
 
-	#[allow(clippy::too_many_arguments)]
 	fn tile(
 		&mut self,
 		ui: &mut egui::Ui,
 		ws: &Workspace,
 		key: Key,
 		side: f32,
-		open_stem: Option<&str>,
-		open_model: Option<usize>,
+		opened: Opened<'_>,
 		actions: &mut Vec<Action>,
 	) {
 		let p = palette(ui.ctx());
@@ -122,7 +119,7 @@ impl Browser {
 				let m = &ws.models()[i];
 				(
 					m.name.as_str(),
-					open_model == Some(i),
+					opened.is_model(i),
 					self.model_status(ws, m),
 					Subject::Model(m.path.clone()),
 				)
@@ -131,7 +128,7 @@ impl Browser {
 				let item = &ws.items()[i];
 				(
 					item.name.as_str(),
-					open_stem == Some(item.stem.as_str()),
+					opened.is_item(item),
 					status(item),
 					Subject::Item(item.stem.clone()),
 				)

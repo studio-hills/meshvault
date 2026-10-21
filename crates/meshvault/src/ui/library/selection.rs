@@ -149,7 +149,7 @@ impl Browser {
 						egui::Popup::menu(&export).show(|ui| {
 							widgets::menu_style(ui);
 							let (items, models) = self.selected();
-							export_items(ui, &items, &models, n, actions);
+							export_items(ui, &items, &models, actions);
 						});
 						let failed = self.selected_failures(ws);
 						let retry = ui

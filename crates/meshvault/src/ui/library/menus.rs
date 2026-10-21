@@ -7,15 +7,15 @@ use crate::export::Format;
 use crate::ui::{icons, widgets};
 use crate::workspace::{AssetState, Item, ModelItem, Workspace};
 
-/// The two export items of a menu, for `items` and `models`. `n` is how
-/// many things they export, named in the labels when it is not 1.
+/// The two export items of a menu, for `items` and `models`. The labels
+/// say how many things they export when it is not 1.
 pub(super) fn export_items(
 	ui: &mut egui::Ui,
 	items: &[usize],
 	models: &[usize],
-	n: usize,
 	actions: &mut Vec<Action>,
 ) {
+	let n = items.len() + models.len();
 	let what = if n == 1 {
 		String::new()
 	} else {
@@ -78,7 +78,7 @@ impl Browser {
 			ui.close();
 		}
 		let (items, models) = self.selected();
-		export_items(ui, &items, &models, n, actions);
+		export_items(ui, &items, &models, actions);
 		if ui
 			.button(format!("{}  Clear selection", icons::X))
 			.clicked()
@@ -121,7 +121,7 @@ impl Browser {
 			ui.ctx().copy_text(model.path.clone());
 			ui.close();
 		}
-		export_items(ui, &[], &[i], 1, actions);
+		export_items(ui, &[], &[i], actions);
 		ui.separator();
 		if widgets::danger_item(ui, format!("{}  Remove from workspace", icons::TRASH)).clicked() {
 			actions.push(Action::RemoveModels(vec![i]));
@@ -161,7 +161,7 @@ impl Browser {
 			ui.close();
 		}
 		if item.is_done() {
-			export_items(ui, &[i], &[], 1, actions);
+			export_items(ui, &[i], &[], actions);
 		}
 		ui.separator();
 		if widgets::danger_item(ui, format!("{}  Remove from workspace", icons::TRASH)).clicked() {

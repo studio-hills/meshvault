@@ -131,6 +131,24 @@ pub struct Browser {
 	facts: Option<Facts>,
 }
 
+/// What the viewer has open, so its row or tile can be marked: a mesh by
+/// its stem, an animated model by its index. Each is checked on its own.
+#[derive(Clone, Copy)]
+struct Opened<'a> {
+	stem: Option<&'a str>,
+	model: Option<usize>,
+}
+
+impl Opened<'_> {
+	fn is_item(&self, item: &Item) -> bool {
+		self.stem == Some(item.stem.as_str())
+	}
+
+	fn is_model(&self, i: usize) -> bool {
+		self.model == Some(i)
+	}
+}
+
 /// Folder state namespace for the library tree.
 const SCOPE: &str = "library";
 
@@ -199,6 +217,10 @@ impl Browser {
 		renderer: Option<&GpuRenderer>,
 	) -> Vec<Action> {
 		self.rebuild_if_needed(ws);
+		let opened = Opened {
+			stem: open_stem,
+			model: open_model,
+		};
 		let p = palette(ui.ctx());
 		let mut actions = Vec::new();
 		let items = ws.items();
@@ -254,12 +276,12 @@ impl Browser {
 					if !any {
 						nothing_matches(ui);
 					}
-					self.models(ui, ws, open_model, &mut actions);
+					self.models(ui, ws, opened.model, &mut actions);
 					let tree = std::mem::take(&mut self.tree);
-					self.folder(ui, ws, &tree, "", open_stem, &mut actions);
+					self.folder(ui, ws, &tree, "", opened.stem, &mut actions);
 					self.tree = tree;
 				}
-				View::Grid => self.grid(ui, ws, open_stem, open_model, &mut actions),
+				View::Grid => self.grid(ui, ws, opened, &mut actions),
 			},
 		);
 

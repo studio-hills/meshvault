@@ -13,6 +13,9 @@
 --   send    = false to keep the export here instead of sending it to Meshvault
 --
 -- Every line it writes to the Output window starts with [Meshvault]; problems are warnings.
+-- The one exception: when sending fails, it prints the export itself as JSON chunks between
+-- "=== JSON CHUNK i/n ===" and "=== END JSON EXPORT ===" lines, with no prefix, so the
+-- chunks can be copied into a .json file as they are.
 -- It returns three things:
 --   issues  the problems, as a list (empty when there were none)
 --   export  the export as a Lua table (nil when there was nothing to export)

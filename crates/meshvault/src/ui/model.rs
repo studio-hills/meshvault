@@ -9,8 +9,7 @@ use crate::anim::schema::ClipStatus;
 use crate::app::App;
 use crate::render::camera::{Camera, project};
 use crate::render::viewport;
-use crate::scene::geometry::Primitive;
-use crate::scene::model_view::{ModelView, PartShape};
+use crate::scene::model_view::{ClipSlot, ModelView, PartShape, PartView};
 
 /// Corner radius of the transport bar; the controls in it are rounded to
 /// this less its padding and border.
@@ -138,13 +137,7 @@ impl App {
 				if !model.warnings.is_empty() {
 					let title = format!("Warnings · {}", model.warnings.len());
 					widgets::section(ui, "model_warnings", &title, true, |ui| {
-						for w in &model.warnings {
-							widgets::note(
-								ui,
-								RichText::new(icons::WARNING).color(p.warning),
-								RichText::new(w).color(p.text_weak),
-							);
-						}
+						warning_list(ui, &p, &model.warnings)
 					});
 				}
 
@@ -155,69 +148,7 @@ impl App {
 				});
 				if let Some(slot) = model.current.and_then(|i| model.clips.get(i)) {
 					widgets::section(ui, "model_clip_info", "Clip", true, |ui| {
-						let clip = slot.clip.as_ref().ok();
-						let mut rows = vec![
-							("Type".to_string(), slot.status.label().to_string()),
-							(
-								"Duration".to_string(),
-								format!("{:.2} s", clip.map_or(0.0, |c| c.duration)),
-							),
-							(
-								"Looped".to_string(),
-								if clip.is_some_and(|c| c.looped) {
-									"Yes"
-								} else {
-									"No"
-								}
-								.to_string(),
-							),
-						];
-						if !slot.priority.is_empty() {
-							rows.push(("Priority".into(), slot.priority.clone()));
-						}
-						let tracks = slot.binding.targets.len();
-						rows.push((
-							"Tracks bound".into(),
-							format!(
-								"{} of {tracks}",
-								slot.binding.matched() + slot.mesh_bone_tracks
-							),
-						));
-						if let Some(c) = clip {
-							if !c.markers.is_empty() {
-								rows.push(("Markers".into(), c.markers.len().to_string()));
-							}
-							if c.skipped_curves > 0 {
-								rows.push(("Curves skipped".into(), c.skipped_curves.to_string()));
-							}
-						}
-						if !slot.animation_id.is_empty() {
-							rows.push(("Animation".into(), slot.animation_id.clone()));
-						}
-						widgets::properties(ui, "model_clip_grid", &rows);
-						let unmatched = slot.binding.unmatched.len() - slot.mesh_bone_tracks;
-						if unmatched > 0 {
-							ui.add_space(4.0);
-							ui.collapsing(
-								RichText::new(format!(
-									"{unmatched} tracks match nothing in this model"
-								))
-								.color(p.warning),
-								|ui| {
-									ui.label(
-										RichText::new(
-											"Usually attachments, face bones or parts the export did not include.",
-										)
-										.small()
-										.color(p.text_weak),
-									);
-									let mut names = slot.binding.unmatched.clone();
-									names.sort();
-									names.dedup();
-									ui.label(names.join(", "));
-								},
-							);
-						}
+						clip_details(ui, &p, slot)
 					});
 				}
 
@@ -275,6 +206,82 @@ impl App {
 	}
 }
 
+/// The model's load warnings, one note each.
+fn warning_list(ui: &mut egui::Ui, p: &super::theme::Palette, warnings: &[String]) {
+	for w in warnings {
+		widgets::note(
+			ui,
+			RichText::new(icons::WARNING).color(p.warning),
+			RichText::new(w).color(p.text_weak),
+		);
+	}
+}
+
+/// What the chosen clip is and how much of it binds to this model.
+fn clip_details(ui: &mut egui::Ui, p: &super::theme::Palette, slot: &ClipSlot) {
+	let clip = slot.clip.as_ref().ok();
+	let mut rows = vec![
+		("Type".to_string(), slot.status.label().to_string()),
+		(
+			"Duration".to_string(),
+			format!("{:.2} s", clip.map_or(0.0, |c| c.duration)),
+		),
+		(
+			"Looped".to_string(),
+			if clip.is_some_and(|c| c.looped) {
+				"Yes"
+			} else {
+				"No"
+			}
+			.to_string(),
+		),
+	];
+	if !slot.priority.is_empty() {
+		rows.push(("Priority".into(), slot.priority.clone()));
+	}
+	let tracks = slot.binding.targets.len();
+	rows.push((
+		"Tracks bound".into(),
+		format!(
+			"{} of {tracks}",
+			slot.binding.matched() + slot.mesh_bone_tracks
+		),
+	));
+	if let Some(c) = clip {
+		if !c.markers.is_empty() {
+			rows.push(("Markers".into(), c.markers.len().to_string()));
+		}
+		if c.skipped_curves > 0 {
+			rows.push(("Curves skipped".into(), c.skipped_curves.to_string()));
+		}
+	}
+	if !slot.animation_id.is_empty() {
+		rows.push(("Animation".into(), slot.animation_id.clone()));
+	}
+	widgets::properties(ui, "model_clip_grid", &rows);
+	let unmatched = slot.binding.unmatched.len() - slot.mesh_bone_tracks;
+	if unmatched > 0 {
+		ui.add_space(4.0);
+		ui.collapsing(
+			RichText::new(format!("{unmatched} tracks match nothing in this model"))
+				.color(p.warning),
+			|ui| {
+				ui.label(
+					RichText::new(
+						"Usually attachments, face bones or parts the export did not include.",
+					)
+					.small()
+					.color(p.text_weak),
+				);
+				let mut names = slot.binding.unmatched.clone();
+				names.sort();
+				names.dedup();
+				ui.label(names.join(", "));
+			},
+		);
+	}
+}
+
 fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView) {
 	ui.spacing_mut().item_spacing.x = 4.0;
 	let has_clip = model.current.is_some();
@@ -298,7 +305,42 @@ fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 	{
 		model.set_time(0.0);
 	}
-	// clip picker
+	clip_picker(ui, model);
+
+	let duration = model.duration();
+	let time_text = format!("{:.2} / {:.2} s", model.time, duration);
+	ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+		speed_menu(ui, model);
+		if widgets::icon_toggle(ui, icons::REPEAT, "Loop", model.looping).clicked() {
+			model.looping = !model.looping;
+		}
+		// room between the controls and the seeker with its time
+		ui.add_space(12.0);
+		// a slot as wide as the clip's own length, so the time (and the
+		// scrubber beside it) does not shift as it counts
+		let font = egui::FontId::new(CAPTION, semibold());
+		let widest = format!("{duration:.2} / {duration:.2} s");
+		let size = widgets::tabular_size(ui, &widest, &font);
+		let (slot, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+		widgets::paint_tabular(
+			ui.painter(),
+			slot.right_center(),
+			egui::Align2::RIGHT_CENTER,
+			&time_text,
+			&font,
+			p.text_weak,
+		);
+		ui.add_space(4.0);
+		// the scrubber takes the remaining width
+		ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+			scrubber(ui, p, model, duration, has_clip)
+		});
+	});
+}
+
+/// The clip menu: the rest pose, then every clip (those that cannot play
+/// are greyed, with why).
+fn clip_picker(ui: &mut egui::Ui, model: &mut ModelView) {
 	let current = model
 		.current
 		.and_then(|i| model.clips.get(i))
@@ -342,89 +384,76 @@ fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 		);
 		menu.response.on_hover_text("Choose a clip");
 	});
+}
 
-	let duration = model.duration();
-	let time_text = format!("{:.2} / {:.2} s", model.time, duration);
-	ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-		// 12.5 is off the type scale on purpose; kept as it was
-		ui.menu_button(RichText::new(speed_label(model.speed)).size(12.5), |ui| {
-			widgets::menu_style(ui);
-			for s in SPEEDS {
-				if ui
-					.selectable_label((model.speed - s).abs() < 1e-3, speed_label(s))
-					.clicked()
-				{
-					model.speed = s;
-					ui.close();
-				}
+/// Playback speed, as a menu of the `SPEEDS`.
+fn speed_menu(ui: &mut egui::Ui, model: &mut ModelView) {
+	// 12.5 is off the type scale on purpose; kept as it was
+	ui.menu_button(RichText::new(speed_label(model.speed)).size(12.5), |ui| {
+		widgets::menu_style(ui);
+		for s in SPEEDS {
+			if ui
+				.selectable_label((model.speed - s).abs() < 1e-3, speed_label(s))
+				.clicked()
+			{
+				model.speed = s;
+				ui.close();
 			}
-		})
-		.response
-		.on_hover_text("Playback speed");
-		if widgets::icon_toggle(ui, icons::REPEAT, "Loop", model.looping).clicked() {
-			model.looping = !model.looping;
 		}
-		// room between the controls and the seeker with its time
-		ui.add_space(12.0);
-		// a slot as wide as the clip's own length, so the time (and the
-		// scrubber beside it) does not shift as it counts
-		let font = egui::FontId::new(CAPTION, semibold());
-		let widest = format!("{duration:.2} / {duration:.2} s");
-		let size = widgets::tabular_size(ui, &widest, &font);
-		let (slot, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-		widgets::paint_tabular(
-			ui.painter(),
-			slot.right_center(),
-			egui::Align2::RIGHT_CENTER,
-			&time_text,
-			&font,
-			p.text_weak,
-		);
-		ui.add_space(4.0);
-		// the scrubber takes the remaining width
-		ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-			let width = ui.available_width().max(60.0);
-			ui.spacing_mut().slider_width = width;
-			let mut t = model.time;
-			let slider = ui.add_enabled(
-				has_clip && duration > 0.0,
-				egui::Slider::new(&mut t, 0.0..=duration.max(1e-3)).show_value(false),
+	})
+	.response
+	.on_hover_text("Playback speed");
+}
+
+/// The seek slider across the remaining width, with a tick for each marker
+/// (named on hover).
+fn scrubber(
+	ui: &mut egui::Ui,
+	p: &super::theme::Palette,
+	model: &mut ModelView,
+	duration: f32,
+	has_clip: bool,
+) {
+	let width = ui.available_width().max(60.0);
+	ui.spacing_mut().slider_width = width;
+	let mut t = model.time;
+	let slider = ui.add_enabled(
+		has_clip && duration > 0.0,
+		egui::Slider::new(&mut t, 0.0..=duration.max(1e-3)).show_value(false),
+	);
+	let slider = widgets::pointer(slider);
+	if slider.changed() {
+		model.set_time(t);
+	}
+	if slider.drag_started() {
+		model.playing = false;
+	}
+	// marker ticks under the track
+	if duration > 0.0 {
+		let r = slider.rect;
+		let painter = ui.painter();
+		let mut hovered = None;
+		let pointer = ui.ctx().pointer_hover_pos();
+		for m in model.markers() {
+			let x = r.left() + (m.time / duration).clamp(0.0, 1.0) * r.width();
+			let top = egui::pos2(x, r.bottom() - 4.0);
+			painter.line_segment(
+				[top, top + Vec2::new(0.0, 5.0)],
+				Stroke::new(2.0, p.warning),
 			);
-			let slider = widgets::pointer(slider);
-			if slider.changed() {
-				model.set_time(t);
+			if pointer.is_some_and(|q| (q.x - x).abs() < 4.0 && r.expand(4.0).contains(q)) {
+				hovered = Some(m);
 			}
-			if slider.drag_started() {
-				model.playing = false;
-			}
-			// marker ticks under the track
-			if duration > 0.0 {
-				let r = slider.rect;
-				let painter = ui.painter();
-				let mut hovered = None;
-				let pointer = ui.ctx().pointer_hover_pos();
-				for m in model.markers() {
-					let x = r.left() + (m.time / duration).clamp(0.0, 1.0) * r.width();
-					let top = egui::pos2(x, r.bottom() - 4.0);
-					painter.line_segment(
-						[top, top + Vec2::new(0.0, 5.0)],
-						Stroke::new(2.0, p.warning),
-					);
-					if pointer.is_some_and(|q| (q.x - x).abs() < 4.0 && r.expand(4.0).contains(q)) {
-						hovered = Some(m);
-					}
-				}
-				if let Some(m) = hovered {
-					let text = if m.value.is_empty() {
-						format!("{}  {:.2} s", m.name, m.time)
-					} else {
-						format!("{} = {}  {:.2} s", m.name, m.value, m.time)
-					};
-					slider.on_hover_text(format!("{}  {text}", icons::FLAG));
-				}
-			}
-		});
-	});
+		}
+		if let Some(m) = hovered {
+			let text = if m.value.is_empty() {
+				format!("{}  {:.2} s", m.name, m.time)
+			} else {
+				format!("{} = {}  {:.2} s", m.name, m.value, m.time)
+			};
+			slider.on_hover_text(format!("{}  {text}", icons::FLAG));
+		}
+	}
 }
 
 fn clip_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView) {
@@ -566,36 +595,7 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 			*highlight = None;
 			for part in parts.iter_mut() {
 				let rp = &rig.parts[part.index];
-				let (tag, colour, hover) = match &part.shape {
-					PartShape::Mesh(asset) => match &part.skin {
-						Some(s) => (
-							"skinned",
-							p.accent,
-							format!(
-								"{}\n{} of {} bones matched in the model",
-								asset.name, s.matched, s.bones
-							),
-						),
-						None => ("mesh", p.text_weak, asset.name.clone()),
-					},
-					PartShape::Primitive(kind) => match &part.approximate {
-						Some(why) => ("approx.", p.warning, format!("Drawn approximately: {why}")),
-						None => (
-							match kind {
-								Primitive::Block => "block",
-								Primitive::Ball => "ball",
-								Primitive::CylinderX => "cylinder",
-								Primitive::Head => "head",
-								Primitive::Truss { .. } => "truss",
-								Primitive::Wedge => "wedge",
-								Primitive::CornerWedge => "corner wedge",
-							},
-							p.text_weak,
-							"No file mesh: a Roblox primitive shape".to_string(),
-						),
-					},
-					PartShape::Missing(why) => ("missing", p.danger, why.clone()),
-				};
+				let (tag, colour, hover) = part_tag(part, p);
 				let joint = rig
 					.motors
 					.iter()
@@ -627,4 +627,31 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 			}
 		},
 	);
+}
+
+/// A part's tag in the list, its colour, and the line its hover text gives
+/// about how it is drawn.
+fn part_tag(part: &PartView, p: &super::theme::Palette) -> (&'static str, Color32, String) {
+	match &part.shape {
+		PartShape::Mesh(asset) => match &part.skin {
+			Some(s) => (
+				"skinned",
+				p.accent,
+				format!(
+					"{}\n{} of {} bones matched in the model",
+					asset.name, s.matched, s.bones
+				),
+			),
+			None => ("mesh", p.text_weak, asset.name.clone()),
+		},
+		PartShape::Primitive(kind) => match &part.approximate {
+			Some(why) => ("approx.", p.warning, format!("Drawn approximately: {why}")),
+			None => (
+				kind.label(),
+				p.text_weak,
+				"No file mesh: a Roblox primitive shape".to_string(),
+			),
+		},
+		PartShape::Missing(why) => ("missing", p.danger, why.clone()),
+	}
 }

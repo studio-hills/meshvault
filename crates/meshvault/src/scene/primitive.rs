@@ -59,6 +59,19 @@ impl Primitive {
 		};
 		SHAPES[slot].get_or_init(make)
 	}
+
+	/// The shape's name in lower case, as the part list tags it.
+	pub fn label(self) -> &'static str {
+		match self {
+			Primitive::Block => "block",
+			Primitive::Ball => "ball",
+			Primitive::CylinderX => "cylinder",
+			Primitive::Head => "head",
+			Primitive::Truss { .. } => "truss",
+			Primitive::Wedge => "wedge",
+			Primitive::CornerWedge => "corner wedge",
+		}
+	}
 }
 
 /// Turns every triangle of a convex solid centred on the origin to face

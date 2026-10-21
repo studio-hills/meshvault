@@ -2,7 +2,7 @@
 //!
 //! - `GET /export.luau[?schema=N]` serves the exporter (the newest schema
 //!   unless asked otherwise), so it never has to be kept or pasted by hand.
-//!   [`studio_command`] is the Command Bar line that fetches and runs it.
+//!   [`studio_code`] is the Command Bar code that fetches and runs it.
 //! - `POST /export` receives the export in pieces, each with these headers:
 //!   `X-Meshvault-Export` (an id shared by all pieces of one export),
 //!   `X-Meshvault-Chunk` (`i/n`, 1-based) and optionally `X-Meshvault-Name`
@@ -49,42 +49,78 @@ pub fn exporter(schema: u32) -> Option<String> {
 	)
 }
 
-/// The line to paste into Studio's Command Bar: it fetches the exporter
-/// from Meshvault and runs it. `game:HttpGet` is not available everywhere,
-/// so it uses HttpService with HttpEnabled switched on just for the fetch.
-pub fn studio_command(schema: u32) -> String {
-	format!("{} loadstring(s)()()", fetch_exporter(schema))
+/// What the code for Studio does with the export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeMode {
+	/// Exports and sends it to Meshvault.
+	Send,
+	/// Exports without sending, so the export can be changed, then sent
+	/// with `send(export)` or saved some other way.
+	Edit,
 }
 
-/// Code fetching the exporter for `schema` from Meshvault into `s`, with
-/// `h` the HttpService. HttpEnabled is on only while fetching.
-fn fetch_exporter(schema: u32) -> String {
+/// How the code for Studio is laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeLayout {
+	/// One line, for the Command Bar.
+	OneLine,
+	/// One statement a line, with readable names and comments.
+	Formatted,
+}
+
+/// The code to paste into Studio's Command Bar (or a plugin): it fetches the
+/// exporter for `schema` from Meshvault and runs it. `game:HttpGet` is not
+/// available everywhere, so it uses HttpService with HttpEnabled switched on
+/// just for the fetch.
+pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 	let query = if schema == LATEST_SCHEMA {
 		String::new()
 	} else {
 		format!("?schema={schema}")
 	};
-	format!(
-		"local h=game:GetService(\"HttpService\") local e=h.HttpEnabled h.HttpEnabled=true \
-		 local ok,s=pcall(h.GetAsync,h,\"http://localhost:{PORT}/export.luau{query}\") h.HttpEnabled=e \
-		 assert(ok,\"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): \"..tostring(s))"
-	)
-}
-
-/// Code for the Command Bar (or a plugin) that exports without sending:
-/// the export comes back as a table to change, then `send(export)` sends
-/// it to Meshvault, or the user saves its JSON their own way.
-pub fn studio_script(schema: u32) -> String {
-	format!(
-		"{}\n\
-		 local issues, export, send = loadstring(s)()({{ send = false }})\n\
-		 \n\
-		 -- change the export here, e.g. keep only the first model:\n\
-		 -- export.Models = {{ export.Models[1] }}\n\
-		 \n\
-		 send(export) -- or save h:JSONEncode(export) your own way",
-		fetch_exporter(schema)
-	)
+	let url = format!("http://localhost:{PORT}/export.luau{query}");
+	let unreachable =
+		"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): ";
+	match layout {
+		CodeLayout::OneLine => {
+			let fetch = format!(
+				"local h=game:GetService(\"HttpService\") local e=h.HttpEnabled h.HttpEnabled=true \
+				 local ok,s=pcall(h.GetAsync,h,\"{url}\") h.HttpEnabled=e \
+				 assert(ok,\"{unreachable}\"..tostring(s))"
+			);
+			match mode {
+				CodeMode::Send => format!("{fetch} loadstring(s)()()"),
+				CodeMode::Edit => format!(
+					"{fetch} local issues,export,send=loadstring(s)()({{send=false}}) send(export)"
+				),
+			}
+		}
+		CodeLayout::Formatted => {
+			// no line longer than the dialog shows
+			let fetch = format!(
+				"local http = game:GetService(\"HttpService\")\n\
+				 local url = \"{url}\"\n\
+				 local enabled = http.HttpEnabled\n\
+				 http.HttpEnabled = true\n\
+				 local ok, source = pcall(http.GetAsync, http, url)\n\
+				 http.HttpEnabled = enabled\n\
+				 assert(ok, \"Could not reach Meshvault (is it open, and is Studio in \"\n\
+				 \t.. \"Edit mode, not Play?): \" .. tostring(source))\n\
+				 \n"
+			);
+			match mode {
+				CodeMode::Send => format!("{fetch}loadstring(source)()()"),
+				CodeMode::Edit => format!(
+					"{fetch}local issues, export, send = loadstring(source)()({{ send = false }})\n\
+					 \n\
+					 -- change the export here, e.g. keep only the first model:\n\
+					 -- export.Models = {{ export.Models[1] }}\n\
+					 \n\
+					 send(export) -- or save http:JSONEncode(export) your own way"
+				),
+			}
+		}
+	}
 }
 
 /// A complete export received from Studio.
@@ -461,10 +497,12 @@ mod tests {
 			assert!(source.contains(&format!("SchemaVersion={v}")));
 			assert!(source.trim_end().ends_with("end"));
 		}
-		let command = studio_command(1);
+		let command = studio_code(1, CodeMode::Send, CodeLayout::OneLine);
 		assert!(command.contains("/export.luau?schema=1"));
 		assert!(command.ends_with("loadstring(s)()()"));
-		assert!(!studio_command(LATEST_SCHEMA).contains("schema="));
+		assert!(
+			!studio_code(LATEST_SCHEMA, CodeMode::Send, CodeLayout::OneLine).contains("schema=")
+		);
 		// exporting without sending: the export comes back, with a sender
 		for v in SCHEMAS {
 			let source = exporter(v).unwrap();
@@ -472,9 +510,23 @@ mod tests {
 			assert!(source.contains("return issues, export, send"));
 			assert!(source.contains("local function send(export)"));
 		}
-		let script = studio_script(1);
-		assert!(script.contains("/export.luau?schema=1"));
-		assert!(script.contains("loadstring(s)()({ send = false })"));
+		// every mode and layout fetches the same exporter and runs it
+		for mode in [CodeMode::Send, CodeMode::Edit] {
+			for layout in [CodeLayout::OneLine, CodeLayout::Formatted] {
+				let code = studio_code(1, mode, layout);
+				assert!(code.contains("/export.luau?schema=1"), "{code}");
+				assert_eq!(
+					code.contains('\n'),
+					layout == CodeLayout::Formatted,
+					"{code}"
+				);
+				let edits = code.contains("send = false") || code.contains("send=false");
+				assert_eq!(edits, mode == CodeMode::Edit, "{code}");
+			}
+		}
+		let script = studio_code(1, CodeMode::Edit, CodeLayout::Formatted);
+		assert!(script.contains("loadstring(source)()({ send = false })"));
 		assert!(script.trim_end().ends_with("your own way"));
+		assert!(studio_code(1, CodeMode::Edit, CodeLayout::OneLine).ends_with("send(export)"));
 	}
 }

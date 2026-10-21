@@ -155,7 +155,7 @@ The app also accepts a workspace folder and an export on the command line: `mesh
 
 ### Exporting from Roblox Studio
 
-Meshvault serves the exporter itself, so there is no script to keep up to date. Open Export from Roblox Studio… (in the ⋮ menu, on the welcome screen, or by clicking "Studio link" in the status bar), copy the line, and paste it into Studio's Command Bar in Edit mode:
+Meshvault serves the exporter itself, so there is no script to keep up to date. Open Export from Roblox Studio… (in the ⋮ menu, on the welcome screen, or by clicking "Studio link" in the status bar), copy the code, and paste it into Studio's Command Bar in Edit mode. It comes as one line or formatted over several, with Luau syntax highlighting; the one line is:
 
 ```lua
 local h=game:GetService("HttpService") local e=h.HttpEnabled h.HttpEnabled=true local ok,s=pcall(h.GetAsync,h,"http://localhost:34875/export.luau") h.HttpEnabled=e assert(ok,"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): "..tostring(s)) loadstring(s)()()

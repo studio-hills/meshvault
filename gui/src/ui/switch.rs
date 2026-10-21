@@ -1,7 +1,7 @@
 //! Switching between an animated model and the meshes it is built from,
 //! shown at the top of the inspector.
 
-use eframe::egui::{self, Align2, CornerRadius, FontId, Frame, Margin, Sense, Stroke, Vec2};
+use eframe::egui::{self, CornerRadius, FontId, Frame, Margin, Sense, Stroke, Vec2};
 
 use super::theme::{CONTROL_RADIUS, CONTROL_SM, medium, palette};
 use super::{icons, widgets};

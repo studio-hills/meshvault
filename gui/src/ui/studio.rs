@@ -1,35 +1,29 @@
-//! The "Export from Roblox Studio" dialog: the Command Bar line that fetches
-//! the exporter from Meshvault and runs it, and the state of the Studio link.
+//! The "Export from Roblox Studio" dialog: the code that fetches the
+//! exporter from Meshvault and runs it in Studio's Command Bar, and the
+//! state of the Studio link.
 
 use std::time::Instant;
 
-use eframe::egui::{self, Align, CornerRadius, Frame, Id, Layout, Margin, RichText, Stroke};
+use eframe::egui::{self, Align, CornerRadius, Frame, Id, Layout, Margin, RichText, Stroke, Vec2};
 
 use super::theme::{dialog_frame, display, palette};
-use super::{icons, widgets};
+use super::{code, icons, widgets};
 use crate::app::App;
-use crate::studio_link::{self, Status};
+use crate::studio_link::{self, CodeLayout, CodeMode, Status};
 
 pub struct StudioDialog {
 	schema: u32,
-	mode: Mode,
+	mode: CodeMode,
+	layout: CodeLayout,
 	copied: Option<Instant>,
-}
-
-/// What the exporter does with the export.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-	/// Sends it straight to Meshvault: one Command Bar line.
-	Send,
-	/// Hands it back to change first, then send or save it: a short script.
-	Edit,
 }
 
 impl Default for StudioDialog {
 	fn default() -> Self {
 		Self {
 			schema: studio_link::LATEST_SCHEMA,
-			mode: Mode::Send,
+			mode: CodeMode::Send,
+			layout: CodeLayout::OneLine,
 			copied: None,
 		}
 	}
@@ -40,31 +34,32 @@ pub fn unavailable_text(why: &str) -> String {
 	format!("Exporting from Roblox Studio is unavailable: {why}.")
 }
 
+/// Width of the dialog's content.
+const WIDTH: f32 = 560.0;
+
 impl App {
 	pub(super) fn studio_dialog(&mut self, ctx: &egui::Context) {
 		let Some(dialog) = &mut self.studio_dialog else {
 			return;
 		};
 		let p = palette(ctx);
+		let listening = self.studio_link.is_listening();
 		let modal = egui::Modal::new(Id::unique("studio_export"))
 			.frame(dialog_frame(ctx))
 			.backdrop_color(egui::Color32::from_black_alpha(140))
 			.show(ctx, |ui| {
-				ui.set_width(480.0);
+				ui.set_width(WIDTH);
 				ui.label(
 					RichText::new("Export from Roblox Studio")
 						.size(18.0)
 						.family(display()),
 				);
-				ui.add_space(4.0);
+				ui.add_space(2.0);
 				ui.label(
-					RichText::new(
-						"Run the exporter from Studio's Command Bar. Meshvault serves it, \
-						 receives the export, saves it to Documents/Meshvault/Exports and opens it for import.",
-					)
-					.color(p.text_weak),
+					RichText::new("Paste this into Studio's Command Bar, in Edit mode.")
+						.color(p.text_weak),
 				);
-				ui.add_space(12.0);
+				ui.add_space(16.0);
 
 				if let Status::Unavailable(why) = &self.studio_link.status {
 					Frame::NONE
@@ -89,11 +84,47 @@ impl App {
 								);
 							});
 						});
-					ui.add_space(12.0);
+					ui.add_space(14.0);
 				}
 
+				// what the code does, and in a sentence what that means
+				let modes = [
+					(CodeMode::Send, "Send to Meshvault"),
+					(CodeMode::Edit, "Edit first"),
+				];
+				if widgets::text_segmented(ui, &mut dialog.mode, &modes) {
+					dialog.copied = None;
+				}
+				ui.add_space(8.0);
+				let about = match dialog.mode {
+					CodeMode::Send => {
+						"Exports the selected model (with nothing selected, the whole game except \
+						 Workspace) and opens it here for import."
+					}
+					CodeMode::Edit => {
+						"Gives you the export to change first. send(export) then sends it here, or \
+						 save it your own way."
+					}
+				};
+				ui.add(
+					egui::Label::new(
+						RichText::new(about)
+							.color(p.text_weak)
+							.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+					)
+					.wrap(),
+				);
+				ui.add_space(12.0);
+
+				let source = studio_link::studio_code(dialog.schema, dialog.mode, dialog.layout);
+				if code_card(ui, &mut dialog.layout, &source, dialog.mode) {
+					dialog.copied = None;
+				}
+				ui.add_space(16.0);
+
+				// the schema on the left (rarely changed), the actions on the right
 				ui.horizontal(|ui| {
-					ui.label("Schema");
+					ui.label(RichText::new("Schema").color(p.text_weak));
 					let options: Vec<(u32, String)> = studio_link::SCHEMAS
 						.iter()
 						.rev()
@@ -111,113 +142,27 @@ impl App {
 					if widgets::text_segmented(ui, &mut dialog.schema, &options) {
 						dialog.copied = None;
 					}
-				});
-				ui.add_space(6.0);
-				ui.horizontal(|ui| {
-					ui.label("Export");
-					let modes = [
-						(Mode::Send, "Send to Meshvault"),
-						(Mode::Edit, "Edit first"),
-					];
-					if widgets::text_segmented(ui, &mut dialog.mode, &modes) {
-						dialog.copied = None;
-					}
-				});
-				ui.add_space(12.0);
-
-				step(
-					ui,
-					1,
-					"In Studio, open View → Command Bar (in Edit mode, not Play).",
-				);
-				let command = match dialog.mode {
-					Mode::Send => {
-						step(ui, 2, "Paste this line and press Enter:");
-						studio_link::studio_command(dialog.schema)
-					}
-					Mode::Edit => {
-						step(
-							ui,
-							2,
-							"Paste this script, change the export where it says, and press Enter:",
-						);
-						studio_link::studio_script(dialog.schema)
-					}
-				};
-				Frame::NONE
-					.fill(p.raised)
-					.stroke(Stroke::new(1.0, p.border))
-					.corner_radius(CornerRadius::same(8))
-					.inner_margin(Margin::same(10))
-					.show(ui, |ui| {
-						ui.set_width(ui.available_width());
-						ui.add(
-							egui::Label::new(RichText::new(&command).monospace().size(11.5))
-								.wrap()
-								.selectable(true),
-						);
-					});
-				ui.add_space(6.0);
-				ui.horizontal(|ui| {
-					let copied = dialog.copied.is_some_and(|t| t.elapsed().as_secs() < 2);
-					let label = match (copied, dialog.mode) {
-						(true, _) => "Copied",
-						(false, Mode::Send) => "Copy command",
-						(false, Mode::Edit) => "Copy script",
-					};
-					let icon = if copied { icons::CHECK } else { icons::COPY };
-					let enabled = self.studio_link.is_listening();
-					if ui
-						.add_enabled_ui(enabled, |ui| widgets::button(ui, icon, label))
-						.inner
-						.clicked()
-					{
-						ui.ctx().copy_text(command.clone());
-						dialog.copied = Some(Instant::now());
-					}
-					if copied {
-						ui.ctx()
-							.request_repaint_after(std::time::Duration::from_millis(500));
-					}
-				});
-				ui.add_space(10.0);
-				let arrives = match dialog.mode {
-					Mode::Send => "The export arrives here.",
-					Mode::Edit => {
-						"Nothing is sent until send(export) runs; it then arrives here. To keep the \
-						 export yourself instead, save h:JSONEncode(export) your own way."
-					}
-				};
-				step(
-					ui,
-					3,
-					&format!(
-						"{arrives} Selecting a model, or anything inside one, exports that model; \
-						 with nothing selected, it exports the whole game except Workspace."
-					),
-				);
-				ui.add_space(4.0);
-				let unreachable = match dialog.mode {
-					Mode::Send => {
-						"If Meshvault cannot be reached while sending, the export is printed in the \
-						 Output window instead."
-					}
-					Mode::Edit => {
-						"If send cannot reach Meshvault it says why in the Output window and returns \
-						 false; the export is still yours to save."
-					}
-				};
-				ui.label(
-					RichText::new(format!(
-						"HttpService.HttpEnabled is on only while the exporter talks to Meshvault. \
-						 {unreachable}"
-					))
-					.size(12.0)
-					.color(p.text_weak),
-				);
-				ui.add_space(14.0);
-				ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-					widgets::text_button(ui, "Close").clicked()
+					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+						let copied = dialog.copied.is_some_and(|t| t.elapsed().as_secs() < 2);
+						let label = if copied {
+							format!("{}  Copied", icons::CHECK)
+						} else {
+							format!("{}  Copy", icons::COPY)
+						};
+						let copy = ui
+							.add_enabled_ui(listening, |ui| widgets::primary_button(ui, label))
+							.inner;
+						if copy.clicked() {
+							ui.ctx().copy_text(source.clone());
+							dialog.copied = Some(Instant::now());
+						}
+						if copied {
+							ui.ctx()
+								.request_repaint_after(std::time::Duration::from_millis(500));
+						}
+						widgets::text_button(ui, "Close").clicked()
+					})
+					.inner
 				})
 				.inner
 			});
@@ -231,11 +176,82 @@ impl App {
 	}
 }
 
-fn step(ui: &mut egui::Ui, n: u32, text: &str) {
+/// The code, in a card with a bar along its top: the language, a choice of
+/// one line or formatted, and a note on what it does with HttpEnabled.
+/// Returns whether the layout changed.
+fn code_card(ui: &mut egui::Ui, layout: &mut CodeLayout, source: &str, mode: CodeMode) -> bool {
 	let p = palette(ui.ctx());
-	ui.horizontal_top(|ui| {
-		ui.label(RichText::new(format!("{n}.")).color(p.text_weak));
-		ui.add(egui::Label::new(text).wrap());
-	});
-	ui.add_space(4.0);
+	let mut changed = false;
+	Frame::NONE
+		.fill(p.raised)
+		.stroke(Stroke::new(1.0, p.border))
+		.corner_radius(CornerRadius::same(8))
+		.show(ui, |ui| {
+			ui.set_width(ui.available_width());
+			// the bar
+			Frame::NONE
+				.inner_margin(Margin {
+					left: 12,
+					right: 6,
+					top: 6,
+					bottom: 6,
+				})
+				.show(ui, |ui| {
+					ui.horizontal(|ui| {
+						ui.spacing_mut().interact_size.y = 26.0;
+						ui.label(widgets::overline("Luau").color(p.text_weak));
+						ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+							let unreachable = match mode {
+								CodeMode::Send => {
+									"If Meshvault cannot be reached, the export is printed in the \
+									 Output window instead."
+								}
+								CodeMode::Edit => {
+									"If send cannot reach Meshvault it says why in the Output \
+									 window and returns false; the export is still yours."
+								}
+							};
+							widgets::icon_button(
+								ui,
+								icons::INFO,
+								&format!(
+									"HttpService.HttpEnabled is on only while the exporter talks \
+									 to Meshvault, and put back after. {unreachable}"
+								),
+							);
+							let layouts = [
+								(CodeLayout::OneLine, "One line"),
+								(CodeLayout::Formatted, "Formatted"),
+							];
+							changed = widgets::text_segmented(ui, layout, &layouts);
+						});
+					});
+				});
+			let line = ui.cursor().min.y;
+			ui.painter()
+				.hline(ui.max_rect().x_range(), line, Stroke::new(1.0, p.border));
+			// the code
+			Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+				ui.set_width(ui.available_width());
+				let font = egui::FontId::monospace(12.0);
+				match layout {
+					// one line wraps to fit
+					CodeLayout::OneLine => {
+						let job = code::luau(source, font, &p, ui.available_width());
+						ui.add(egui::Label::new(job).selectable(true));
+					}
+					// formatted lines keep their shape, scrolling sideways if wide
+					CodeLayout::Formatted => {
+						egui::ScrollArea::horizontal()
+							.id_salt("studio_code")
+							.show(ui, |ui| {
+								let job = code::luau(source, font, &p, f32::INFINITY);
+								ui.add(egui::Label::new(job).selectable(true).extend());
+							});
+					}
+				}
+				ui.allocate_space(Vec2::new(ui.available_width(), 0.0));
+			});
+		});
+	changed
 }

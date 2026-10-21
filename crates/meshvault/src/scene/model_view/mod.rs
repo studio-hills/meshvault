@@ -15,7 +15,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32};
 
 use crate::anim::clip::{Clip, ClipMarker};
-use crate::anim::math::{CFrame, V3};
+use crate::anim::math::{CFrame, V3, box_corners, grow_bounds};
 use crate::anim::rig::{Binding, BoneParent, Posed, Rig, Target};
 use crate::anim::schema::{AnimatedModel, ClipStatus};
 use crate::render::camera::Camera;
@@ -445,18 +445,9 @@ fn rest_bounds(parts: &[PartView], rig: &Rig, rest: &Posed) -> Option<(V3, V3)> 
 		let rp = &rig.parts[part.index];
 		let rest = rest.parts[part.index];
 		let h = [rp.size[0] * 0.5, rp.size[1] * 0.5, rp.size[2] * 0.5];
-		for corner in 0..8 {
-			let local = [
-				if corner & 1 == 0 { -h[0] } else { h[0] },
-				if corner & 2 == 0 { -h[1] } else { h[1] },
-				if corner & 4 == 0 { -h[2] } else { h[2] },
-			];
+		for local in box_corners(h) {
 			let p = rest.point(local);
-			let (lo, hi) = bounds.get_or_insert((p, p));
-			for k in 0..3 {
-				lo[k] = lo[k].min(p[k]);
-				hi[k] = hi[k].max(p[k]);
-			}
+			grow_bounds(bounds.get_or_insert((p, p)), p);
 		}
 	}
 	bounds

@@ -6,6 +6,8 @@ use std::ops::Range;
 
 use rbx_mesh::mesh::Mesh;
 
+use crate::anim::math::grow_bounds;
+
 mod facs;
 mod mesh;
 mod skin;
@@ -141,12 +143,9 @@ impl Geometry {
 	pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
 		let mut it = self.positions.iter();
 		let first = *it.next()?;
-		Some(it.fold((first, first), |(mut lo, mut hi), p| {
-			for k in 0..3 {
-				lo[k] = lo[k].min(p[k]);
-				hi[k] = hi[k].max(p[k]);
-			}
-			(lo, hi)
+		Some(it.fold((first, first), |mut bounds, p| {
+			grow_bounds(&mut bounds, *p);
+			bounds
 		}))
 	}
 }

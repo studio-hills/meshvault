@@ -1,6 +1,7 @@
 //! What the viewer draws each frame: the parts and the layers over them,
 //! the parts' lights, and the skeleton overlay.
 
+use super::decals::NormalId;
 use super::export::empty_material;
 use super::{ModelView, PartShape, PartView};
 use crate::anim::math::{CFrame, V3};
@@ -206,14 +207,7 @@ impl ModelView {
 					.cframe
 					.as_ref()
 					.map_or(world, |c| world.mul(&CFrame::from_components(c)));
-				let normal = match l.face.as_deref().unwrap_or("Front") {
-					"Right" => [1.0, 0.0, 0.0],
-					"Top" => [0.0, 1.0, 0.0],
-					"Back" => [0.0, 0.0, 1.0],
-					"Left" => [-1.0, 0.0, 0.0],
-					"Bottom" => [0.0, -1.0, 0.0],
-					_ => [0.0, 0.0, -1.0],
-				};
+				let normal = NormalId::from_name(l.face.as_deref().unwrap_or("Front")).normal();
 				let mut position = at.pos;
 				if l.class_name == "SurfaceLight" && l.cframe.is_none() {
 					// from the middle of the face
@@ -297,7 +291,6 @@ mod tests {
 
 	use eframe::egui;
 
-	use super::super::decals::face_index;
 	use super::super::fixtures::{part_with, placed_part};
 	use super::*;
 	use crate::anim::schema::AnimatedModel;
@@ -375,12 +368,19 @@ mod tests {
 	/// decals and lights alike.
 	#[test]
 	fn unknown_faces_are_the_front() {
+		let face_index = |name| NormalId::from_name(name) as u8;
 		assert_eq!(face_index("Right"), 0);
+		assert_eq!(face_index("Top"), 1);
+		assert_eq!(face_index("Back"), 2);
+		assert_eq!(face_index("Left"), 3);
 		assert_eq!(face_index("Bottom"), 4);
 		assert_eq!(face_index("Front"), 5);
 		assert_eq!(face_index("front"), 5);
 		assert_eq!(face_index("Sideways"), 5);
 		assert_eq!(face_index(""), 5);
+		// each face's normal points out of it
+		assert_eq!(NormalId::Left.normal(), [-1.0, 0.0, 0.0]);
+		assert_eq!(NormalId::Front.normal(), [0.0, 0.0, -1.0]);
 
 		use crate::anim::schema::LightInfo;
 		let mut lamp = placed_part(Some("Part"), Some("Block"), "Lamp", [0.0; 3]);

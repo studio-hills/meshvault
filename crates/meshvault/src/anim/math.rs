@@ -34,6 +34,31 @@ pub fn distance(a: V3, b: V3) -> f32 {
 	let d = sub(a, b);
 	(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
+pub fn dot(a: V3, b: V3) -> f32 {
+	a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+pub fn cross(a: V3, b: V3) -> V3 {
+	[
+		a[1] * b[2] - a[2] * b[1],
+		a[2] * b[0] - a[0] * b[2],
+		a[0] * b[1] - a[1] * b[0],
+	]
+}
+/// The corners of a box centred on the origin with half-size `half`.
+/// Corner `i` is on the positive side of X when bit 1 of `i` is set, of Y
+/// for bit 2 and of Z for bit 4.
+pub fn box_corners(half: V3) -> [V3; 8] {
+	std::array::from_fn(|i| {
+		std::array::from_fn(|k| if i & (1 << k) == 0 { -half[k] } else { half[k] })
+	})
+}
+/// Widens `(lo, hi)` to take in `p`. Callers choose the starting bounds.
+pub fn grow_bounds((lo, hi): &mut (V3, V3), p: V3) {
+	for k in 0..3 {
+		lo[k] = lo[k].min(p[k]);
+		hi[k] = hi[k].max(p[k]);
+	}
+}
 fn lerp3(a: V3, b: V3, t: f32) -> V3 {
 	add(a, scale(sub(b, a), t))
 }
@@ -311,6 +336,23 @@ fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 mod tests {
 	use super::*;
 	use std::f32::consts::FRAC_PI_2;
+
+	/// Box corners count in binary over X, Y and Z, X the lowest bit.
+	#[test]
+	fn box_corners_follow_their_bits() {
+		let c = box_corners([1.0, 2.0, 3.0]);
+		assert_eq!(c[0], [-1.0, -2.0, -3.0]);
+		assert_eq!(c[1], [1.0, -2.0, -3.0]);
+		assert_eq!(c[2], [-1.0, 2.0, -3.0]);
+		assert_eq!(c[4], [-1.0, -2.0, 3.0]);
+		assert_eq!(c[7], [1.0, 2.0, 3.0]);
+		assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+		assert_eq!(dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]), 32.0);
+		// bounds grow from whatever they start as
+		let mut b = ([0.0; 3], [0.0; 3]);
+		grow_bounds(&mut b, [1.0, -2.0, 0.5]);
+		assert_eq!(b, ([0.0, -2.0, 0.0], [1.0, 0.0, 0.5]));
+	}
 
 	#[test]
 	fn components_round_trip() {

@@ -2,6 +2,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
+use crate::anim::math::{V3, box_corners, cross, dot, sub};
 use crate::scene::geometry::Geometry;
 
 /// Roblox part shapes, as unit-sized solids centred on the origin; a part
@@ -77,24 +78,18 @@ fn truss_geometry(segments: u16, axis: u8) -> &'static Geometry {
 	g
 }
 
-/// Turns every triangle of a convex solid centred on the origin to face
-/// outwards (counter-clockwise from outside).
-fn face_outwards(positions: &[[f32; 3]], triangles: &mut [[u32; 3]]) {
+/// Turns every triangle of a convex solid around `centre` to face outwards
+/// (counter-clockwise from outside).
+fn face_outwards(positions: &[[f32; 3]], triangles: &mut [[u32; 3]], centre: V3) {
 	for t in triangles {
-		let [a, b, c] = t.map(|i| positions[i as usize]);
-		let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-		let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-		let n = [
-			ab[1] * ac[2] - ab[2] * ac[1],
-			ab[2] * ac[0] - ab[0] * ac[2],
-			ab[0] * ac[1] - ab[1] * ac[0],
-		];
-		let centre = [
+		let [a, b, c] = t.map(|i| sub(positions[i as usize], centre));
+		let n = cross(sub(b, a), sub(c, a));
+		let mid = [
 			(a[0] + b[0] + c[0]) / 3.0,
 			(a[1] + b[1] + c[1]) / 3.0,
 			(a[2] + b[2] + c[2]) / 3.0,
 		];
-		if n[0] * centre[0] + n[1] * centre[1] + n[2] * centre[2] < 0.0 {
+		if dot(n, mid) < 0.0 {
 			t.swap(1, 2);
 		}
 	}
@@ -128,7 +123,7 @@ fn unit_sphere() -> Geometry {
 			}
 		}
 	}
-	face_outwards(&positions, &mut triangles);
+	face_outwards(&positions, &mut triangles, [0.0; 3]);
 	Geometry::whole(positions, triangles).with_normals(normals)
 }
 
@@ -181,7 +176,7 @@ fn unit_head() -> Geometry {
 			triangles.push([centre, centre + 1 + s, centre + 2 + s]);
 		}
 	}
-	face_outwards(&positions, &mut triangles);
+	face_outwards(&positions, &mut triangles, [0.0; 3]);
 	Geometry::whole(positions, triangles).with_normals(normals)
 }
 
@@ -221,7 +216,7 @@ fn unit_cylinder() -> Geometry {
 			triangles.push([centre, centre + 1 + s, centre + 2 + s]);
 		}
 	}
-	face_outwards(&positions, &mut triangles);
+	face_outwards(&positions, &mut triangles, [0.0; 3]);
 	Geometry::whole(positions, triangles).with_normals(normals)
 }
 
@@ -238,9 +233,9 @@ fn unit_truss(segments: u16, axis: u8) -> Geometry {
 	// a box from its centre and three half-axes (studs, truss along Y)
 	let mut add_box = |c: [f32; 3], a: [f32; 3], b: [f32; 3], d: [f32; 3]| {
 		let base = positions.len() as u32;
-		for i in 0..8 {
-			let s = |bit: u32| if i & bit == 0 { -1.0 } else { 1.0 };
-			positions.push([0, 1, 2].map(|k| c[k] + s(1) * a[k] + s(2) * b[k] + s(4) * d[k]));
+		// the unit box's corners give each corner's side of a, b and d
+		for s in box_corners([1.0; 3]) {
+			positions.push([0, 1, 2].map(|k| c[k] + s[0] * a[k] + s[1] * b[k] + s[2] * d[k]));
 		}
 		let mut faces: Vec<[u32; 3]> = [
 			[0, 2, 6, 4],
@@ -254,18 +249,7 @@ fn unit_truss(segments: u16, axis: u8) -> Geometry {
 		.flat_map(|f| [[f[0], f[1], f[2]], [f[0], f[2], f[3]]])
 		.map(|t| t.map(|i| base + i))
 		.collect();
-		let local: Vec<[f32; 3]> = positions[base as usize..]
-			.iter()
-			.map(|p| [p[0] - c[0], p[1] - c[1], p[2] - c[2]])
-			.collect();
-		let mut shifted = faces.clone();
-		for t in &mut shifted {
-			*t = t.map(|i| i - base);
-		}
-		face_outwards(&local, &mut shifted);
-		for (t, s) in faces.iter_mut().zip(shifted) {
-			*t = s.map(|i| i + base);
-		}
+		face_outwards(&positions, &mut faces, c);
 		triangles.extend(faces);
 	};
 	let h = 1.0 - POST / 2.0;
@@ -304,14 +288,10 @@ fn unit_truss(segments: u16, axis: u8) -> Geometry {
 			for slope in [-1.0f32, 1.0] {
 				// from corner to corner of the 2 x 2 face, inside the frame
 				let dir = [along[0] * slope, 1.0, along[2] * slope];
-				let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+				let len = dot(dir, dir).sqrt();
 				let u = dir.map(|v| v / len);
 				// across the bar, in the face
-				let p = [
-					u[1] * normal[2] - u[2] * normal[1],
-					u[2] * normal[0] - u[0] * normal[2],
-					u[0] * normal[1] - u[1] * normal[0],
-				];
+				let p = cross(u, normal);
 				let c = [normal[0] * at, mid, normal[2] * at];
 				add_box(
 					c,
@@ -353,11 +333,7 @@ fn solid(positions: Vec<[f32; 3]>, faces: &[&[u32]]) -> Geometry {
 	let c = positions.iter().fold([0.0f32; 3], |acc, p| {
 		[acc[0] + p[0] / n, acc[1] + p[1] / n, acc[2] + p[2] / n]
 	});
-	let shifted: Vec<[f32; 3]> = positions
-		.iter()
-		.map(|p| [p[0] - c[0], p[1] - c[1], p[2] - c[2]])
-		.collect();
-	face_outwards(&shifted, &mut triangles);
+	face_outwards(&positions, &mut triangles, c);
 	Geometry::whole(positions, triangles)
 }
 
@@ -404,15 +380,7 @@ fn unit_corner_wedge() -> Geometry {
 
 /// A unit cube: the Block primitive, and the BLOCK physics shape.
 pub(super) fn unit_cube() -> Geometry {
-	let positions = (0..8)
-		.map(|i| {
-			[
-				if i & 1 == 0 { -0.5 } else { 0.5 },
-				if i & 2 == 0 { -0.5 } else { 0.5 },
-				if i & 4 == 0 { -0.5 } else { 0.5 },
-			]
-		})
-		.collect();
+	let positions = box_corners([0.5; 3]).to_vec();
 	let quads = [
 		[0, 2, 3, 1],
 		[4, 5, 7, 6],
@@ -432,6 +400,60 @@ pub(super) fn unit_cube() -> Geometry {
 mod tests {
 	use super::*;
 
+	/// Signed volume by the divergence theorem: right only when the solid is
+	/// closed and every triangle faces outwards.
+	fn signed_volume(g: &Geometry) -> f32 {
+		g.triangles
+			.iter()
+			.map(|t| {
+				let [a, b, c] = t.map(|i| g.positions[i as usize]);
+				(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+					+ a[2] * (b[0] * c[1] - b[1] * c[0]))
+					/ 6.0
+			})
+			.sum()
+	}
+
+	/// A triangle is turned to face away from the centre it is given, which
+	/// need not be the origin; one already facing away is left alone.
+	#[test]
+	fn faces_turn_outwards_from_their_centre() {
+		// one triangle in the plane z = 11, wound to face -Z
+		let positions = [[0.0, 0.0, 11.0], [0.0, 1.0, 11.0], [1.0, 0.0, 11.0]];
+		let mut t = [[0, 1, 2]];
+		// from the origin it is on the +Z side: turned to face +Z
+		face_outwards(&positions, &mut t, [0.0; 3]);
+		assert_eq!(t, [[0, 2, 1]]);
+		// from a centre above it, it is on the -Z side: turned back
+		face_outwards(&positions, &mut t, [0.0, 0.0, 12.0]);
+		assert_eq!(t, [[0, 1, 2]]);
+		face_outwards(&positions, &mut t, [0.0, 0.0, 12.0]);
+		assert_eq!(t, [[0, 1, 2]]);
+	}
+
+	/// The cube's corners count in binary over X, Y and Z, and a truss's
+	/// first box (a corner post) has its corners in the same order.
+	#[test]
+	fn box_corners_keep_their_order() {
+		let cube = unit_cube();
+		for (i, p) in cube.positions.iter().enumerate() {
+			for (k, v) in p.iter().enumerate() {
+				assert_eq!(*v > 0.0, i & (1 << k) != 0, "corner {i}");
+			}
+		}
+		let truss = unit_truss(1, 1);
+		let post = &truss.positions[..8];
+		let centre = [0, 1, 2].map(|k| post.iter().map(|p| p[k]).sum::<f32>() / 8.0);
+		for (i, p) in post.iter().enumerate() {
+			for k in 0..3 {
+				assert_eq!(p[k] > centre[k], i & (1 << k) != 0, "corner {i}");
+			}
+		}
+		// its first face (-X, 0 2 6 4), split in two, faces -X
+		let [a, b, c] = truss.triangles[0].map(|i| truss.positions[i as usize]);
+		assert!(cross(sub(b, a), sub(c, a))[0] < 0.0);
+	}
+
 	/// A truss fills its unit box with beams: every box faces outwards (its
 	/// signed volume is positive) and lengthening it adds segments.
 	#[test]
@@ -445,16 +467,7 @@ mod tests {
 					"axis {axis}"
 				);
 			}
-			let volume: f32 = g
-				.triangles
-				.iter()
-				.map(|t| {
-					let [a, b, c] = t.map(|i| g.positions[i as usize]);
-					(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-						+ a[2] * (b[0] * c[1] - b[1] * c[0]))
-						/ 6.0
-				})
-				.sum();
+			let volume = signed_volume(g);
 			// open beams, far from a solid box
 			assert!(volume > 0.05 && volume < 0.5, "axis {axis}: {volume}");
 		}
@@ -471,8 +484,8 @@ mod tests {
 		assert!(three.triangles.len() > 2 * one.triangles.len());
 	}
 
-	/// Signed volume by the divergence theorem: right only when the solid is
-	/// closed and every triangle faces outwards.
+	/// Each solid has the volume of its shape (see [`signed_volume`]) and fits
+	/// the unit box.
 	#[test]
 	fn primitives_are_closed_outward_unit_solids() {
 		use std::f32::consts::PI;
@@ -486,16 +499,7 @@ mod tests {
 			(Primitive::CornerWedge, 1.0 / 3.0),
 		] {
 			let g = shape.geometry();
-			let v: f32 = g
-				.triangles
-				.iter()
-				.map(|t| {
-					let [a, b, c] = t.map(|i| g.positions[i as usize]);
-					(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-						+ a[2] * (b[0] * c[1] - b[1] * c[0]))
-						/ 6.0
-				})
-				.sum();
+			let v = signed_volume(g);
 			// polygonal spheres and cylinders fall a little short
 			assert!(
 				(v - volume).abs() < volume * 0.03,

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::anim::math::{CFrame, V3};
+use crate::anim::math::{CFrame, V3, box_corners, grow_bounds};
 use crate::anim::rig::{Posed, Rig};
 use crate::anim::schema::{ClothingInfo, MaterialVariantInfo, ModelPart};
 use crate::content_id::parse_asset_id;
@@ -109,15 +109,42 @@ impl Section {
 	}
 }
 
-/// `Enum.NormalId` value of a face name.
-pub(super) fn face_index(name: &str) -> u8 {
-	match name {
-		"Right" => 0,
-		"Top" => 1,
-		"Back" => 2,
-		"Left" => 3,
-		"Bottom" => 4,
-		_ => 5,
+/// A face of a part's box, numbered as decals and lights use it (0-based,
+/// unlike the union graphics `NormalId`, which counts from 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NormalId {
+	Right = 0,
+	Top = 1,
+	Back = 2,
+	Left = 3,
+	Bottom = 4,
+	Front = 5,
+}
+
+impl NormalId {
+	/// The face an `Enum.NormalId` name names. Anything else, including
+	/// another case, is the Front.
+	pub(super) fn from_name(name: &str) -> Self {
+		match name {
+			"Right" => NormalId::Right,
+			"Top" => NormalId::Top,
+			"Back" => NormalId::Back,
+			"Left" => NormalId::Left,
+			"Bottom" => NormalId::Bottom,
+			_ => NormalId::Front,
+		}
+	}
+
+	/// The face's outward direction in the part's space.
+	pub(super) fn normal(self) -> V3 {
+		match self {
+			NormalId::Right => [1.0, 0.0, 0.0],
+			NormalId::Top => [0.0, 1.0, 0.0],
+			NormalId::Back => [0.0, 0.0, 1.0],
+			NormalId::Left => [-1.0, 0.0, 0.0],
+			NormalId::Bottom => [0.0, -1.0, 0.0],
+			NormalId::Front => [0.0, 0.0, -1.0],
+		}
 	}
 }
 
@@ -252,22 +279,15 @@ pub(super) fn body_sections(rig: &Rig, joint_rest: &Posed) -> HashMap<usize, Sec
 			continue;
 		};
 		let frame = joint_rest.parts[first];
-		let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+		let mut bounds = ([f32::MAX; 3], [f32::MIN; 3]);
 		for &m in &members {
 			let in_frame = frame.inverse().mul(&joint_rest.parts[m]);
 			let h = rig.parts[m].size.map(|s| s * 0.5);
-			for corner in 0..8 {
-				let p = in_frame.point([
-					if corner & 1 == 0 { -h[0] } else { h[0] },
-					if corner & 2 == 0 { -h[1] } else { h[1] },
-					if corner & 4 == 0 { -h[2] } else { h[2] },
-				]);
-				for k in 0..3 {
-					lo[k] = lo[k].min(p[k]);
-					hi[k] = hi[k].max(p[k]);
-				}
+			for corner in box_corners(h) {
+				grow_bounds(&mut bounds, in_frame.point(corner));
 			}
 		}
+		let (lo, hi) = bounds;
 		let centre = [0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5);
 		let half = [0, 1, 2].map(|k| (hi[k] - lo[k]) * 0.5);
 		for &m in &members {
@@ -312,7 +332,7 @@ pub(super) fn part_decals(
 		decals.push((
 			d.z_index,
 			PartDecal {
-				face: face_index(&d.face),
+				face: NormalId::from_name(&d.face) as u8,
 				tiles: if d.class_name == "Texture" {
 					tiles
 				} else {

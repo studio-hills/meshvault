@@ -157,6 +157,15 @@ impl Opened<'_> {
 /// Folder state namespace for the library tree.
 const SCOPE: &str = "library";
 
+/// Applies an expand or collapse to the library's folders. "All" includes
+/// the animated models' folder, which is not in `tree`.
+fn apply_folder_command(ctx: &egui::Context, command: &FolderCommand, tree: &FolderTree) {
+	command.apply(ctx, SCOPE, tree);
+	if let FolderCommand::All(open) = *command {
+		tree::set_open(ctx, list::models_folder_id(), open);
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {
 	Done,
@@ -236,7 +245,7 @@ impl Browser {
 
 		let ctx = ui.ctx().clone();
 		if let Some(command) = self.pending.borrow_mut().take() {
-			command.apply(&ctx, SCOPE, &self.tree);
+			apply_folder_command(&ctx, &command, &self.tree);
 		}
 		if std::mem::take(&mut self.reveal)
 			&& let Some(item) = open_stem.and_then(|stem| items.iter().find(|i| i.stem == stem))
@@ -301,5 +310,31 @@ impl Browser {
 			thumbnails.update(&ctx, ws, renderer);
 		}
 		actions
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn is_open(ctx: &egui::Context, id: egui::Id) -> Option<bool> {
+		egui::collapsing_header::CollapsingState::load(ctx, id).map(|s| s.is_open())
+	}
+
+	#[test]
+	fn collapse_all_includes_the_animated_models_folder() {
+		let ctx = egui::Context::default();
+		let folder: Vec<String> = vec!["Props".into()];
+		let tree = FolderTree::build([folder.as_slice()]);
+		let props = tree::folder_id(SCOPE, "Props");
+		for open in [false, true] {
+			apply_folder_command(&ctx, &FolderCommand::All(open), &tree);
+			assert_eq!(is_open(&ctx, props), Some(open));
+			// it was once left as it was (bug B42)
+			assert_eq!(is_open(&ctx, list::models_folder_id()), Some(open));
+		}
+		// a folder's own "collapse all inside" leaves the models alone
+		apply_folder_command(&ctx, &FolderCommand::Subtree("Props".into(), false), &tree);
+		assert_eq!(is_open(&ctx, list::models_folder_id()), Some(true));
 	}
 }

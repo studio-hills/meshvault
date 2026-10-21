@@ -101,7 +101,8 @@ pub fn child_path(prefix: &str, name: &str) -> String {
 	}
 }
 
-fn set_open(ctx: &egui::Context, id: Id, open: bool) {
+/// Opens or closes the folder `id`, drawn or not.
+pub fn set_open(ctx: &egui::Context, id: Id, open: bool) {
 	let mut state =
 		egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, false);
 	state.set_open(open);

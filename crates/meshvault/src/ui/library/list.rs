@@ -39,6 +39,12 @@ fn folder_dir(root: &Path, items: &[Item], node: &FolderTree) -> Option<PathBuf>
 	Some(dir)
 }
 
+/// The animated models' folder, which is not in the folder tree. Its path is
+/// not a valid folder path, so it cannot clash with an export folder.
+pub(super) fn models_folder_id() -> egui::Id {
+	tree::folder_id(SCOPE, "\0animated")
+}
+
 impl Browser {
 	/// Animated models, as a folder above the mesh folders.
 	pub(super) fn models(
@@ -55,8 +61,7 @@ impl Browser {
 			return;
 		}
 		let p = palette(ui.ctx());
-		// not a valid folder path, so it cannot clash with an export folder
-		let id = tree::folder_id(SCOPE, "\0animated");
+		let id = models_folder_id();
 		let mut state =
 			egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
 		if self.narrowed() {

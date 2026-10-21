@@ -171,7 +171,16 @@ impl<'a> ImageCache<'a> {
 		let (ctx, paths) = (self.ctx, self.paths);
 		self.loaded
 			.entry(id)
-			.or_insert_with(|| texture::load_file(ctx, paths.get(&id)?).ok())
+			.or_insert_with(|| {
+				let image = paths
+					.get(&id)
+					.ok_or_else(|| "not downloaded".to_string())
+					.and_then(|path| texture::load_file(ctx, path));
+				// why it did not load is dropped here on purpose: callers only
+				// count the images that are missing, and report them all as not
+				// downloaded, even one that is but does not decode (bug B38)
+				image.ok()
+			})
 			.clone()
 	}
 }

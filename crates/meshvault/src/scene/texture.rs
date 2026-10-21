@@ -164,6 +164,8 @@ pub fn find_siblings(mesh_path: &Path) -> BTreeMap<Slot, PathBuf> {
 		return found;
 	};
 	let stem = stem.to_string_lossy();
+	// a folder that cannot be read has no maps, and an entry that cannot be
+	// read is skipped: either way the mesh opens without those maps
 	let Ok(read) = std::fs::read_dir(dir) else {
 		return found;
 	};

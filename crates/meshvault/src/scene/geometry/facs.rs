@@ -95,7 +95,9 @@ fn facs_control_name(code: &str) -> Option<&'static str> {
 	})
 }
 
-pub(super) fn facs_of(f: &rbx_mesh::mesh::Facs5) -> Option<Facs> {
+/// A mesh's FACS block as face poses, or why it cannot be used: the pose
+/// tables are checked first, then the correctives.
+pub(super) fn facs_of(f: &rbx_mesh::mesh::Facs5) -> Result<Facs, &'static str> {
 	use rbx_mesh::mesh::QuantizedMatrix5;
 	let bones = nul_separated(&f.face_bone_names);
 	let codes = nul_separated(&f.face_control_names);
@@ -132,15 +134,16 @@ pub(super) fn facs_of(f: &rbx_mesh::mesh::Facs5) -> Option<Facs> {
 	let q = &f.quantized_transforms;
 	let parts = [&q.px, &q.py, &q.pz, &q.rx, &q.ry, &q.rz].map(values);
 	let count = bones.len() * columns.len();
-	if parts.iter().any(|p| p.len() != count)
-		|| columns.iter().flatten().any(|&c| c >= controls.len())
-	{
-		return None;
+	if parts.iter().any(|p| p.len() != count) {
+		return Err("its pose tables do not hold one value per face bone and pose");
+	}
+	if columns.iter().flatten().any(|&c| c >= controls.len()) {
+		return Err("a corrective refers to a face control it does not have");
 	}
 	let poses = (0..count)
 		.map(|i| [0, 1, 2, 3, 4, 5].map(|k| parts[k][i]))
 		.collect();
-	Some(Facs {
+	Ok(Facs {
 		bones,
 		controls,
 		columns,
@@ -188,9 +191,20 @@ mod tests {
 		assert_eq!(ok.columns, [vec![0], vec![1], vec![0, 1]]);
 		assert_eq!(ok.poses.len(), 3);
 		// one matrix a value short
-		assert!(facs_of(&facs([3, 3, 3, 3, 2, 3], vec![[0, 1]])).is_none());
+		assert_eq!(
+			facs_of(&facs([3, 3, 3, 3, 2, 3], vec![[0, 1]])),
+			Err("its pose tables do not hold one value per face bone and pose")
+		);
 		// a corrective of control 2, of two
-		assert!(facs_of(&facs([3; 6], vec![[0, 2]])).is_none());
+		assert_eq!(
+			facs_of(&facs([3; 6], vec![[0, 2]])),
+			Err("a corrective refers to a face control it does not have")
+		);
+		// both wrong: the pose tables are checked first
+		assert_eq!(
+			facs_of(&facs([2; 6], vec![[0, 2]])),
+			Err("its pose tables do not hold one value per face bone and pose")
+		);
 	}
 
 	/// A FACS pose adds its offsets by its control's weight; a corrective

@@ -62,7 +62,8 @@ pub(super) fn skin_of(mesh: &Mesh, vertex_count: usize) -> Result<Option<Skin>, 
 		)
 		.map(|s| {
 			s.map(|s| Skin {
-				facs: facs_of(&m.facs),
+				// a head whose FACS cannot be used still skins, without face poses
+				facs: facs_of(&m.facs).ok(),
 				..s
 			})
 		}),
@@ -88,7 +89,8 @@ fn chunked_skin(m: &impl Chunks6, vertex_count: usize) -> Result<Option<Skin>, S
 				.into(),
 		);
 	}
-	let facs = m.facs().and_then(facs_of);
+	// a head whose FACS cannot be used still skins, without face poses
+	let facs = m.facs().and_then(|f| facs_of(f).ok());
 	build_skin(
 		&s.envelopes,
 		&s.bones,

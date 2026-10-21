@@ -175,6 +175,16 @@ fn status_colour(p: &Palette, s: Status) -> Color32 {
 	}
 }
 
+/// A status marker: a filled dot when done or failed, a ring while
+/// pending. Rows, tiles and the status chips share it.
+fn status_dot(painter: &egui::Painter, p: &Palette, centre: egui::Pos2, s: Status) {
+	if s == Status::Pending {
+		painter.circle_stroke(centre, 3.5, Stroke::new(1.3, status_colour(p, s)));
+	} else {
+		painter.circle_filled(centre, 3.5, status_colour(p, s));
+	}
+}
+
 fn describe(state: &AssetState) -> String {
 	match state {
 		AssetState::Pending => "not downloaded yet".into(),
@@ -808,22 +818,41 @@ impl Browser {
 			ui.spacing_mut().item_spacing.x = 4.0;
 			ui.spacing_mut().interact_size.y = 28.0;
 			ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
-			for (value, label, n, colour) in [
+			// room before the label for the chip's status marker
+			let font = FontId::proportional(12.0);
+			let space = ui
+				.painter()
+				.layout_no_wrap(" ".into(), font, p.text)
+				.size()
+				.x;
+			let gap = " ".repeat((13.0 / space.max(1.0)).ceil() as usize);
+			for (value, label, n, marker) in [
 				(StatusFilter::All, "All", items.len(), None),
-				(StatusFilter::Downloaded, "Done", done, Some(p.success)),
-				(StatusFilter::Pending, "Pending", pending, Some(p.warning)),
-				(StatusFilter::Failed, "Failed", failed, Some(p.danger)),
+				(StatusFilter::Downloaded, "Done", done, Some(Status::Done)),
+				(
+					StatusFilter::Pending,
+					"Pending",
+					pending,
+					Some(Status::Pending),
+				),
+				(StatusFilter::Failed, "Failed", failed, Some(Status::Failed)),
 			] {
 				if value == StatusFilter::Failed && n == 0 && self.status != StatusFilter::Failed {
 					continue;
 				}
-				let mut text = RichText::new(format!("{label} {n}")).size(12.0);
-				if let Some(c) = colour {
-					text = RichText::new(format!("{}  {label} {n}", icons::CIRCLE))
+				let text = match marker {
+					Some(s) => RichText::new(format!("{gap}{label} {n}"))
 						.size(12.0)
-						.color(c);
+						.color(status_colour(&p, s)),
+					None => RichText::new(format!("{label} {n}")).size(12.0),
+				};
+				let response = ui.selectable_value(&mut self.status, value, text);
+				// the same marker as the rows and tiles this chip filters
+				if let Some(s) = marker {
+					let padding = ui.spacing().button_padding.x;
+					let centre = response.rect.left_center() + Vec2::new(padding + 3.5, 0.0);
+					status_dot(ui.painter(), &p, centre, s);
 				}
-				ui.selectable_value(&mut self.status, value, text);
 			}
 		});
 		ui.add_space(4.0);
@@ -1225,12 +1254,7 @@ impl Browser {
 			}
 			// downloads still to come, or failed, show in the corner
 			if s != Status::Done {
-				let dot = picture.left_top() + Vec2::new(10.0, 10.0);
-				if s == Status::Pending {
-					painter.circle_stroke(dot, 3.5, Stroke::new(1.3, status_colour(&p, s)));
-				} else {
-					painter.circle_filled(dot, 3.5, status_colour(&p, s));
-				}
+				status_dot(&painter, &p, picture.left_top() + Vec2::new(10.0, 10.0), s);
 			}
 			if let Key::Model(i) = key {
 				let clips = format!("{} {}", icons::FILM_STRIP, ws.models()[i].playable_clips);
@@ -1311,12 +1335,7 @@ fn model_row(
 		CornerRadius::same(6),
 		row_fill(p, &response, selected),
 	);
-	let dot = rect.left_center() + Vec2::new(11.0, 0.0);
-	if s == Status::Pending {
-		painter.circle_stroke(dot, 3.5, Stroke::new(1.3, status_colour(p, s)));
-	} else {
-		painter.circle_filled(dot, 3.5, status_colour(p, s));
-	}
+	status_dot(&painter, p, rect.left_center() + Vec2::new(11.0, 0.0), s);
 	let clips = format!("{}  {}", icons::FILM_STRIP, model.playable_clips);
 	let clips_galley = painter.layout_no_wrap(clips, FontId::proportional(11.5), p.text_weak);
 	let text_rect = egui::Rect::from_min_max(
@@ -1353,12 +1372,7 @@ fn item_row(
 		row_fill(p, &response, selected),
 	);
 	let s = status(item);
-	let dot = rect.left_center() + Vec2::new(11.0, 0.0);
-	if s == Status::Pending {
-		painter.circle_stroke(dot, 3.5, Stroke::new(1.3, status_colour(p, s)));
-	} else {
-		painter.circle_filled(dot, 3.5, status_colour(p, s));
-	}
+	status_dot(&painter, p, rect.left_center() + Vec2::new(11.0, 0.0), s);
 	let text_colour = if open { p.accent } else { p.text };
 	let right_pad = if item.maps.is_empty() { 8.0 } else { 26.0 };
 	let text_rect = egui::Rect::from_min_max(

@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::Deserialize;
 
 use crate::anim::schema::AnimatedModel;
+use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
 
 /// The newest `SchemaVersion` this build understands, and the one it writes.
@@ -74,28 +75,6 @@ pub struct Export {
 	pub skipped: Vec<String>,
 	/// Map ids that could not be understood and were ignored.
 	pub warnings: Vec<String>,
-}
-
-/// Extracts the numeric asset id from the forms Roblox content ids take:
-/// `rbxassetid://N`, `http(s)://www.roblox.com/asset/?id=N`,
-/// `https://assetdelivery.roblox.com/v1/asset/?id=N`, or a bare `N`.
-pub fn parse_asset_id(s: &str) -> Option<u64> {
-	let s = s.trim();
-	if s.is_empty() {
-		return None;
-	}
-	if let Ok(id) = s.parse() {
-		return Some(id);
-	}
-	if let Some(rest) = s.strip_prefix("rbxassetid://") {
-		return rest.trim().parse().ok();
-	}
-	// any URL with an id= query parameter
-	let query = s.split_once('?')?.1;
-	query
-		.split('&')
-		.find_map(|kv| kv.strip_prefix("id=").or_else(|| kv.strip_prefix("ID=")))
-		.and_then(|id| id.trim().parse().ok())
 }
 
 #[derive(Deserialize)]
@@ -210,130 +189,9 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
 	}
 }
 
-/// Folder hierarchy over a list of entries, for tree views.
-#[derive(Default)]
-pub struct FolderTree {
-	pub folders: BTreeMap<String, FolderTree>,
-	/// Indices into the entry list.
-	pub items: Vec<usize>,
-}
-
-impl FolderTree {
-	pub fn build<'a>(folders: impl IntoIterator<Item = &'a [String]>) -> Self {
-		let mut root = Self::default();
-		for (i, path) in folders.into_iter().enumerate() {
-			let mut node = &mut root;
-			for part in path {
-				node = node.folders.entry(part.clone()).or_default();
-			}
-			node.items.push(i);
-		}
-		root
-	}
-
-	/// Subfolders in display order: case-insensitive, with numbers compared
-	/// by value so "2: Lizard" comes before "10: Wolf".
-	pub fn sorted_folders(&self) -> Vec<(&String, &FolderTree)> {
-		let mut folders: Vec<_> = self.folders.iter().collect();
-		folders.sort_by(|a, b| natural_cmp(a.0, b.0));
-		folders
-	}
-
-	/// Every entry index in this folder and below.
-	pub fn all_items(&self) -> Vec<usize> {
-		let mut out = self.items.clone();
-		for child in self.folders.values() {
-			out.extend(child.all_items());
-		}
-		out
-	}
-}
-
-/// Case-insensitive comparison that orders runs of digits numerically.
-pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-	use std::cmp::Ordering;
-	let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
-	loop {
-		match (a.peek().copied(), b.peek().copied()) {
-			(None, None) => return Ordering::Equal,
-			(None, Some(_)) => return Ordering::Less,
-			(Some(_), None) => return Ordering::Greater,
-			(Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-				let take = |it: &mut std::iter::Peekable<std::str::Chars>| {
-					let mut digits = String::new();
-					while let Some(c) = it.peek().filter(|c| c.is_ascii_digit()) {
-						digits.push(*c);
-						it.next();
-					}
-					digits
-				};
-				let (da, db) = (take(&mut a), take(&mut b));
-				let (ta, tb) = (da.trim_start_matches('0'), db.trim_start_matches('0'));
-				let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
-				if ord != Ordering::Equal {
-					return ord;
-				}
-			}
-			(Some(x), Some(y)) => {
-				let ord = x.to_lowercase().cmp(y.to_lowercase());
-				if ord != Ordering::Equal {
-					return ord;
-				}
-				a.next();
-				b.next();
-			}
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
-	#[test]
-	fn natural_order() {
-		let mut v = vec![
-			"10: Wolf",
-			"monkisrokBoss",
-			"2: Lizard",
-			"Zone_10",
-			"1: Bug",
-			"Alien",
-		];
-		v.sort_by(|a, b| super::natural_cmp(a, b));
-		assert_eq!(
-			v,
-			[
-				"1: Bug",
-				"2: Lizard",
-				"10: Wolf",
-				"Alien",
-				"monkisrokBoss",
-				"Zone_10"
-			]
-		);
-	}
-
 	use super::*;
-
-	#[test]
-	fn asset_id_forms() {
-		assert_eq!(
-			parse_asset_id("rbxassetid://136440628894302"),
-			Some(136440628894302)
-		);
-		assert_eq!(
-			parse_asset_id("http://www.roblox.com/asset/?id=123 "),
-			Some(123)
-		);
-		assert_eq!(parse_asset_id("http://roblox.com/asset/?id=55"), Some(55));
-		assert_eq!(
-			parse_asset_id("https://assetdelivery.roblox.com/v1/asset/?id=77"),
-			Some(77)
-		);
-		assert_eq!(parse_asset_id("https://x/asset/?version=1&id=9"), Some(9));
-		assert_eq!(parse_asset_id(" 42 "), Some(42));
-		assert_eq!(parse_asset_id(""), None);
-		assert_eq!(parse_asset_id("rbxasset://textures/foo.png"), None);
-	}
 
 	/// Checks a real export without committing it:
 	/// `MESHVAULT_EXPORT=path/to/export.json cargo test -p meshvault -- --ignored parses_real_export`
@@ -343,7 +201,8 @@ mod tests {
 		let path = crate::test_support::real_export();
 		let export = parse(&std::fs::read_to_string(path).unwrap()).unwrap();
 		assert!(export.skipped.is_empty(), "skipped: {:?}", export.skipped);
-		let tree = FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));
+		let tree =
+			crate::ui::tree::FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));
 		assert_eq!(tree.all_items().len(), export.entries.len());
 		assert!(
 			export.warnings.is_empty(),
@@ -388,14 +247,6 @@ mod tests {
 		);
 		assert!(export.entries[2].folder.is_empty());
 		assert!(export.entries[2].maps.is_empty());
-
-		let tree = FolderTree::build(export.entries.iter().map(|e| e.folder.as_slice()));
-		assert_eq!(tree.items, [2]);
-		assert_eq!(
-			tree.folders["Zone_10"].folders["8: CrystalScorpion"].items,
-			[0]
-		);
-		assert_eq!(tree.all_items().len(), 3);
 	}
 
 	#[test]

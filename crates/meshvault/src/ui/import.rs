@@ -12,9 +12,10 @@ use eframe::egui::{self, Align, Layout, RichText};
 
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
-use crate::studio::export_file::{Entry, Export, FolderTree};
+use crate::studio::export_file::{Entry, Export};
 use crate::ui::icons;
 use crate::ui::theme::{ROW, dialog_frame, display, palette};
+use crate::ui::tree::FolderTree;
 use crate::ui::tree::{self, FolderCommand};
 use crate::ui::widgets;
 use crate::workspace::Workspace;
@@ -640,7 +641,7 @@ impl ImportDialog {
 		rows.sort_by(|&a, &b| {
 			let kind = |r: usize| matches!(self.rows[r], Row::Mesh(_));
 			kind(a).cmp(&kind(b)).then_with(|| {
-				crate::studio::export_file::natural_cmp(
+				crate::ui::tree::natural_cmp(
 					self.row_name(self.rows[a]),
 					self.row_name(self.rows[b]),
 				)

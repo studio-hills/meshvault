@@ -8,6 +8,7 @@
 mod anim;
 mod app;
 mod config;
+mod content_id;
 mod export;
 mod render;
 mod scene;

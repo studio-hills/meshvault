@@ -112,7 +112,7 @@ impl SettingsDialog {
 			self.message = Some((false, "Enter a credential first.".into()));
 			return;
 		};
-		let Some(id) = crate::studio::export_file::parse_asset_id(&self.test_id) else {
+		let Some(id) = crate::content_id::parse_asset_id(&self.test_id) else {
 			self.message = Some((false, "Enter an asset id to test with.".into()));
 			return;
 		};

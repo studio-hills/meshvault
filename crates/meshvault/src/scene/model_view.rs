@@ -751,7 +751,7 @@ impl ModelView {
 		let mut clothing_images: Vec<(Section, Material, [f32; 3], bool)> = Vec::new();
 		if let Some(c) = &model.clothing {
 			let mut load = |content: &Option<String>| -> Option<texture::Texture> {
-				let id = crate::studio::export_file::parse_asset_id(content.as_deref()?)?;
+				let id = crate::content_id::parse_asset_id(content.as_deref()?)?;
 				decal_images
 					.entry(id)
 					.or_insert_with(|| {
@@ -932,7 +932,7 @@ impl ModelView {
 			};
 			let mut decals: Vec<(i32, PartDecal)> = Vec::new();
 			for d in &record.decals {
-				let image = crate::studio::export_file::parse_asset_id(&d.texture).and_then(|id| {
+				let image = crate::content_id::parse_asset_id(&d.texture).and_then(|id| {
 					decal_images
 						.entry(id)
 						.or_insert_with(|| {
@@ -980,7 +980,7 @@ impl ModelView {
 				let mut material = Material::default();
 				let mut wanted = 0;
 				for (slot, content) in v.maps() {
-					let Some(id) = crate::studio::export_file::parse_asset_id(content) else {
+					let Some(id) = crate::content_id::parse_asset_id(content) else {
 						continue;
 					};
 					wanted += 1;

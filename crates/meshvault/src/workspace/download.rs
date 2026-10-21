@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::studio::export_file::parse_asset_id;
+use crate::content_id::parse_asset_id;
 use crate::workspace::{AssetKind, Job};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]

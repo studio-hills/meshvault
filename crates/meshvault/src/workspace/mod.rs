@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::anim::schema::AnimatedModel;
+use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
 use crate::studio::export_file::{self, Entry};
 
@@ -511,7 +512,7 @@ impl Workspace {
 				p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
 			})
 			.chain(model.clothing.iter().flat_map(|c| c.images()))
-			.filter_map(export_file::parse_asset_id)
+			.filter_map(parse_asset_id)
 			.map(|id| {
 				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);
 				(id, state)

@@ -12,93 +12,110 @@ impl App {
 		let area = ui.max_rect();
 		paint_gradient(ui, area, p.viewport_top, p.viewport_bottom);
 
+		// centred both ways: on the height the content took last frame
 		let width = 460.0_f32.min(area.width() - 32.0);
+		let height_id = egui::Id::unique("welcome_height");
+		let height: f32 = ui.ctx().data(|d| d.get_temp(height_id)).unwrap_or(0.0);
+		let top = (area.center().y - height / 2.0).max(area.top() + 24.0);
 		let column = egui::Rect::from_min_size(
-			egui::pos2(
-				area.center().x - width / 2.0,
-				area.top() + (area.height() * 0.14).max(24.0),
-			),
-			Vec2::new(width, area.height()),
+			egui::pos2(area.center().x - width / 2.0, top),
+			Vec2::new(width, area.bottom() - top),
 		);
-		ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
-			// hero icon
-			let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
-			ui.painter()
-				.circle_filled(icon_rect.center(), 32.0, p.accent_soft);
-			let icon = match &self.workspace {
-				Some(ws) if ws.items().is_empty() => icons::FILE_ARROW_DOWN,
-				Some(_) => icons::TREE_STRUCTURE,
-				None => icons::CUBE,
-			};
-			ui.painter().text(
-				icon_rect.center(),
-				Align2::CENTER_CENTER,
-				icon,
-				FontId::proportional(30.0),
-				p.accent,
-			);
-			ui.add_space(12.0);
+		let shown = ui.scope_builder(
+			egui::UiBuilder::new()
+				.max_rect(column)
+				.layout(egui::Layout::top_down(egui::Align::Center)),
+			|ui| {
+				// hero icon
+				let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+				ui.painter()
+					.circle_filled(icon_rect.center(), 32.0, p.accent_soft);
+				let icon = match &self.workspace {
+					Some(ws) if ws.items().is_empty() => icons::FILE_ARROW_DOWN,
+					Some(_) => icons::TREE_STRUCTURE,
+					None => icons::CUBE,
+				};
+				ui.painter().text(
+					icon_rect.center(),
+					Align2::CENTER_CENTER,
+					icon,
+					FontId::proportional(30.0),
+					p.accent,
+				);
+				ui.add_space(12.0);
 
-			match &self.workspace {
-				None => self.welcome_start(ui),
-				Some(ws) if ws.items().is_empty() => {
-					title(ui, "Your workspace is empty");
-					subtitle(
-						ui,
-						"Import an export .json to choose which models, folders and maps to download.",
-					);
-					ui.add_space(14.0);
-					ui.horizontal(|ui| {
-						if widgets::primary_button(
+				match &self.workspace {
+					None => self.welcome_start(ui),
+					Some(ws) if ws.items().is_empty() => {
+						title(ui, "Your workspace is empty");
+						subtitle(
 							ui,
-							format!("{}  Import export JSON…", icons::FILE_ARROW_DOWN),
-						)
-						.clicked()
+							"Import an export .json to choose which models, folders and maps to download.",
+						);
+						ui.add_space(14.0);
+						centred_row(ui, "welcome_actions", |ui| {
+							if widgets::primary_button(
+								ui,
+								format!("{}  Import export JSON…", icons::FILE_ARROW_DOWN),
+							)
+							.clicked()
+							{
+								self.pick_import();
+							}
+							if widgets::button(
+								ui,
+								icons::TRAY_ARROW_DOWN,
+								"Export from Roblox Studio…",
+							)
+							.clicked()
+							{
+								self.show_studio_dialog();
+							}
+						});
+						ui.add_space(14.0);
+						if drop_zone(ui, "or drop the .json file anywhere in the window").clicked()
 						{
 							self.pick_import();
 						}
-						if widgets::button(ui, icons::TRAY_ARROW_DOWN, "Export from Roblox Studio…")
-							.clicked()
-						{
-							self.show_studio_dialog();
-						}
-					});
-					ui.add_space(14.0);
-					if drop_zone(ui, "or drop the .json file anywhere in the window").clicked() {
-						self.pick_import();
 					}
-				}
-				Some(ws) => {
-					let total = ws.items().len();
-					let done = ws.items().iter().filter(|i| i.is_done()).count();
-					title(ui, "Select a model");
-					subtitle(
-						ui,
-						&format!(
-							"Pick a model in the library to view it. {done} of {total} models are downloaded."
-						),
-					);
-					let (pending, _) = self.workspace_counts();
-					if pending > 0 && !self.downloader.is_running() {
-						ui.add_space(14.0);
-						if widgets::primary_button(
+					Some(ws) => {
+						let total = ws.items().len();
+						let done = ws.items().iter().filter(|i| i.is_done()).count();
+						title(ui, "Select a model");
+						subtitle(
 							ui,
-							format!("{}  Download {pending} pending", icons::CLOUD_ARROW_DOWN),
-						)
-						.clicked()
-						{
-							self.start_downloads();
+							&format!(
+								"Pick a model in the library to view it. {done} of {total} models are downloaded."
+							),
+						);
+						let (pending, _) = self.workspace_counts();
+						if pending > 0 && !self.downloader.is_running() {
+							ui.add_space(14.0);
+							if widgets::primary_button(
+								ui,
+								format!("{}  Download {pending} pending", icons::CLOUD_ARROW_DOWN),
+							)
+							.clicked()
+							{
+								self.start_downloads();
+							}
 						}
-					}
-					if !self.show_library {
-						ui.add_space(8.0);
-						if widgets::button(ui, icons::TREE_STRUCTURE, "Show library").clicked() {
-							self.show_library = true;
+						if !self.show_library {
+							ui.add_space(8.0);
+							if widgets::button(ui, icons::TREE_STRUCTURE, "Show library").clicked()
+							{
+								self.show_library = true;
+							}
 						}
 					}
 				}
-			}
-		});
+			},
+		);
+		let used = shown.response.rect.height();
+		if (used - height).abs() > 0.5 {
+			ui.ctx().data_mut(|d| d.insert_temp(height_id, used));
+			ui.ctx().request_repaint();
+		}
 	}
 
 	fn welcome_start(&mut self, ui: &mut egui::Ui) {
@@ -126,7 +143,7 @@ impl App {
 			self.show_studio_dialog();
 		}
 		ui.add_space(16.0);
-		ui.horizontal(|ui| {
+		centred_row(ui, "welcome_actions", |ui| {
 			if widgets::primary_button(ui, format!("{}  Open file…", icons::FILE)).clicked() {
 				self.pick_file();
 			}
@@ -150,23 +167,25 @@ impl App {
 		let recent = self.recent_workspaces();
 		if !recent.is_empty() {
 			ui.add_space(18.0);
-			ui.label(widgets::overline("Recent workspaces").color(p.text_weak));
-			ui.add_space(2.0);
-			for root in recent.into_iter().take(5) {
-				match recent_row(ui, &root) {
-					RowAction::Open => self.open_workspace(&root),
-					RowAction::Remove => {
-						self.config.remove_recent(&root);
-						self.toasts.info(format!(
-							"Removed {} from recent workspaces. Its folder was not touched.",
-							root.file_name()
-								.map(|n| n.to_string_lossy())
-								.unwrap_or_default()
-						));
+			ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+				ui.label(widgets::overline("Recent workspaces").color(p.text_weak));
+				ui.add_space(2.0);
+				for root in recent.into_iter().take(5) {
+					match recent_row(ui, &root) {
+						RowAction::Open => self.open_workspace(&root),
+						RowAction::Remove => {
+							self.config.remove_recent(&root);
+							self.toasts.info(format!(
+								"Removed {} from recent workspaces. Its folder was not touched.",
+								root.file_name()
+									.map(|n| n.to_string_lossy())
+									.unwrap_or_default()
+							));
+						}
+						RowAction::None => {}
 					}
-					RowAction::None => {}
 				}
-			}
+			});
 		}
 
 		ui.add_space(18.0);
@@ -260,6 +279,23 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 	}
 	row.on_hover_text(root.display().to_string());
 	action
+}
+
+/// A row of buttons centred in the column. egui lays rows out from the
+/// left, so the row is moved over by half the space its width (measured
+/// the frame before) leaves.
+fn centred_row(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+	let id = egui::Id::unique(id);
+	let width: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+	let indent = ((ui.available_width() - width) / 2.0).max(0.0);
+	ui.horizontal(|ui| {
+		ui.add_space(indent);
+		let row = ui.horizontal(add).response.rect.width();
+		if (row - width).abs() > 0.5 {
+			ui.ctx().data_mut(|d| d.insert_temp(id, row));
+			ui.ctx().request_repaint();
+		}
+	});
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {

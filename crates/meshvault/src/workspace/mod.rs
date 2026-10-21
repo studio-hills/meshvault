@@ -37,7 +37,8 @@ pub const IMAGES_DIR: &str = "Images";
 pub fn image_stem(asset_id: u64) -> String {
 	format!("{IMAGES_DIR}/{asset_id}")
 }
-/// 3 added animated models.
+/// 3 added animated models. tools/make_test_workspace.py writes this version
+/// too; update it with this.
 const MANIFEST_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

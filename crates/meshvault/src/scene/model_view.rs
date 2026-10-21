@@ -2640,4 +2640,13 @@ mod tests {
 		let nan = normalize([f32::NAN, 1.0, 0.0]);
 		assert!(nan[0].is_nan() && nan[1] == 1.0 && nan[2] == 0.0);
 	}
+
+	/// The skinning threshold is strict: a length of exactly 1e-12 is kept.
+	#[test]
+	fn normalize_keeps_a_vector_of_exactly_the_threshold() {
+		let v = [1e-12_f32, 0.0, 0.0];
+		let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+		assert_eq!(len, 1e-12, "the length must be exactly the threshold");
+		assert_eq!(normalize(v), v);
+	}
 }

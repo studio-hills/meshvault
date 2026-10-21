@@ -1190,6 +1190,20 @@ mod tests {
 		assert!(project(&camera, rect, just_beyond).is_some());
 	}
 
+	/// The viewport's normalise scales any vector longer than 0, however
+	/// short, and turns zero and NaN into zero. Skinning's normalise (in
+	/// scene/model_view.rs) stops at 1e-12 and keeps the vector instead.
+	#[test]
+	fn normalize_scales_any_nonzero_vector_and_zeroes_the_rest() {
+		assert_eq!(normalize([3.0, 0.0, 4.0]), [0.6, 0.0, 0.8]);
+		// far below skinning's 1e-12 it still normalises
+		let n = normalize([1e-13, 0.0, 0.0]);
+		assert!(close(n[0], 1.0) && n[1] == 0.0 && n[2] == 0.0, "{n:?}");
+		assert_eq!(normalize([0.0; 3]), [0.0; 3]);
+		// a NaN length is not > 0, so every component falls back to zero
+		assert_eq!(normalize([f32::NAN, 1.0, 0.0]), [0.0; 3]);
+	}
+
 	fn add(a: V3, b: V3) -> V3 {
 		[a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 	}

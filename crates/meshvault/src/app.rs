@@ -8,20 +8,20 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::config::Config;
-use crate::download::{Downloader, Event};
-use crate::geometry::{self, GroupKind, Loaded};
-use crate::gpu::{GpuRenderer, GpuScene};
-use crate::import_ui::{self, ImportDialog};
-use crate::maps::Slot;
-use crate::model_view::{MeshSource, ModelView};
-use crate::obj_export::Format;
-use crate::settings_ui::{self, SettingsDialog};
-use crate::texture::{self, Material};
+use crate::export::obj::Format;
+use crate::render::gpu::{GpuRenderer, GpuScene};
+use crate::render::viewport::{Camera, Shading};
+use crate::scene::geometry::{self, GroupKind, Loaded};
+use crate::scene::maps::Slot;
+use crate::scene::model_view::{MeshSource, ModelView};
+use crate::scene::texture::{self, Material};
+use crate::studio::export_file;
+use crate::ui::import::{self, ImportDialog};
+use crate::ui::settings::{self, SettingsDialog};
 use crate::ui::theme;
-use crate::ui::{Confirm, ConfirmAction, StudioDialog, Toasts};
-use crate::viewport::{Camera, Shading};
+use crate::ui::{self, Confirm, ConfirmAction, StudioDialog, Toasts};
+use crate::workspace::download::{Downloader, Event};
 use crate::workspace::{self, AssetKind, AssetState, Workspace};
-use crate::{export, workspace_ui};
 
 pub struct Document {
 	pub path: PathBuf,
@@ -36,7 +36,7 @@ pub struct Document {
 	/// The mesh uploaded to the GPU, created on first draw.
 	pub gpu: Option<GpuScene>,
 	/// What the colour map's alpha does.
-	pub alpha: crate::viewport::AlphaMode,
+	pub alpha: crate::render::viewport::AlphaMode,
 }
 
 impl Document {
@@ -61,7 +61,7 @@ impl Document {
 
 pub struct Parsing {
 	pub path: PathBuf,
-	rx: std::sync::mpsc::Receiver<Result<export::Export, String>>,
+	rx: std::sync::mpsc::Receiver<Result<export_file::Export, String>>,
 	pub started: Instant,
 }
 
@@ -100,7 +100,7 @@ pub struct App {
 	/// Name of the graphics adapter, for the status bar.
 	pub adapter: Option<String>,
 	pub workspace: Option<Workspace>,
-	pub browser: workspace_ui::Browser,
+	pub browser: ui::workspace::Browser,
 	pub downloader: Downloader,
 	pub import: Option<ImportDialog>,
 	/// An export being read on a background thread.
@@ -118,7 +118,7 @@ pub struct App {
 	pub model: Option<ModelView>,
 	pub loading_model: Option<LoadingModel>,
 	/// Receives exports sent from Roblox Studio.
-	pub studio_link: crate::studio_link::StudioLink,
+	pub studio_link: crate::studio::link::StudioLink,
 	pub studio_dialog: Option<StudioDialog>,
 	/// Pieces of an export from Studio received so far, out of how many, and when.
 	pub studio_progress: Option<(usize, usize, Instant)>,
@@ -141,7 +141,7 @@ impl App {
 		let config = Config::load();
 		theme::install_fonts(&ctx);
 		theme::apply(&ctx, config.theme);
-		let studio_link = crate::studio_link::StudioLink::start(&ctx);
+		let studio_link = crate::studio::link::StudioLink::start(&ctx);
 		let mut app = Self {
 			ctx,
 			config,
@@ -158,7 +158,7 @@ impl App {
 			gpu,
 			adapter,
 			workspace: None,
-			browser: workspace_ui::Browser::default(),
+			browser: ui::workspace::Browser::default(),
 			downloader: Downloader::default(),
 			import: None,
 			parsing: None,
@@ -178,7 +178,7 @@ impl App {
 			viewport: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(16.0, 9.0)),
 			last_save: Instant::now(),
 		};
-		if let crate::studio_link::Status::Unavailable(why) = &app.studio_link.status {
+		if let crate::studio::link::Status::Unavailable(why) = &app.studio_link.status {
 			app.toasts.warning(crate::ui::unavailable_text(why));
 		}
 		// reopen the last workspace
@@ -281,7 +281,7 @@ impl App {
 					hull_visible,
 					material: Material::default(),
 					gpu: None,
-					alpha: crate::viewport::AlphaMode::Overlay,
+					alpha: crate::render::viewport::AlphaMode::Overlay,
 				});
 				true
 			}
@@ -417,7 +417,7 @@ impl App {
 		let bytes = bytes.to_vec();
 		let ctx = self.ctx.clone();
 		std::thread::spawn(move || {
-			let result = export::parse(&String::from_utf8_lossy(&bytes));
+			let result = export_file::parse(&String::from_utf8_lossy(&bytes));
 			drop(bytes);
 			let _ = tx.send(result);
 			ctx.request_repaint();
@@ -446,8 +446,8 @@ impl App {
 		}
 	}
 
-	pub fn finish_import(&mut self, outcome: import_ui::Outcome) {
-		let import_ui::Outcome::Import {
+	pub fn finish_import(&mut self, outcome: import::Outcome) {
+		let import::Outcome::Import {
 			entries,
 			models,
 			download_now,
@@ -468,7 +468,7 @@ impl App {
 				stems.insert(id, stem);
 			}
 		}
-		let by_id: HashMap<u32, &export::Entry> = entries
+		let by_id: HashMap<u32, &export_file::Entry> = entries
 			.iter()
 			.filter_map(|e| Some((e.source_id?, e)))
 			.collect();
@@ -480,7 +480,7 @@ impl App {
 				.map(|p| p.mesh_ref)
 				.filter(|&r| r != 0)
 				.collect();
-			let meshes: Vec<(&export::Entry, String)> = refs
+			let meshes: Vec<(&export_file::Entry, String)> = refs
 				.iter()
 				.filter_map(|r| Some((*by_id.get(r)?, stems.get(r)?.clone())))
 				.collect();
@@ -522,7 +522,7 @@ impl App {
 			self.toasts.info("Nothing to download.");
 			return;
 		}
-		let Some(client) = settings_ui::client_from_config(&self.config) else {
+		let Some(client) = settings::client_from_config(&self.config) else {
 			self.open_settings(Some("Add a Roblox credential to start downloading.".into()));
 			return;
 		};
@@ -691,11 +691,11 @@ impl App {
 	pub fn poll_studio_link(&mut self) {
 		for event in self.studio_link.poll() {
 			let received = match event {
-				crate::studio_link::Event::Progress { done, count } => {
+				crate::studio::link::Event::Progress { done, count } => {
 					self.studio_progress = Some((done, count, Instant::now()));
 					continue;
 				}
-				crate::studio_link::Event::Received(received) => received,
+				crate::studio::link::Event::Received(received) => received,
 			};
 			self.studio_progress = None;
 			// the export is here, so the instructions are no longer needed
@@ -781,27 +781,27 @@ impl App {
 		self.save_workspace();
 	}
 
-	pub fn handle_browser(&mut self, actions: Vec<workspace_ui::Action>) {
+	pub fn handle_browser(&mut self, actions: Vec<ui::workspace::Action>) {
 		for action in actions {
 			match action {
-				workspace_ui::Action::Open(i) => self.open_item(i),
-				workspace_ui::Action::OpenModel(i) => self.open_model(i),
-				workspace_ui::Action::RemoveModels(models) => {
+				ui::workspace::Action::Open(i) => self.open_item(i),
+				ui::workspace::Action::OpenModel(i) => self.open_model(i),
+				ui::workspace::Action::RemoveModels(models) => {
 					self.ask(ConfirmAction::RemoveModels(models))
 				}
-				workspace_ui::Action::Retry(items) => {
+				ui::workspace::Action::Retry(items) => {
 					if let Some(ws) = &mut self.workspace {
 						ws.retry(items);
 					}
 					self.start_downloads();
 				}
 				// deletes files, so it is confirmed first
-				workspace_ui::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
-				workspace_ui::Action::Reveal(path) => workspace_ui::reveal(&path),
-				workspace_ui::Action::RemoveSelection { items, models } => {
+				ui::workspace::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
+				ui::workspace::Action::Reveal(path) => ui::workspace::reveal(&path),
+				ui::workspace::Action::RemoveSelection { items, models } => {
 					self.ask(ConfirmAction::RemoveSelection { items, models })
 				}
-				workspace_ui::Action::Export {
+				ui::workspace::Action::Export {
 					items,
 					models,
 					format,
@@ -869,7 +869,7 @@ impl App {
 	/// Exports library meshes and animated models into a folder the user
 	/// picks, on a background thread.
 	pub fn export_library(&mut self, items: &[usize], models: &[usize], format: Format) {
-		use crate::obj_export::{MeshJob, ModelJob};
+		use crate::export::obj::{MeshJob, ModelJob};
 		let Some(ws) = &self.workspace else { return };
 		let meshes: Vec<MeshJob> = items
 			.iter()
@@ -915,7 +915,7 @@ impl App {
 			));
 		}
 		self.in_background(move |ctx| {
-			let report = crate::obj_export::export(ctx, &dir, meshes, models, format);
+			let report = crate::export::obj::export(ctx, &dir, meshes, models, format);
 			let written = plural(report.written, "model");
 			if report.failed.is_empty() {
 				Ok(format!(
@@ -1000,7 +1000,7 @@ impl App {
 			};
 			self.in_background(move |ctx| {
 				let model = load(ctx)?;
-				crate::gltf_export::export_model(&model, &path)?;
+				crate::export::gltf::export_model(&model, &path)?;
 				Ok(format!(
 					"Exported {name} with {} for Blender to {}. In Blender: File › Import › glTF 2.0.",
 					plural(
@@ -1016,11 +1016,11 @@ impl App {
 			};
 			let Some(doc) = &self.doc else { return };
 			let name = self.shown_name();
-			let result = crate::gltf_export::export_mesh(
+			let result = crate::export::gltf::export_mesh(
 				&doc.loaded.geometry,
 				&doc.visible_groups(),
 				&doc.material,
-				crate::viewport::PART_COLOUR,
+				crate::render::viewport::PART_COLOUR,
 				&name,
 				&path,
 			);
@@ -1044,9 +1044,9 @@ impl App {
 			return;
 		};
 		let result = if let Some(model) = &mut self.model {
-			crate::obj_export::write_model(&path, model)
+			crate::export::obj::write_model(&path, model)
 		} else if let Some(doc) = &self.doc {
-			crate::obj_export::write_mesh(
+			crate::export::obj::write_mesh(
 				&path,
 				&doc.loaded.geometry,
 				&doc.visible_groups(),
@@ -1092,7 +1092,7 @@ impl App {
 				}
 				settings.lights = model.scene_lights();
 				let mut parts = model.scene_parts(plain);
-				out.push(crate::viewport::render_image(
+				out.push(crate::render::viewport::render_image(
 					&mut parts,
 					&turn(&camera, k),
 					&settings,
@@ -1105,23 +1105,23 @@ impl App {
 			let groups = doc.visible_groups();
 			let geometry = &doc.loaded.geometry;
 			for k in 0..frames {
-				let mut parts = [crate::viewport::ScenePart {
+				let mut parts = [crate::render::viewport::ScenePart {
 					geometry,
 					groups: &groups,
-					transform: crate::viewport::IDENTITY,
+					transform: crate::render::viewport::IDENTITY,
 					material: plain.unwrap_or(&doc.material),
 					colour_groups: geometry.group_kind == GroupKind::Hull,
-					colour: crate::viewport::PART_COLOUR,
+					colour: crate::render::viewport::PART_COLOUR,
 					scene: &mut doc.gpu,
 					moved: false,
-					surface: crate::viewport::Surface {
+					surface: crate::render::viewport::Surface {
 						alpha_mode: doc.alpha,
-						..crate::viewport::Surface::OPAQUE
+						..crate::render::viewport::Surface::OPAQUE
 					},
 					decal: None,
 					highlight: false,
 				}];
-				out.push(crate::viewport::render_image(
+				out.push(crate::render::viewport::render_image(
 					&mut parts,
 					&turn(&doc.camera, k),
 					&settings,
@@ -1147,7 +1147,7 @@ impl App {
 		[even(height * aspect), even(height)]
 	}
 
-	pub fn set_lighting(&mut self, lighting: crate::viewport::Lighting) {
+	pub fn set_lighting(&mut self, lighting: crate::render::viewport::Lighting) {
 		self.config.lighting = lighting;
 		self.config.save();
 	}
@@ -1301,7 +1301,7 @@ pub fn model_loader(
 	move |ctx: &egui::Context| {
 		std::fs::read_to_string(&file)
 			.map_err(|e| format!("Could not read {}: {e}", file.display()))
-			.and_then(|text| export::parse(&text))
+			.and_then(|text| export_file::parse(&text))
 			.and_then(|export| {
 				export
 					.models

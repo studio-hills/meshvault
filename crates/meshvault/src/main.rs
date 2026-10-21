@@ -6,31 +6,19 @@
 mod anim;
 mod app;
 mod config;
-mod download;
 mod export;
-mod facts;
-mod geometry;
-mod gltf_export;
-mod gpu;
-mod import_ui;
-mod maps;
-mod model_view;
-mod obj_export;
-mod settings_ui;
-mod studio_link;
-mod texture;
-mod thumbnails;
+mod render;
+mod scene;
+mod studio;
 mod ui;
-mod viewport;
 mod workspace;
-mod workspace_ui;
 
 use std::path::PathBuf;
 
 use eframe::egui;
 
 use app::App;
-use gpu::GpuRenderer;
+use render::gpu::GpuRenderer;
 
 fn main() -> eframe::Result {
 	// meshvault [workspace folder] [mesh, image or export .json ...]
@@ -45,7 +33,7 @@ fn main() -> eframe::Result {
 			.with_drag_and_drop(true),
 		// the 3D view needs a depth buffer; MSAA smooths its edges
 		depth_buffer: 32,
-		multisampling: gpu::MSAA_SAMPLES as u16,
+		multisampling: render::gpu::MSAA_SAMPLES as u16,
 		..Default::default()
 	};
 	eframe::run_native(

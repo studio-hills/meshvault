@@ -8,15 +8,15 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 
-use crate::export::FolderTree;
-use crate::facts::Facts;
-use crate::gpu::GpuRenderer;
-use crate::maps::MapKind;
-use crate::obj_export::Format;
-use crate::thumbnails::{Subject, Thumbnails};
+use crate::export::obj::Format;
+use crate::render::gpu::GpuRenderer;
+use crate::render::thumbnails::{Subject, Thumbnails};
+use crate::scene::maps::MapKind;
+use crate::studio::export_file::FolderTree;
 use crate::ui::theme::{Palette, ROW, display, palette};
 use crate::ui::tree::{self, FolderCommand};
 use crate::ui::{icons, widgets};
+use crate::workspace::facts::Facts;
 use crate::workspace::{AssetState, Item, ModelItem, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]

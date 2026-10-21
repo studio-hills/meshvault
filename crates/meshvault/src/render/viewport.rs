@@ -4,10 +4,10 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
-use crate::geometry::Geometry;
-use crate::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms, linear_rgb};
-use crate::maps::Slot;
-use crate::texture::Material;
+use crate::render::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms, linear_rgb};
+use crate::scene::geometry::Geometry;
+use crate::scene::maps::Slot;
+use crate::scene::texture::Material;
 
 type V3 = [f32; 3];
 

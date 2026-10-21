@@ -9,9 +9,9 @@ use std::sync::Arc;
 use eframe::egui_wgpu::{self, wgpu};
 use wgpu::util::DeviceExt;
 
-use crate::geometry::Geometry;
-use crate::maps::Slot;
-use crate::texture::Material;
+use crate::scene::geometry::Geometry;
+use crate::scene::maps::Slot;
+use crate::scene::texture::Material;
 
 /// Must match `NativeOptions` in main.
 pub const MSAA_SAMPLES: u32 = 4;
@@ -54,7 +54,7 @@ pub struct Uniforms {
 	pub decal_tile: [f32; 4],
 	pub decal_colour: [f32; 4],
 	/// The model's lights (see `viewport::light_uniforms`), and how many.
-	pub lights: [[f32; 4]; crate::viewport::MAX_LIGHTS * 3],
+	pub lights: [[f32; 4]; crate::render::viewport::MAX_LIGHTS * 3],
 	pub light_count: [f32; 4],
 	/// Clothing draws: the template region (x, y, width, height, 0..1) of
 	/// each box face (Right, Top, Back, Left, Bottom, Front), then the box's

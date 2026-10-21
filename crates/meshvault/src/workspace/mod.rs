@@ -14,14 +14,17 @@
 //!   .cache/facts.json              what the library filters on, per mesh (see `facts`)
 //! ```
 
+pub mod download;
+pub mod facts;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::anim::schema::AnimatedModel;
-use crate::export::{self, Entry};
-use crate::maps::MapKind;
+use crate::scene::maps::MapKind;
+use crate::studio::export_file::{self, Entry};
 
 pub const MANIFEST: &str = "workspace.json";
 pub const MODELS_DIR: &str = "Models";
@@ -247,7 +250,7 @@ fn write_rig(
 		})
 		.collect();
 	let doc = serde_json::json!({
-		"SchemaVersion": export::SCHEMA_VERSION,
+		"SchemaVersion": export_file::SCHEMA_VERSION,
 		"Meshes": meshes,
 		"Models": [model],
 	});
@@ -492,7 +495,7 @@ impl Workspace {
 				p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
 			})
 			.chain(model.clothing.iter().flat_map(|c| c.images()))
-			.filter_map(export::parse_asset_id)
+			.filter_map(export_file::parse_asset_id)
 			.map(|id| {
 				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);
 				(id, state)
@@ -829,7 +832,7 @@ mod tests {
 		assert_eq!(reopened.models().len(), 1);
 		// the rig file is an export of its own
 		let file = std::fs::read_to_string(dir.join(&m.file)).unwrap();
-		let export = export::parse(&file).unwrap();
+		let export = export_file::parse(&file).unwrap();
 		assert_eq!(export.models[0].parts[0].mesh_ref, 1);
 		assert_eq!(export.entries[0].maps, torso.maps);
 

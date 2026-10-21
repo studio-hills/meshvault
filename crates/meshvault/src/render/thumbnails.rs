@@ -10,12 +10,12 @@ use std::time::SystemTime;
 
 use eframe::egui;
 
-use crate::geometry::{self, Geometry, GroupKind};
-use crate::gpu::GpuRenderer;
-use crate::maps::Slot;
-use crate::model_view::ModelView;
-use crate::texture::{self, Material};
-use crate::viewport::{self, Camera, ScenePart, Shading, ViewSettings};
+use crate::render::gpu::GpuRenderer;
+use crate::render::viewport::{self, Camera, ScenePart, Shading, ViewSettings};
+use crate::scene::geometry::{self, Geometry, GroupKind};
+use crate::scene::maps::Slot;
+use crate::scene::model_view::ModelView;
+use crate::scene::texture::{self, Material};
 use crate::workspace::{AssetState, CACHE_DIR, Workspace};
 
 /// Pixels on each side of a thumbnail.

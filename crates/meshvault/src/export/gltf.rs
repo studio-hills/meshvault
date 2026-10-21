@@ -15,11 +15,11 @@ use eframe::egui::Color32;
 use serde_json::{Value, json};
 
 use crate::anim::math::CFrame;
-use crate::geometry::{Geometry, GroupKind};
-use crate::maps::Slot;
-use crate::model_view::{ExportMesh, ModelView};
-use crate::texture::Material;
-use crate::viewport::{AlphaMode, Surface};
+use crate::render::viewport::{AlphaMode, Surface};
+use crate::scene::geometry::{Geometry, GroupKind};
+use crate::scene::maps::Slot;
+use crate::scene::model_view::{ExportMesh, ModelView};
+use crate::scene::texture::Material;
 
 /// Keyframes per second of baked clips.
 pub const FPS: f32 = 30.0;
@@ -528,7 +528,7 @@ impl Gltf {
 				.flatten()
 				.map(|t| t.rgba.dimensions())
 				.fold((1, 1), |(w, h), (a, b)| (w.max(a), h.max(b)));
-			let fit = |t: Option<&crate::texture::Texture>| {
+			let fit = |t: Option<&crate::scene::texture::Texture>| {
 				t.map(|t| {
 					image::imageops::resize(
 						t.rgba.as_ref(),

@@ -134,8 +134,8 @@ pub struct MaterialVariantInfo {
 
 impl MaterialVariantInfo {
 	/// The variant's maps, by the slot each fills.
-	pub fn maps(&self) -> [(crate::maps::Slot, &str); 4] {
-		use crate::maps::Slot;
+	pub fn maps(&self) -> [(crate::scene::maps::Slot, &str); 4] {
+		use crate::scene::maps::Slot;
 		[
 			(Slot::Base, &self.color_map),
 			(Slot::Normal, &self.normal_map),

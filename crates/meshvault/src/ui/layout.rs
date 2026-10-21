@@ -8,10 +8,10 @@ use eframe::egui::{
 use super::theme::{CONTROL, CONTROL_RADIUS, ThemeMode, display, medium, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
-use crate::geometry::GroupKind;
-use crate::maps::Slot;
+use crate::render::viewport::{self, Camera, Lighting, ScenePart, Shading, ViewSettings};
+use crate::scene::geometry::GroupKind;
+use crate::scene::maps::Slot;
 use crate::ui::ConfirmAction;
-use crate::viewport::{self, Camera, Lighting, ScenePart, Shading, ViewSettings};
 
 impl eframe::App for App {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -247,7 +247,7 @@ impl App {
 				{
 					ui.close();
 					if let Some(ws) = &self.workspace {
-						crate::workspace_ui::reveal(&ws.root);
+						crate::ui::workspace::reveal(&ws.root);
 					}
 				}
 				ui.separator();
@@ -341,7 +341,7 @@ impl App {
 				.studio_progress
 				.filter(|(_, _, at)| at.elapsed().as_secs() < 60);
 			let studio = match (&self.studio_link.status, receiving) {
-				(crate::studio_link::Status::Listening, Some((done, count, _))) => ui
+				(crate::studio::link::Status::Listening, Some((done, count, _))) => ui
 					.add(
 						egui::Label::new(small(
 							format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
@@ -350,7 +350,7 @@ impl App {
 						.sense(Sense::click()),
 					)
 					.on_hover_text("An export is arriving from Roblox Studio"),
-				(crate::studio_link::Status::Listening, None) => ui
+				(crate::studio::link::Status::Listening, None) => ui
 					.add(
 						egui::Label::new(small(
 							format!("{}  Studio link", icons::CIRCLE),
@@ -360,9 +360,9 @@ impl App {
 					)
 					.on_hover_text(format!(
 						"Listening on localhost:{} for exports from Roblox Studio. Click for the Command Bar line.",
-						crate::studio_link::PORT
+						crate::studio::link::PORT
 					)),
-				(crate::studio_link::Status::Unavailable(why), _) => ui
+				(crate::studio::link::Status::Unavailable(why), _) => ui
 					.add(
 						egui::Label::new(small(
 							format!("{}  Studio link unavailable", icons::CIRCLE),
@@ -688,7 +688,7 @@ impl App {
 			(icons::PERSON_SIMPLE_RUN, "Open animated model")
 		} else if ext == "json" {
 			(icons::FILE_ARROW_DOWN, "Import export file")
-		} else if crate::texture::is_image(&path) {
+		} else if crate::scene::texture::is_image(&path) {
 			(icons::IMAGE, "Use as material map")
 		} else {
 			(icons::CUBE, "Open model")

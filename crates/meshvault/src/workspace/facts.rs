@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::geometry;
+use crate::scene::geometry;
 use crate::workspace::{AssetState, CACHE_DIR, Workspace};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::download::AuthMethod;
 use crate::ui::theme::ThemeMode;
+use crate::workspace::download::AuthMethod;
 
 /// Name used for the config folder and the credential store.
 const APP_ID: &str = "meshvault";
@@ -25,7 +25,7 @@ pub struct Config {
 	pub concurrency: usize,
 	pub theme: ThemeMode,
 	/// How the 3D view is lit.
-	pub lighting: crate::viewport::Lighting,
+	pub lighting: crate::render::viewport::Lighting,
 }
 
 impl Default for Config {

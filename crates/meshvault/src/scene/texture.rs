@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Pos2};
 
-use crate::maps::{MapKind, Slot};
+use crate::scene::maps::{MapKind, Slot};
 
 pub const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "bmp", "tga", "webp"];
 

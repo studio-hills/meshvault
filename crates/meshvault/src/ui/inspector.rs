@@ -1,13 +1,13 @@
 //! The right-hand panel describing the open model and its material.
 
-use crate::viewport::AlphaMode;
+use crate::render::viewport::AlphaMode;
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
 use super::theme::{ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::app::{App, format_bytes};
-use crate::geometry::GroupKind;
-use crate::maps::Slot;
+use crate::scene::geometry::GroupKind;
+use crate::scene::maps::Slot;
 use crate::ui::ConfirmAction;
 
 impl App {
@@ -215,7 +215,7 @@ const MAP_CARD_RADIUS: u8 = 8;
 fn map_row(
 	ui: &mut egui::Ui,
 	slot: Slot,
-	material: &crate::texture::Material,
+	material: &crate::scene::texture::Material,
 	pick: &mut Option<Slot>,
 	toggle: &mut Option<(Slot, bool)>,
 	remove: &mut Option<Slot>,

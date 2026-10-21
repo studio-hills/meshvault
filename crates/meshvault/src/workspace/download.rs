@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::export::parse_asset_id;
+use crate::studio::export_file::parse_asset_id;
 use crate::workspace::{AssetKind, Job};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -513,7 +513,7 @@ fn worker(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::maps::MapKind;
+	use crate::scene::maps::MapKind;
 	use std::io::{BufRead, BufReader, Write};
 	use std::net::TcpListener;
 
@@ -675,11 +675,14 @@ mod tests {
 	/// Full pipeline: export entries -> workspace -> worker pool -> organized files.
 	#[test]
 	fn downloads_into_organized_workspace() {
-		use crate::export::Entry;
+		use crate::studio::export_file::Entry;
 		use crate::workspace::{AssetState, Workspace};
 
-		let mesh =
-			std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes/torso.mesh")).unwrap();
+		let mesh = std::fs::read(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/../rbx_mesh/meshes/torso.mesh"
+		))
+		.unwrap();
 		let png = b"\x89PNG\r\n\x1a\nFAKE".to_vec();
 		let (cdn, _) = serve(vec![
 			("/cdn/1", 200, vec![], mesh.clone()),
@@ -836,7 +839,7 @@ mod tests {
 		);
 		drop(requests);
 		// the viewer can open what was downloaded
-		assert!(crate::geometry::load(&mesh).is_ok());
+		assert!(crate::scene::geometry::load(&mesh).is_ok());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

@@ -18,11 +18,13 @@ use crate::anim::clip::{Clip, ClipMarker};
 use crate::anim::math::{CFrame, V3};
 use crate::anim::rig::{Binding, BoneParent, Posed, Rig, Target};
 use crate::anim::schema::{AnimatedModel, ClipStatus, ModelPart};
-use crate::geometry::{self, Geometry, GroupKind, Primitive, Skin};
-use crate::gpu::GpuScene;
-use crate::maps::Slot;
-use crate::texture::{self, Material};
-use crate::viewport::{self, AlphaMode, Camera, ClothingDraw, DecalDraw, ScenePart, Surface};
+use crate::render::gpu::GpuScene;
+use crate::render::viewport::{
+	self, AlphaMode, Camera, ClothingDraw, DecalDraw, ScenePart, Surface,
+};
+use crate::scene::geometry::{self, Geometry, GroupKind, Primitive, Skin};
+use crate::scene::maps::Slot;
+use crate::scene::texture::{self, Material};
 
 /// The files of one mesh a model uses, found in the workspace.
 pub struct MeshSource {
@@ -758,7 +760,7 @@ impl ModelView {
 		let mut clothing_images: Vec<(Section, Material, [f32; 3], bool)> = Vec::new();
 		if let Some(c) = &model.clothing {
 			let mut load = |content: &Option<String>| -> Option<texture::Texture> {
-				let id = crate::export::parse_asset_id(content.as_deref()?)?;
+				let id = crate::studio::export_file::parse_asset_id(content.as_deref()?)?;
 				decal_images
 					.entry(id)
 					.or_insert_with(|| {
@@ -939,7 +941,7 @@ impl ModelView {
 			};
 			let mut decals: Vec<(i32, PartDecal)> = Vec::new();
 			for d in &record.decals {
-				let image = crate::export::parse_asset_id(&d.texture).and_then(|id| {
+				let image = crate::studio::export_file::parse_asset_id(&d.texture).and_then(|id| {
 					decal_images
 						.entry(id)
 						.or_insert_with(|| {
@@ -987,7 +989,7 @@ impl ModelView {
 				let mut material = Material::default();
 				let mut wanted = 0;
 				for (slot, content) in v.maps() {
-					let Some(id) = crate::export::parse_asset_id(content) else {
+					let Some(id) = crate::studio::export_file::parse_asset_id(content) else {
 						continue;
 					};
 					wanted += 1;
@@ -2105,7 +2107,8 @@ mod tests {
 		let Ok(path) = std::env::var("RBX_V1_EXPORT") else {
 			return;
 		};
-		let export = crate::export::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+		let export =
+			crate::studio::export_file::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
 		let ctx = egui::Context::default();
 		let mut frames = 0;
 		for (i, model) in export.models.iter().enumerate() {

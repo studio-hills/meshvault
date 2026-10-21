@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::Deserialize;
 
 use crate::anim::schema::AnimatedModel;
-use crate::maps::MapKind;
+use crate::scene::maps::MapKind;
 
 /// The newest `SchemaVersion` this build understands, and the one it writes.
 pub const SCHEMA_VERSION: u32 = 2;

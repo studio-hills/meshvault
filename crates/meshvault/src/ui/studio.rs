@@ -9,7 +9,7 @@ use eframe::egui::{self, Align, CornerRadius, Frame, Id, Layout, Margin, RichTex
 use super::theme::{dialog_frame, display, palette};
 use super::{code, icons, widgets};
 use crate::app::App;
-use crate::studio_link::{self, CodeLayout, CodeMode, Status};
+use crate::studio::link::{self, CodeLayout, CodeMode, Status};
 
 pub struct StudioDialog {
 	schema: u32,
@@ -21,7 +21,7 @@ pub struct StudioDialog {
 impl Default for StudioDialog {
 	fn default() -> Self {
 		Self {
-			schema: studio_link::LATEST_SCHEMA,
+			schema: link::LATEST_SCHEMA,
 			mode: CodeMode::Send,
 			layout: CodeLayout::OneLine,
 			copied: None,
@@ -116,7 +116,7 @@ impl App {
 				);
 				ui.add_space(12.0);
 
-				let source = studio_link::studio_code(dialog.schema, dialog.mode, dialog.layout);
+				let source = link::studio_code(dialog.schema, dialog.mode, dialog.layout);
 				if code_card(ui, &mut dialog.layout, &source, dialog.mode) {
 					dialog.copied = None;
 				}
@@ -125,11 +125,11 @@ impl App {
 				// the schema on the left (rarely changed), the actions on the right
 				ui.horizontal(|ui| {
 					ui.label(RichText::new("Schema").color(p.text_weak));
-					let options: Vec<(u32, String)> = studio_link::SCHEMAS
+					let options: Vec<(u32, String)> = link::SCHEMAS
 						.iter()
 						.rev()
 						.map(|&v| {
-							let label = if v == studio_link::LATEST_SCHEMA {
+							let label = if v == link::LATEST_SCHEMA {
 								format!("{v} (latest)")
 							} else {
 								v.to_string()

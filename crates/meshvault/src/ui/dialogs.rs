@@ -8,7 +8,7 @@ use super::layout::SHORTCUTS;
 use super::theme::{BODY_LINE_HEIGHT, dialog_frame, display, palette};
 use super::{icons, widgets};
 use crate::app::App;
-use crate::maps::Slot;
+use crate::scene::maps::Slot;
 use crate::workspace;
 
 /// A destructive action waiting for the user to confirm it.

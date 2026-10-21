@@ -6,11 +6,11 @@ use std::sync::mpsc::{Receiver, channel};
 use eframe::egui::{self, RichText};
 
 use crate::config::{self, Config};
-use crate::download::{AuthMethod, Client, Credentials, Endpoints, sniff_extension};
 use crate::ui::icons;
 use crate::ui::theme::{dialog_frame, display, palette};
 use crate::ui::widgets;
 use crate::workspace::AssetKind;
+use crate::workspace::download::{AuthMethod, Client, Credentials, Endpoints, sniff_extension};
 
 pub struct SettingsDialog {
 	method: AuthMethod,
@@ -110,7 +110,7 @@ impl SettingsDialog {
 			self.message = Some((false, "Enter a credential first.".into()));
 			return;
 		};
-		let Some(id) = crate::export::parse_asset_id(&self.test_id) else {
+		let Some(id) = crate::studio::export_file::parse_asset_id(&self.test_id) else {
 			self.message = Some((false, "Enter an asset id to test with.".into()));
 			return;
 		};

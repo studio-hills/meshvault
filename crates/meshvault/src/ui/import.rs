@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout, RichText};
 
 use crate::anim::schema::AnimatedModel;
-use crate::export::{Entry, Export, FolderTree};
-use crate::maps::MapKind;
+use crate::scene::maps::MapKind;
+use crate::studio::export_file::{Entry, Export, FolderTree};
 use crate::ui::icons;
 use crate::ui::theme::{ROW, dialog_frame, display, palette};
 use crate::ui::tree::{self, FolderCommand};
@@ -640,7 +640,10 @@ impl ImportDialog {
 		rows.sort_by(|&a, &b| {
 			let kind = |r: usize| matches!(self.rows[r], Row::Mesh(_));
 			kind(a).cmp(&kind(b)).then_with(|| {
-				crate::export::natural_cmp(self.row_name(self.rows[a]), self.row_name(self.rows[b]))
+				crate::studio::export_file::natural_cmp(
+					self.row_name(self.rows[a]),
+					self.row_name(self.rows[b]),
+				)
 			})
 		});
 		for r in rows {
@@ -813,7 +816,7 @@ mod tests {
 				"Parts":[{"Path":"RS/Animals/Shark/Body","Name":"Body","MeshRef":1,
 					"CFrame":[0,0,0,1,0,0,0,1,0,0,0,1],"Size":[1,1,1],"Transparency":0}],
 				"Joints":[],"Bones":[],"Animations":[]}]}"#;
-		let export = crate::export::parse(json).unwrap();
+		let export = crate::studio::export_file::parse(json).unwrap();
 		let dir = std::env::temp_dir().join(format!("rbx_import_ui_{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		let ws = Workspace::create(&dir, "Test").unwrap();

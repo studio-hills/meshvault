@@ -1,7 +1,7 @@
 //! Exports models as files: Wavefront OBJ (a mesh with its colour and
 //! normal maps copied beside it, an animated model as one OBJ of all its
 //! parts as posed, with each part's map or colour), or binary glTF for
-//! Blender (see [`crate::gltf_export`]), several at once from the library.
+//! Blender (see [`crate::export::gltf`]), several at once from the library.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::geometry::{self, Geometry, GroupKind};
-use crate::maps::Slot;
-use crate::model_view::ModelView;
-use crate::texture::Material;
-use crate::viewport;
+use crate::render::viewport;
+use crate::scene::geometry::{self, Geometry, GroupKind};
+use crate::scene::maps::Slot;
+use crate::scene::model_view::ModelView;
+use crate::scene::texture::Material;
 use crate::workspace::sanitize;
 
 /// What to write.
@@ -87,7 +87,7 @@ pub fn export(
 		let result = (job.load)(ctx).and_then(|mut model| match format {
 			Format::Obj => export_model(dir, &name, &mut model),
 			Format::Glb => {
-				crate::gltf_export::export_model(&model, &dir.join(format!("{name}.glb")))
+				crate::export::gltf::export_model(&model, &dir.join(format!("{name}.glb")))
 			}
 		});
 		match result {
@@ -163,14 +163,14 @@ fn export_mesh_glb(
 		for (slot, map) in &job.maps {
 			if let Ok(texture) = std::fs::read(map)
 				.map_err(|e| e.to_string())
-				.and_then(|b| crate::texture::load(ctx, map, &b))
+				.and_then(|b| crate::scene::texture::load(ctx, map, &b))
 			{
 				material.set(*slot, texture);
 			}
 		}
 	}
-	let groups = crate::gltf_export::default_groups(&geometry);
-	crate::gltf_export::export_mesh(
+	let groups = crate::export::gltf::default_groups(&geometry);
+	crate::export::gltf::export_mesh(
 		&geometry,
 		&groups,
 		&material,

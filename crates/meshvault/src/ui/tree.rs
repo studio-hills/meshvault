@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Id};
 
-use crate::export::FolderTree;
+use crate::studio::export_file::FolderTree;
 
 /// The id of the folder at `path` (components joined with `/`) in a tree.
 /// `scope` keeps different trees (library, import dialog) apart.

@@ -29,8 +29,8 @@ const MAX_EXPORT: usize = 2 * 1024 * 1024 * 1024;
 
 /// The exporters served, by schema version. The newest is the default.
 const EXPORTERS: [(u32, &str); 2] = [
-	(1, include_str!("../studio/exporter_v1.luau")),
-	(2, include_str!("../studio/exporter_v2.luau")),
+	(1, include_str!("../../studio/exporter_v1.luau")),
+	(2, include_str!("../../studio/exporter_v2.luau")),
 ];
 pub const LATEST_SCHEMA: u32 = 2;
 pub const SCHEMAS: [u32; 2] = [1, 2];

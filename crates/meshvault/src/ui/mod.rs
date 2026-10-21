@@ -4,9 +4,11 @@
 mod code;
 mod dialogs;
 pub mod icons;
+pub mod import;
 mod inspector;
 mod layout;
 mod model;
+pub mod settings;
 mod studio;
 mod switch;
 pub mod theme;
@@ -15,6 +17,7 @@ pub mod tree;
 mod welcome;
 pub mod widgets;
 pub mod window;
+pub mod workspace;
 
 pub use dialogs::{Confirm, ConfirmAction};
 pub use studio::{StudioDialog, unavailable_text};

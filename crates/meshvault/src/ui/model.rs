@@ -9,9 +9,9 @@ use super::theme::{BODY_LINE_HEIGHT, CONTROL_RADIUS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
-use crate::geometry::Primitive;
-use crate::model_view::{ModelView, PartShape};
-use crate::viewport;
+use crate::render::viewport;
+use crate::scene::geometry::Primitive;
+use crate::scene::model_view::{ModelView, PartShape};
 
 /// Corner radius of the transport bar; the controls in it are rounded to
 /// this less its padding and border.
@@ -488,7 +488,7 @@ fn draw_skeleton(
 	p: &super::theme::Palette,
 	rect: egui::Rect,
 	camera: &viewport::Camera,
-	skeleton: &crate::model_view::Skeleton,
+	skeleton: &crate::scene::model_view::Skeleton,
 	bones: bool,
 	joints: bool,
 ) {
@@ -506,7 +506,7 @@ fn draw_skeleton(
 	let pointer = ui
 		.input(|i| i.pointer.hover_pos())
 		.filter(|at| rect.contains(*at));
-	let mut nearest: Option<(f32, egui::Pos2, &crate::model_view::Joint)> = None;
+	let mut nearest: Option<(f32, egui::Pos2, &crate::scene::model_view::Joint)> = None;
 	for joint in &skeleton.joints {
 		let Some(at) = project(joint.at) else {
 			continue;

@@ -1,6 +1,7 @@
 //! App settings. Non-secret settings live in a JSON file in the user's
 //! config folder; credentials live in the OS credential store
-//! (Windows Credential Manager, macOS Keychain, Secret Service on Linux).
+//! (Windows Credential Manager; macOS Keychain; on Linux the kernel keyring,
+//! which keeps them only until reboot).
 
 use std::path::PathBuf;
 

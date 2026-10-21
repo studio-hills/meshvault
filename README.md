@@ -52,7 +52,7 @@ Other `SchemaVersion` values are rejected.  Empty strings count as missing.  Con
 <workspace>/.cache/<asset id>          each asset is downloaded once, even when reused
 ```
 
-Roblox requires authentication to download assets.  Use an [Open Cloud API key](https://create.roblox.com/dashboard/credentials) with the `legacy-asset:manage` permission (recommended), or a `.ROBLOSECURITY` cookie.  Credentials are kept in the system credential store (Windows Credential Manager, macOS Keychain or Secret Service), never in the workspace or config files.  Downloads run in parallel, retry rate limits and server errors, resolve Decal ids to their image, and resume after the app is closed.  Each asset id is downloaded once even when it is used as several maps or by many models.  The import dialog can include or skip each map type.  Re-importing an export only adds what is new.
+Roblox requires authentication to download assets.  Use an [Open Cloud API key](https://create.roblox.com/dashboard/credentials) with the `legacy-asset:manage` permission (recommended), or a `.ROBLOSECURITY` cookie.  Credentials are kept in the system credential store (Windows Credential Manager; macOS Keychain; on Linux the kernel keyring, which forgets them on reboot), never in the workspace or config files.  Downloads run in parallel, retry rate limits and server errors, resolve Decal ids to their image, and resume after the app is closed.  Each asset id is downloaded once even when it is used as several maps or by many models.  The import dialog can include or skip each map type.  Re-importing an export only adds what is new.
 
 The app also accepts a workspace folder and an export on the command line: `meshvault <workspace> <export.json>`.
 

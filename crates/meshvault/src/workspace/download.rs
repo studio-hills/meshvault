@@ -153,6 +153,9 @@ fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, FetchError> {
 }
 
 impl Client {
+	// Meshvault installs no logger. If one is ever added, filter out ureq's
+	// trace output: ureq-proto logs whole request headers at trace level,
+	// which would include the API key or cookie.
 	pub fn new(credentials: Credentials, endpoints: Endpoints) -> Self {
 		let api = ureq::Agent::config_builder()
 			.http_status_as_error(false)

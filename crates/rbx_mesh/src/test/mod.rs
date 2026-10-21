@@ -15,6 +15,8 @@ macro_rules! assert_debug_digest {
 }
 
 #[cfg(feature = "mesh")]
+mod chunks;
+#[cfg(feature = "mesh")]
 mod mesh;
 #[cfg(feature = "union-graphics")]
 mod union_graphics;

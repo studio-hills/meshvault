@@ -1,4 +1,4 @@
-//! Model records of schema versions 1 and 2: parts, Motor6D joints, bones
+//! Model records of schema versions 1 and 2: parts, joints, bones
 //! and animation clips, as written by the exporters. Version 2 adds the fields marked "schema 2"; they are `None`
 //! when reading version 1. The same types are written back into
 //! workspaces, so a stored model file is itself a model record.
@@ -17,7 +17,7 @@ pub struct AnimatedModel {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub scale: Option<f32>,
 	pub parts: Vec<ModelPart>,
-	pub joints: Vec<MotorJoint>,
+	pub joints: Vec<JointInfo>,
 	pub bones: Vec<BoneInfo>,
 	pub animations: Vec<AnimationClip>,
 	/// The model's classic clothing (schema 2; absent in older exports).
@@ -187,7 +187,7 @@ pub struct SpecialMeshInfo {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
-pub struct MotorJoint {
+pub struct JointInfo {
 	pub name: String,
 	pub path: String,
 	/// Path of the BasePart, or "".

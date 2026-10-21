@@ -1,5 +1,6 @@
-//! A model's rig: parts connected by Motor6D joints, plus bones, solved
-//! into world transforms for a set of animated local transforms.
+//! A model's rig: parts connected by joints (Motor6Ds, AnimationConstraints
+//! and welds), plus bones, solved into world transforms for a set of
+//! animated local transforms.
 //!
 //! Motor6D: `Part1.world = Part0.world * C0 * Transform * C1⁻¹`.
 //! Bone:    `Bone.world  = Parent.world * Bone.CFrame * Transform`.
@@ -24,7 +25,7 @@ pub struct RigPart {
 }
 
 #[derive(Clone, Debug)]
-pub struct Motor {
+pub struct Joint {
 	pub name: String,
 	pub part0: usize,
 	pub part1: usize,
@@ -57,7 +58,7 @@ pub struct RigBone {
 /// What a clip track drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-	Motor(usize),
+	Joint(usize),
 	Bone(usize),
 }
 
@@ -84,11 +85,11 @@ pub struct Posed {
 #[derive(Clone, Debug, Default)]
 pub struct Rig {
 	pub parts: Vec<RigPart>,
-	pub motors: Vec<Motor>,
+	pub joints: Vec<Joint>,
 	pub bones: Vec<RigBone>,
-	/// Motors in solving order, each with whether it places its Part1 from
+	/// Joints in solving order, each with whether it places its Part1 from
 	/// its Part0 (or, for a joint pointing back at the root, the reverse).
-	motor_order: Vec<(usize, bool)>,
+	joint_order: Vec<(usize, bool)>,
 	/// Bones in an order where parents come first.
 	bone_order: Vec<usize>,
 	/// Problems found while building, for the inspector.
@@ -136,7 +137,7 @@ impl Rig {
 				part_index.get(j.part0.as_str()),
 				part_index.get(j.part1.as_str()),
 			) {
-				(Some(&part0), Some(&part1)) => rig.motors.push(Motor {
+				(Some(&part0), Some(&part1)) => rig.joints.push(Joint {
 					name: j.name.clone(),
 					part0,
 					part1,
@@ -178,7 +179,7 @@ impl Rig {
 				local: CFrame::from_components(&b.cframe),
 			});
 		}
-		rig.motor_order = rig.solve_order();
+		rig.joint_order = rig.solve_order();
 		rig.bone_order = rig.bone_solve_order();
 		rig
 	}
@@ -188,7 +189,7 @@ impl Rig {
 	fn animation_roots(&self) -> Vec<bool> {
 		let n = self.parts.len();
 		let (mut drives, mut driven) = (vec![false; n], vec![false; n]);
-		for m in self.motors.iter().filter(|m| m.animated) {
+		for m in self.joints.iter().filter(|m| m.animated) {
 			drives[m.part0] = true;
 			driven[m.part1] = true;
 		}
@@ -204,7 +205,7 @@ impl Rig {
 		let animation_root = self.animation_roots();
 		let mut joints_of: Vec<Vec<usize>> = vec![Vec::new(); n];
 		let mut driven = vec![false; n];
-		for (i, m) in self.motors.iter().enumerate() {
+		for (i, m) in self.joints.iter().enumerate() {
 			joints_of[m.part0].push(i);
 			if m.part1 != m.part0 {
 				joints_of[m.part1].push(i);
@@ -223,7 +224,7 @@ impl Rig {
 			}
 		});
 		let mut placed = vec![false; n];
-		let mut used = vec![false; self.motors.len()];
+		let mut used = vec![false; self.joints.len()];
 		let mut order = Vec::new();
 		let mut looped = false;
 		for root in roots {
@@ -237,7 +238,7 @@ impl Rig {
 					if std::mem::replace(&mut used[j], true) {
 						continue;
 					}
-					let m = &self.motors[j];
+					let m = &self.joints[j];
 					let (other, forward) = if m.part0 == part {
 						(m.part1, true)
 					} else {
@@ -280,7 +281,7 @@ impl Rig {
 		order.into_iter().map(|(_, i)| i).collect()
 	}
 
-	/// Matches each clip track to a motor (by its Part1 name) or a bone.
+	/// Matches each clip track to a joint (by its Part1 name) or a bone.
 	/// When several targets share a name, the track's parent name picks
 	/// the one whose Part0 or parent has that name.
 	pub fn bind(&self, clip: &Clip) -> Binding {
@@ -318,15 +319,15 @@ impl Rig {
 				.find(|(_, p)| *p == parent)
 				.map(|(t, _)| *t)
 		};
-		let motors = self
-			.motors
+		let joints = self
+			.joints
 			.iter()
 			.enumerate()
 			// welds are not animated, even when named like a body part
 			.filter(|(_, m)| m.animated && self.parts[m.part1].name == key.name)
-			.map(|(i, m)| (Target::Motor(i), self.parts[m.part0].name.as_str()))
+			.map(|(i, m)| (Target::Joint(i), self.parts[m.part0].name.as_str()))
 			.collect();
-		pick(motors).or_else(|| {
+		pick(joints).or_else(|| {
 			let bones = self
 				.bones
 				.iter()
@@ -357,8 +358,8 @@ impl Rig {
 	/// Each part's parent in the joint tree and the joint between them.
 	pub fn part_links(&self) -> Vec<Option<(usize, usize)>> {
 		let mut links = vec![None; self.parts.len()];
-		for &(i, forward) in &self.motor_order {
-			let m = &self.motors[i];
+		for &(i, forward) in &self.joint_order {
+			let m = &self.joints[i];
 			if forward {
 				links[m.part1] = Some((m.part0, i));
 			} else {
@@ -371,7 +372,7 @@ impl Rig {
 	/// The pose the model was exported in: joints at their captured
 	/// transforms (identity for schema 1, which did not record them).
 	pub fn rest(&self) -> Posed {
-		let captured: Vec<CFrame> = self.motors.iter().map(|m| m.captured).collect();
+		let captured: Vec<CFrame> = self.joints.iter().map(|m| m.captured).collect();
 		self.solve(&captured, &[])
 	}
 
@@ -391,16 +392,16 @@ impl Rig {
 	/// Solves world transforms from already sampled tracks, one per entry
 	/// of `binding.targets`.
 	pub fn pose_from(&self, binding: &Binding, samples: &[CFrame]) -> Posed {
-		let mut motor_t = vec![CFrame::IDENTITY; self.motors.len()];
+		let mut joint_t = vec![CFrame::IDENTITY; self.joints.len()];
 		let mut bone_t = vec![CFrame::IDENTITY; self.bones.len()];
 		for (transform, target) in samples.iter().zip(&binding.targets) {
 			match target {
-				Some(Target::Motor(i)) => motor_t[*i] = *transform,
+				Some(Target::Joint(i)) => joint_t[*i] = *transform,
 				Some(Target::Bone(i)) => bone_t[*i] = *transform,
 				None => {}
 			}
 		}
-		self.solve(&motor_t, &bone_t)
+		self.solve(&joint_t, &bone_t)
 	}
 
 	/// The bone named `name` closest to `near` in the instance tree (the
@@ -426,12 +427,12 @@ impl Rig {
 		)
 	}
 
-	/// `motor_t` / `bone_t` are local animated transforms (identity when empty).
-	fn solve(&self, motor_t: &[CFrame], bone_t: &[CFrame]) -> Posed {
+	/// `joint_t` / `bone_t` are local animated transforms (identity when empty).
+	fn solve(&self, joint_t: &[CFrame], bone_t: &[CFrame]) -> Posed {
 		let mut parts: Vec<CFrame> = self.parts.iter().map(|p| p.rest).collect();
-		for &(i, forward) in &self.motor_order {
-			let m = &self.motors[i];
-			let t = motor_t.get(i).copied().unwrap_or(CFrame::IDENTITY);
+		for &(i, forward) in &self.joint_order {
+			let m = &self.joints[i];
+			let t = joint_t.get(i).copied().unwrap_or(CFrame::IDENTITY);
 			if forward {
 				parts[m.part1] = parts[m.part0].mul(&m.c0).mul(&t).mul(&m.c1.inverse());
 			} else {
@@ -473,8 +474,8 @@ impl Rig {
 mod tests {
 	use super::*;
 	use crate::anim::schema::{
-		AnimationClip, BoneInfo, ClipStatus, EasingDirection, EasingStyle, Keyframe, ModelPart,
-		MotorJoint, Pose,
+		AnimationClip, BoneInfo, ClipStatus, EasingDirection, EasingStyle, JointInfo, Keyframe,
+		ModelPart, Pose,
 	};
 
 	const IDENT: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
@@ -510,7 +511,7 @@ mod tests {
 				part("W/M/Root", "Root", at(0.0, 2.0, 0.0)),
 				part("W/M/Meshes/Arm", "Meshes/Arm", at(0.0, 2.0, 0.0)),
 			],
-			joints: vec![MotorJoint {
+			joints: vec![JointInfo {
 				name: "Shoulder".into(),
 				path: "W/M/Root/Shoulder".into(),
 				part0: "W/M/Root".into(),
@@ -616,7 +617,7 @@ mod tests {
 	}
 
 	#[test]
-	fn motor_and_bone_animation() {
+	fn joint_and_bone_animation() {
 		let rig = Rig::build(&model());
 		let half_turn = std::f32::consts::PI;
 		let record = AnimationClip {
@@ -669,7 +670,7 @@ mod tests {
 		let mut m = model();
 		m.parts
 			.push(part("W/M/Hat/Handle", "Handle", at(0.0, 0.5, 0.0)));
-		m.joints.push(MotorJoint {
+		m.joints.push(JointInfo {
 			name: "AccessoryWeld".into(),
 			path: "W/M/Hat/Handle/AccessoryWeld".into(),
 			part0: "W/M/Hat/Handle".into(),
@@ -752,7 +753,7 @@ mod tests {
 		let mut m = model();
 		m.joints[0].part1 = "W/M/Gone".into();
 		let rig = Rig::build(&m);
-		assert_eq!(rig.motors.len(), 0);
+		assert_eq!(rig.joints.len(), 0);
 		assert_eq!(rig.warnings.len(), 1);
 	}
 }

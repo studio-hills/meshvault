@@ -45,10 +45,10 @@ fn rigs_rest_pose_and_binding() {
 		if err > 0.01 || m < t {
 			let sample: Vec<_> = unmatched.iter().take(5).collect();
 			println!(
-				"{:<40} rest err {:>7.3}  bound {m:>4}/{t:<4} motors {:>3} bones {:>3} unmatched e.g. {sample:?}",
+				"{:<40} rest err {:>7.3}  bound {m:>4}/{t:<4} joints {:>3} bones {:>3} unmatched e.g. {sample:?}",
 				model.path,
 				err,
-				rig.motors.len(),
+				rig.joints.len(),
 				rig.bones.len()
 			);
 		}
@@ -175,7 +175,7 @@ fn matches_studio_samples() {
 		// the viewer scales animated translations by Model.Scale (schema 2)
 		let scale = model.scale.unwrap_or(1.0);
 		let mut rest = Worst::default();
-		for m in &rig.motors {
+		for m in &rig.joints {
 			if let Some(t) = theirs.rest.first().and_then(|j| j.0.get(&m.name)) {
 				rest.add(&m.captured, t, m.name.clone());
 			}
@@ -205,7 +205,7 @@ fn matches_studio_samples() {
 			});
 			for s in &clip_samples.samples {
 				// what the viewer applies: sampled tracks, identity elsewhere
-				let mut motors = vec![CFrame::IDENTITY; rig.motors.len()];
+				let mut joints = vec![CFrame::IDENTITY; rig.joints.len()];
 				let mut bones = vec![CFrame::IDENTITY; rig.bones.len()];
 				let mut scaled = Vec::new();
 				for ((_, mut t), target) in clip.sample(s.time).zip(&binding.targets) {
@@ -214,7 +214,7 @@ fn matches_studio_samples() {
 					}
 					scaled.push(t);
 					match target {
-						Some(Target::Motor(i)) => motors[*i] = t,
+						Some(Target::Joint(i)) => joints[*i] = t,
 						Some(Target::Bone(i)) => bones[*i] = t,
 						None => {}
 					}
@@ -229,10 +229,10 @@ fn matches_studio_samples() {
 						);
 					}
 				};
-				for (i, m) in rig.motors.iter().enumerate() {
+				for (i, m) in rig.joints.iter().enumerate() {
 					if let Some(t) = s.joints.0.get(&m.name) {
-						show(&m.name, &motors[i], t);
-						worst.add(&motors[i], t, format!("{} at {:.2}s", m.name, s.time));
+						show(&m.name, &joints[i], t);
+						worst.add(&joints[i], t, format!("{} at {:.2}s", m.name, s.time));
 					}
 				}
 				for (i, b) in rig.bones.iter().enumerate() {

@@ -293,7 +293,7 @@ mod tests {
 	use super::super::fixtures::{asset, cf};
 	use super::*;
 	use crate::anim::rig::Binding;
-	use crate::anim::schema::{AnimatedModel, BoneInfo, ModelPart, MotorJoint};
+	use crate::anim::schema::{AnimatedModel, BoneInfo, JointInfo, ModelPart};
 
 	/// Two parts on a joint; a skinned mesh on the root with one vertex on
 	/// each bone, named after the parts as R15 meshes are.
@@ -319,7 +319,7 @@ mod tests {
 					..Default::default()
 				},
 			],
-			joints: vec![MotorJoint {
+			joints: vec![JointInfo {
 				name: "Elbow".into(),
 				path: "Workspace/Arm/Lower/Elbow".into(),
 				part0: "Workspace/Arm/Upper".into(),
@@ -364,12 +364,12 @@ mod tests {
 		// at rest nothing moves
 		assert_eq!(ps.geometry.positions[1], [0.0, -1.0, 0.0]);
 		// bend the elbow 90° about X: the lower part swings towards +Z or -Z
-		let motor_t = vec![CFrame::axis_rotation(0, std::f32::consts::FRAC_PI_2)];
+		let joint_t = vec![CFrame::axis_rotation(0, std::f32::consts::FRAC_PI_2)];
 		let binding = Binding {
-			targets: vec![Some(crate::anim::rig::Target::Motor(0))],
+			targets: vec![Some(crate::anim::rig::Target::Joint(0))],
 			unmatched: vec![],
 		};
-		let posed = rig.pose_from(&binding, &motor_t);
+		let posed = rig.pose_from(&binding, &joint_t);
 		ps.update(&rest, &posed, 0, &HashMap::new(), &[]);
 		let p = ps.geometry.positions;
 		assert!(

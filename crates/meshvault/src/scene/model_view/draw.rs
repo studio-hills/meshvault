@@ -26,7 +26,7 @@ impl ModelView {
 		let rig = &self.rig;
 		let links = rig.part_links();
 		let pivot = |m: usize| {
-			let m = &rig.motors[m];
+			let m = &rig.joints[m];
 			posed.parts[m.part0].mul(&m.c0).pos
 		};
 		// where a part hangs from its parent, or its middle for a root
@@ -43,7 +43,7 @@ impl ModelView {
 				skeleton.bones.push((point(p), posed.parts[p].pos));
 			}
 		}
-		for (i, m) in rig.motors.iter().enumerate() {
+		for (i, m) in rig.joints.iter().enumerate() {
 			skeleton.joints.push(Joint {
 				at: pivot(i),
 				name: m.name.clone(),

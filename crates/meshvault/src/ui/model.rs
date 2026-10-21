@@ -124,7 +124,7 @@ impl App {
 					ui,
 					&[
 						(model.parts.len().to_string(), "parts"),
-						(model.rig.motors.len().to_string(), "joints"),
+						(model.rig.joints.len().to_string(), "joints"),
 						(model.rig.bones.len().to_string(), "bones"),
 						(
 							super::format::format_count(model.triangle_count()),
@@ -591,7 +591,7 @@ fn part_list(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
 				let rp = &rig.parts[part.index];
 				let (tag, colour, hover) = part_tag(part, p);
 				let joint = rig
-					.motors
+					.joints
 					.iter()
 					.find(|m| m.part1 == part.index)
 					.map_or(String::new(), |m| {

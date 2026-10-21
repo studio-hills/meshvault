@@ -133,7 +133,7 @@ pub struct ModelView {
 	pub captured_pose: bool,
 	/// Scale applied to clip translations of each joint and Bone; see
 	/// [`scale_translation`].
-	motor_scale: Vec<f32>,
+	joint_scale: Vec<f32>,
 	bone_scale: Vec<f32>,
 	/// The pose needs solving again (time, clip or rest changed).
 	dirty: bool,
@@ -386,7 +386,7 @@ fn translation_scales(
 	// animated translation. Schema 1 did not, so for bones it is inferred
 	// from the mesh they deform, and joints are left as they are.
 	let model_scale = model.scale.filter(|s| s.is_finite() && *s > 0.0);
-	let motor_scale = vec![model_scale.unwrap_or(1.0); rig.motors.len()];
+	let joint_scale = vec![model_scale.unwrap_or(1.0); rig.joints.len()];
 	if let Some(s) = model_scale {
 		for skin in parts.iter_mut().filter_map(|p| p.skin.as_mut()) {
 			skin.track_scale = s;
@@ -407,14 +407,14 @@ fn translation_scales(
 			1.0
 		})
 		.collect();
-	(motor_scale, bone_scale)
+	(joint_scale, bone_scale)
 }
 
 /// A warning when clips move parts no exported joint connects (the
 /// exporters do read AnimationConstraints, so these are other or broken
 /// joints).
 fn stranded_warning(rig: &Rig, clips: &[ClipSlot]) -> Option<String> {
-	let joined: HashSet<usize> = rig.motors.iter().flat_map(|m| [m.part0, m.part1]).collect();
+	let joined: HashSet<usize> = rig.joints.iter().flat_map(|m| [m.part0, m.part1]).collect();
 	let loose: HashSet<&str> = rig
 		.parts
 		.iter()
@@ -554,12 +554,12 @@ impl ModelView {
 		}
 		load_warnings(&mut warnings, &counts, &parts);
 		let clips = clip_slots(model, &rig, &parts);
-		let (motor_scale, bone_scale) = translation_scales(model, &rig, &mut parts);
+		let (joint_scale, bone_scale) = translation_scales(model, &rig, &mut parts);
 		warnings.extend(stranded_warning(&rig, &clips));
 
 		let bounds = rest_bounds(&parts, &rig, &rest);
 		let mut view = Self {
-			motor_scale,
+			joint_scale,
 			bone_scale,
 			index,
 			name: model.name.clone(),
@@ -705,7 +705,7 @@ impl ModelView {
 					.zip(&binding.targets)
 					.map(|(s, target)| match target {
 						Some(Target::Bone(b)) => scale_translation(s.1, self.bone_scale[*b]),
-						Some(Target::Motor(m)) => scale_translation(s.1, self.motor_scale[*m]),
+						Some(Target::Joint(m)) => scale_translation(s.1, self.joint_scale[*m]),
 						_ => s.1,
 					})
 					.collect();

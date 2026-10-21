@@ -98,7 +98,7 @@ impl Drop for App {
 
 impl App {
 	pub fn new(ctx: egui::Context, gpu: Option<Arc<GpuRenderer>>, adapter: Option<String>) -> Self {
-		let config = Config::load();
+		let (config, config_problems) = Config::load();
 		theme::install_fonts(&ctx);
 		theme::apply(&ctx, config.theme);
 		let studio_link = StudioLink::start(&ctx);
@@ -138,6 +138,9 @@ impl App {
 			viewport: egui::Rect::from_min_size(egui::Pos2::ZERO, DEFAULT_VIEW_SIZE),
 			last_save: Instant::now(),
 		};
+		for problem in config_problems {
+			app.toasts.error(problem);
+		}
 		if let link::Status::Unavailable(why) = &app.studio_link.status {
 			app.toasts.warning(ui::unavailable_text(why));
 		}
@@ -152,8 +155,9 @@ impl App {
 
 	pub fn set_theme(&mut self, mode: theme::ThemeMode) {
 		self.config.theme = mode;
-		// a failed save is not reported yet (bug B08)
-		let _ = self.config.save();
+		if let Err(e) = self.config.save() {
+			self.toasts.error(e);
+		}
 		theme::apply(&self.ctx, mode);
 	}
 
@@ -178,7 +182,8 @@ impl App {
 
 	pub fn set_lighting(&mut self, lighting: Lighting) {
 		self.config.lighting = lighting;
-		// a failed save is not reported yet (bug B08)
-		let _ = self.config.save();
+		if let Err(e) = self.config.save() {
+			self.toasts.error(e);
+		}
 	}
 }

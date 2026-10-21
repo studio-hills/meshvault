@@ -25,7 +25,9 @@ impl App {
 				self.close_workspace();
 				self.workspace = Some(ws);
 				self.show_library = true;
-				self.config.add_recent(root.to_path_buf());
+				if let Err(e) = self.config.add_recent(root.to_path_buf()) {
+					self.toasts.error(e);
+				}
 			}
 			Err(e) => self.toasts.error(e),
 		}
@@ -61,7 +63,9 @@ impl App {
 		self.close_workspace();
 		self.workspace = Some(ws);
 		self.show_library = true;
-		self.config.add_recent(root);
+		if let Err(e) = self.config.add_recent(root) {
+			self.toasts.error(e);
+		}
 		self.toasts.success(format!("Created workspace {name}"));
 		Ok(())
 	}

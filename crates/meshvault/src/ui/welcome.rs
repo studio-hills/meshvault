@@ -176,7 +176,9 @@ impl App {
 					match recent_row(ui, &root) {
 						RowAction::Open => self.open_workspace(&root),
 						RowAction::Remove => {
-							self.config.remove_recent(&root);
+							if let Err(e) = self.config.remove_recent(&root) {
+								self.toasts.error(e);
+							}
 							self.toasts.info(format!(
 								"Removed {} from recent workspaces. Its folder was not touched.",
 								root.file_name()

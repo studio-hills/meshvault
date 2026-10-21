@@ -51,32 +51,74 @@ fn config_path() -> Option<PathBuf> {
 	config_path_for(APP_ID)
 }
 
-fn read_config(path: Option<PathBuf>) -> Option<Config> {
-	let text = std::fs::read_to_string(path?).ok()?;
-	serde_json::from_str(&text).ok()
+/// The settings in the file at `path`, or `None` if there is no file.
+fn read_config(path: &Path) -> Result<Option<Config>, String> {
+	let text = match std::fs::read_to_string(path) {
+		Ok(text) => text,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(e) => return Err(e.to_string()),
+	};
+	serde_json::from_str(&text)
+		.map(Some)
+		.map_err(|e| e.to_string())
+}
+
+/// Moves a settings file that could not be read out of the way, so the
+/// next save does not overwrite it, and says what happened.
+fn set_aside(path: &Path, why: &str) -> String {
+	let name = path.file_name().unwrap_or_default().to_string_lossy();
+	let kept = (1..)
+		.map(|n| match n {
+			1 => path.with_file_name(format!("{name}.bad")),
+			n => path.with_file_name(format!("{name}.bad{n}")),
+		})
+		.find(|p| !p.exists())
+		.expect("an unused name");
+	match std::fs::rename(path, &kept) {
+		Ok(()) => format!(
+			"Could not read the settings in {} ({why}). The file was kept as {}.",
+			path.display(),
+			kept.display()
+		),
+		Err(e) => format!(
+			"Could not read the settings in {} ({why}), nor move the file aside: {e}",
+			path.display()
+		),
+	}
 }
 
 impl Config {
-	pub fn load() -> Self {
+	/// Reads the settings, with anything that went wrong to tell the user.
+	pub fn load() -> (Self, Vec<String>) {
 		Self::load_from(config_path(), config_path_for(LEGACY_APP_ID))
 	}
 
 	/// Reads the settings at `primary`, or on the first run after the
 	/// rename carries those at `legacy` over, saving them to `primary`.
-	fn load_from(primary: Option<PathBuf>, legacy: Option<PathBuf>) -> Self {
-		if let Some(config) = read_config(primary.clone()) {
-			return config;
+	/// A `primary` that cannot be read is moved aside, not overwritten.
+	fn load_from(primary: Option<PathBuf>, legacy: Option<PathBuf>) -> (Self, Vec<String>) {
+		let mut problems = Vec::new();
+		if let Some(path) = &primary {
+			match read_config(path) {
+				Ok(Some(config)) => return (config, problems),
+				Ok(None) => {}
+				Err(why) => problems.push(set_aside(path, &why)),
+			}
 		}
-		match read_config(legacy) {
+		// the old file is never written, so one that does not read is left be
+		let old = legacy.and_then(|path| read_config(&path).ok().flatten());
+		let config = match old {
 			Some(config) => {
-				if let Some(path) = &primary {
-					// not reported yet (bug B08); the old settings still load
-					let _ = config.save_to(path);
+				if let Some(path) = &primary
+					&& let Err(e) = config.save_to(path)
+				{
+					problems.push(e);
 				}
 				config
 			}
 			None => Self::default(),
-		}
+		};
+		(config, problems)
 	}
 
 	pub fn save(&self) -> Result<(), String> {
@@ -86,28 +128,33 @@ impl Config {
 
 	/// Writes the settings to `path`, making its folder first. The write is
 	/// tried even when the folder cannot be made, and its error is the one
-	/// reported.
+	/// reported. The file is written beside `path` and then renamed over
+	/// it, so a failed write never leaves half a file.
 	fn save_to(&self, path: &Path) -> Result<(), String> {
 		if let Some(dir) = path.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
 		let json = serde_json::to_string_pretty(self)
 			.map_err(|e| format!("Could not save the settings: {e}"))?;
-		std::fs::write(path, json)
-			.map_err(|e| format!("Could not save the settings to {}: {e}", path.display()))
+		let name = path.file_name().unwrap_or_default().to_string_lossy();
+		let tmp = path.with_file_name(format!("{name}.tmp"));
+		std::fs::write(&tmp, json)
+			.and_then(|()| std::fs::rename(&tmp, path))
+			.map_err(|e| {
+				let _ = std::fs::remove_file(&tmp);
+				format!("Could not save the settings to {}: {e}", path.display())
+			})
 	}
 
 	/// Takes a workspace off the recent list. Its folder is not touched.
-	pub fn remove_recent(&mut self, root: &Path) {
+	pub fn remove_recent(&mut self, root: &Path) -> Result<(), String> {
 		self.recent_workspaces.retain(|p| p != root);
-		// a failed save is not reported yet (bug B08)
-		let _ = self.save();
+		self.save()
 	}
 
-	pub fn add_recent(&mut self, root: PathBuf) {
+	pub fn add_recent(&mut self, root: PathBuf) -> Result<(), String> {
 		self.push_recent(root);
-		// a failed save is not reported yet (bug B08)
-		let _ = self.save();
+		self.save()
 	}
 
 	/// Puts a workspace first on the recent list, once, keeping the newest
@@ -209,6 +256,13 @@ mod tests {
 	use super::*;
 	use crate::test_support::TempDir;
 
+	/// Loads settings that are expected to read without a problem.
+	fn load(primary: Option<PathBuf>, legacy: Option<PathBuf>) -> Config {
+		let (config, problems) = Config::load_from(primary, legacy);
+		assert!(problems.is_empty(), "{problems:?}");
+		config
+	}
+
 	fn json(config: &Config) -> serde_json::Value {
 		serde_json::to_value(config).unwrap()
 	}
@@ -290,7 +344,7 @@ mod tests {
 		config.push_recent("ws".into());
 		// the folder is made
 		config.save_to(&path).unwrap();
-		let loaded = Config::load_from(Some(path), None);
+		let loaded = load(Some(path), None);
 		assert_eq!(json(&loaded), json(&config));
 	}
 
@@ -313,7 +367,7 @@ mod tests {
 		let old = r#"{"place_id": 9, "concurrency": 2}"#;
 		std::fs::write(&legacy, old).unwrap();
 
-		let config = Config::load_from(Some(primary.clone()), Some(legacy.clone()));
+		let config = load(Some(primary.clone()), Some(legacy.clone()));
 		assert_eq!(config.place_id, Some(9));
 		assert_eq!(config.concurrency, 2);
 		// saved to the new path; the old file is left as it was
@@ -324,7 +378,7 @@ mod tests {
 
 		// from then on the new file is the one read
 		std::fs::write(&legacy, r#"{"place_id": 1}"#).unwrap();
-		let config = Config::load_from(Some(primary), Some(legacy));
+		let config = load(Some(primary), Some(legacy));
 		assert_eq!(config.place_id, Some(9));
 	}
 
@@ -333,7 +387,7 @@ mod tests {
 		let dir = TempDir::new("config");
 		let legacy = dir.join("config.json");
 		std::fs::write(&legacy, r#"{"place_id": 9}"#).unwrap();
-		let config = Config::load_from(None, Some(legacy));
+		let config = load(None, Some(legacy));
 		assert_eq!(config.place_id, Some(9));
 		let files: Vec<_> = std::fs::read_dir(&*dir).unwrap().collect();
 		assert_eq!(files.len(), 1);
@@ -343,11 +397,11 @@ mod tests {
 	fn no_settings_anywhere_gives_the_defaults() {
 		let dir = TempDir::new("config");
 		let primary = dir.join("config.json");
-		let config = Config::load_from(Some(primary.clone()), Some(dir.join("old.json")));
+		let config = load(Some(primary.clone()), Some(dir.join("old.json")));
 		assert_eq!(json(&config), json(&Config::default()));
 		// nothing is written until something changes
 		assert!(!primary.exists());
-		let config = Config::load_from(None, None);
+		let config = load(None, None);
 		assert_eq!(json(&config), json(&Config::default()));
 	}
 
@@ -360,7 +414,7 @@ mod tests {
 			r#"{"place_id": 5, "theme": "Light", "from_the_future": [1, 2]}"#,
 		)
 		.unwrap();
-		let config = Config::load_from(Some(path), None);
+		let config = load(Some(path), None);
 		let expected = Config {
 			place_id: Some(5),
 			theme: ThemeMode::Light,
@@ -370,35 +424,94 @@ mod tests {
 	}
 
 	#[test]
-	fn a_file_that_does_not_parse_is_dropped_whole() {
+	fn a_file_that_does_not_parse_is_set_aside_whole() {
 		let dir = TempDir::new("config");
 		let path = dir.join("config.json");
 		// a valid field next to an unknown variant, a wrong type, or bad JSON
-		for text in [
+		let texts = [
 			r#"{"place_id": 5, "theme": "Purple"}"#,
 			r#"{"place_id": 5, "concurrency": "four"}"#,
 			r#"{"place_id": 5,"#,
-		] {
+		];
+		for text in texts {
 			std::fs::write(&path, text).unwrap();
-			let config = Config::load_from(Some(path.clone()), None);
+			let (config, problems) = Config::load_from(Some(path.clone()), None);
 			assert_eq!(json(&config), json(&Config::default()), "{text}");
-			// the file itself is left alone
-			assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+			assert_eq!(problems.len(), 1, "{text}");
+			assert!(
+				problems[0].starts_with("Could not read the settings"),
+				"{problems:?}"
+			);
+			// moved out of the way, so the next save keeps it
+			assert!(!path.exists());
+		}
+		// each kept under its own name
+		for (name, text) in ["config.json.bad", "config.json.bad2", "config.json.bad3"]
+			.into_iter()
+			.zip(texts)
+		{
+			assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), text);
 		}
 	}
 
 	#[test]
-	fn a_new_file_that_does_not_parse_is_replaced_by_the_old_one() {
-		// today's behaviour (bug B08): the unreadable file is overwritten
+	fn a_new_file_that_does_not_parse_is_kept_when_the_old_one_is_carried_over() {
+		// once the unreadable file was overwritten here (bug B08)
 		let dir = TempDir::new("config");
 		let primary = dir.join("config.json");
 		let legacy = dir.join("old.json");
 		std::fs::write(&primary, "not json").unwrap();
 		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
-		let config = Config::load_from(Some(primary.clone()), Some(legacy));
+		let (config, problems) = Config::load_from(Some(primary.clone()), Some(legacy));
 		assert_eq!(config.place_id, Some(3));
+		assert_eq!(problems.len(), 1, "{problems:?}");
+		assert!(problems[0].contains("config.json.bad"), "{problems:?}");
+		assert_eq!(
+			std::fs::read_to_string(dir.join("config.json.bad")).unwrap(),
+			"not json"
+		);
 		let saved: serde_json::Value =
 			serde_json::from_str(&std::fs::read_to_string(&primary).unwrap()).unwrap();
 		assert_eq!(saved, json(&config));
+	}
+
+	#[test]
+	fn saving_replaces_the_file_and_leaves_nothing_beside_it() {
+		let dir = TempDir::new("config");
+		let path = dir.join("config.json");
+		std::fs::write(&path, "old").unwrap();
+		let config = Config {
+			place_id: Some(1),
+			..Default::default()
+		};
+		config.save_to(&path).unwrap();
+		assert_eq!(load(Some(path.clone()), None).place_id, Some(1));
+		let files: Vec<_> = std::fs::read_dir(&*dir).unwrap().collect();
+		assert_eq!(files.len(), 1);
+
+		// a failed save does not leave its half-made file either
+		let blocked = dir.join("blocked.json");
+		std::fs::create_dir_all(&blocked).unwrap();
+		config.save_to(&blocked).unwrap_err();
+		assert!(!dir.join("blocked.json.tmp").exists());
+	}
+
+	#[test]
+	fn a_failed_carry_over_is_reported() {
+		let dir = TempDir::new("config");
+		let legacy = dir.join("old.json");
+		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
+		// the new file cannot be made inside a file
+		std::fs::write(dir.join("file"), "").unwrap();
+		let primary = dir.join("file").join("config.json");
+		let (config, problems) = Config::load_from(Some(primary), Some(legacy));
+		// the old settings still load
+		assert_eq!(config.place_id, Some(3));
+		assert!(
+			problems
+				.iter()
+				.any(|p| p.starts_with("Could not save the settings")),
+			"{problems:?}"
+		);
 	}
 }

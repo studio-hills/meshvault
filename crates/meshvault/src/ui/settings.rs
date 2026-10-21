@@ -134,9 +134,7 @@ impl SettingsDialog {
 		config.auth_method = self.method;
 		config.place_id = place_id;
 		config.concurrency = self.concurrency;
-		// a failed save is not reported yet (bug B08)
-		let _ = config.save();
-		Ok(())
+		config.save()
 	}
 
 	fn start_test(&mut self, ctx: &egui::Context) {

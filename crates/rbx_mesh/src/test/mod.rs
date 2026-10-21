@@ -58,8 +58,14 @@ where
 	Ok(wbuf)
 }
 
+// used by the mesh v7, union graphics and union physics v8 tests
 #[cfg_attr(
-	not(any(feature = "mesh-v1", feature = "union-graphics")),
+	not(any(
+		feature = "mesh",
+		feature = "union-graphics",
+		feature = "csgphs-v8-zstd",
+		feature = "csgphs-v8-ruzstd",
+	)),
 	expect(unused)
 )]
 pub fn readonly<M>(bytes: Vec<u8>) -> binrw::BinResult<M>

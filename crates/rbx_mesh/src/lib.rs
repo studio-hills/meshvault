@@ -17,16 +17,25 @@ pub mod union_physics;
 #[cfg(feature = "union-physics")]
 pub use union_physics::read_versioned as read_union_physics_versioned;
 
-#[cfg(test)]
+// with no format enabled there is nothing to test, and the helpers would be unused
+#[cfg(all(
+	test,
+	any(
+		feature = "mesh",
+		feature = "union-graphics",
+		feature = "union-physics"
+	)
+))]
 mod test;
 
-// test readme
+// test readme (its v7 arm decodes Draco)
 #[cfg_attr(
 	all(
 		feature = "mesh-v1",
 		feature = "union-graphics",
 		feature = "union-physics",
 		any(feature = "csgphs-v8-ruzstd", feature = "csgphs-v8-zstd"),
+		feature = "mesh-v7-draco",
 	),
 	cfg(doctest),
 	doc = include_str!("../README.md")
@@ -37,6 +46,7 @@ mod test;
 		feature = "union-graphics",
 		feature = "union-physics",
 		any(feature = "csgphs-v8-ruzstd", feature = "csgphs-v8-zstd"),
+		feature = "mesh-v7-draco",
 	)),
 	expect(unused)
 )]

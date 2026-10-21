@@ -12,7 +12,10 @@ use crate::export::obj::Format;
 use crate::render::gpu::GpuRenderer;
 use crate::render::thumbnails::{Subject, Thumbnails};
 use crate::scene::maps::MapKind;
-use crate::ui::theme::{CONTROL_XXS, Palette, ROW, display, palette};
+use crate::ui::theme::{
+	CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_XXS, LIST_TEXT, Palette, ROW, TITLE, display,
+	palette,
+};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::{icons, widgets};
 use crate::workspace::facts::Facts;
@@ -533,11 +536,11 @@ impl Browser {
 		let p = palette(ui.ctx());
 		egui::Frame::NONE
 			.fill(p.accent_soft)
-			.corner_radius(CornerRadius::same(8))
+			.corner_radius(CornerRadius::same(CARD_RADIUS))
 			.inner_margin(egui::Margin::symmetric(10, 2))
 			.show(ui, |ui| {
 				// its buttons sit 2 px from its top and bottom edges
-				widgets::nest(ui, 8, 2.0);
+				widgets::nest(ui, CARD_RADIUS, 2.0);
 				ui.horizontal(|ui| {
 					ui.spacing_mut().interact_size.y = CONTROL_XXS;
 					ui.label(RichText::new(format!("{n} selected")).color(p.accent));
@@ -722,7 +725,7 @@ impl Browser {
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 					ui.label(
 						RichText::new(ws.models().len().to_string())
-							.size(crate::ui::theme::CAPTION)
+							.size(CAPTION)
 							.color(p.text_weak),
 					);
 				});
@@ -801,7 +804,7 @@ impl Browser {
 		}
 
 		ui.horizontal(|ui| {
-			ui.label(RichText::new("Library").size(16.0).family(display()));
+			ui.label(RichText::new("Library").size(TITLE).family(display()));
 			ui.label(RichText::new(items.len().to_string()).color(p.text_weak));
 			if items.is_empty() && ws.models().is_empty() {
 				return;
@@ -890,7 +893,7 @@ impl Browser {
 			ui.spacing_mut().interact_size.y = CONTROL_XXS;
 			ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
 			// room before the label for the chip's status marker
-			let font = FontId::proportional(12.0);
+			let font = FontId::proportional(CAPTION);
 			let space = ui
 				.painter()
 				.layout_no_wrap(" ".into(), font, p.text)
@@ -913,9 +916,9 @@ impl Browser {
 				}
 				let text = match marker {
 					Some(s) => RichText::new(format!("{gap}{label} {n}"))
-						.size(12.0)
+						.size(CAPTION)
 						.color(status_colour(&p, s)),
-					None => RichText::new(format!("{label} {n}")).size(12.0),
+					None => RichText::new(format!("{label} {n}")).size(CAPTION),
 				};
 				let response = ui.selectable_value(&mut self.status, value, text);
 				// the same marker as the rows and tiles this chip filters
@@ -986,27 +989,19 @@ impl Browser {
 				widgets::menu_style(ui);
 				ui.set_min_width(200.0);
 				let f = &mut self.filters;
-				ui.label(
-					RichText::new("Show only")
-						.size(crate::ui::theme::CAPTION)
-						.color(p.text_weak),
-				);
+				ui.label(RichText::new("Show only").size(CAPTION).color(p.text_weak));
 				ui.checkbox(&mut f.animated, "Has animations");
 				ui.checkbox(&mut f.skinned, "Skinned (bends with bones)");
 				if f.skinned && reading > 0 {
 					ui.label(
 						RichText::new(format!("Reading meshes… {reading} left"))
-							.size(crate::ui::theme::CAPTION)
+							.size(CAPTION)
 							.color(p.text_weak),
 					);
 				}
 				ui.checkbox(&mut f.missing, "Missing meshes");
 				ui.add_space(4.0);
-				ui.label(
-					RichText::new("Has a map")
-						.size(crate::ui::theme::CAPTION)
-						.color(p.text_weak),
-				);
+				ui.label(RichText::new("Has a map").size(CAPTION).color(p.text_weak));
 				for kind in MapKind::ALL {
 					let mut on = f.maps.contains(&kind);
 					if ui.checkbox(&mut on, kind.label()).changed() {
@@ -1082,7 +1077,7 @@ impl Browser {
 					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 						ui.label(
 							RichText::new(format!("{done}/{}", all.len()))
-								.size(crate::ui::theme::CAPTION)
+								.size(CAPTION)
 								.color(p.text_weak),
 						);
 					});
@@ -1209,7 +1204,7 @@ impl Browser {
 		for ((title, keys), path) in sections.into_iter().zip(paths) {
 			ui.add_space(4.0);
 			let label = ui.add(
-				egui::Label::new(RichText::new(title).size(12.0).color(p.text_weak)).truncate(),
+				egui::Label::new(RichText::new(title).size(CAPTION).color(p.text_weak)).truncate(),
 			);
 			if !path.is_empty() {
 				label.on_hover_text(path);
@@ -1275,11 +1270,11 @@ impl Browser {
 			} else {
 				p.raised
 			};
-			painter.rect_filled(picture, CornerRadius::same(8), fill);
+			painter.rect_filled(picture, CornerRadius::same(CARD_RADIUS), fill);
 			if open {
 				painter.rect_stroke(
 					picture,
-					CornerRadius::same(8),
+					CornerRadius::same(CARD_RADIUS),
 					Stroke::new(1.5, p.accent),
 					egui::StrokeKind::Inside,
 				);
@@ -1317,7 +1312,7 @@ impl Browser {
 					picture.right_top() + Vec2::new(-8.0, 8.0),
 					Align2::RIGHT_TOP,
 					clips,
-					FontId::proportional(crate::ui::theme::CAPTION),
+					FontId::proportional(CAPTION),
 					p.text_weak,
 				);
 			}
@@ -1329,7 +1324,7 @@ impl Browser {
 			let galley = widgets::truncated(
 				&painter,
 				name,
-				FontId::proportional(12.0),
+				FontId::proportional(CAPTION),
 				if open { p.accent } else { p.text },
 				label.width(),
 			);
@@ -1375,20 +1370,16 @@ fn model_row(
 	selected: bool,
 ) -> egui::Response {
 	let (rect, response) =
-		ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+		ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
 	let painter = ui.painter_at(rect);
 	painter.rect_filled(
 		rect,
-		CornerRadius::same(6),
+		CornerRadius::same(CONTROL_RADIUS),
 		row_fill(p, &response, selected),
 	);
 	status_dot(&painter, p, rect.left_center() + Vec2::new(11.0, 0.0), s);
 	let clips = format!("{}  {}", icons::FILM_STRIP, model.playable_clips);
-	let clips_galley = painter.layout_no_wrap(
-		clips,
-		FontId::proportional(crate::ui::theme::CAPTION),
-		p.text_weak,
-	);
+	let clips_galley = painter.layout_no_wrap(clips, FontId::proportional(CAPTION), p.text_weak);
 	let text_rect = egui::Rect::from_min_max(
 		rect.left_top() + Vec2::new(24.0, 0.0),
 		rect.right_bottom() - Vec2::new(clips_galley.size().x + 16.0, 0.0),
@@ -1396,7 +1387,7 @@ fn model_row(
 	let name = widgets::truncated(
 		&painter,
 		&model.name,
-		FontId::proportional(13.0),
+		FontId::proportional(LIST_TEXT),
 		if open { p.accent } else { p.text },
 		text_rect.width(),
 	);
@@ -1420,11 +1411,11 @@ fn item_row(
 	selected: bool,
 ) -> egui::Response {
 	let (rect, response) =
-		ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+		ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
 	let painter = ui.painter_at(rect);
 	painter.rect_filled(
 		rect,
-		CornerRadius::same(6),
+		CornerRadius::same(CONTROL_RADIUS),
 		row_fill(p, &response, selected),
 	);
 	let s = status(item);
@@ -1438,7 +1429,7 @@ fn item_row(
 	let name = widgets::truncated(
 		&painter,
 		&item.name,
-		FontId::proportional(13.0),
+		FontId::proportional(LIST_TEXT),
 		text_colour,
 		text_rect.width(),
 	);
@@ -1452,7 +1443,7 @@ fn item_row(
 			rect.right_center() - Vec2::new(10.0, 0.0),
 			Align2::RIGHT_CENTER,
 			icons::IMAGE,
-			FontId::proportional(13.0),
+			FontId::proportional(LIST_TEXT),
 			p.text_weak,
 		);
 	}

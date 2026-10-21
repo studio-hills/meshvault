@@ -15,7 +15,7 @@ use crate::scene::maps::MapKind;
 use crate::studio::export_file::{Entry, Export};
 use crate::ui::format::plural;
 use crate::ui::icons;
-use crate::ui::theme::{ROW, dialog_frame, display, palette};
+use crate::ui::theme::{CAPTION, ROW, dialog_frame, display, palette};
 use crate::ui::tree::FolderTree;
 use crate::ui::tree::{self, FolderCommand};
 use crate::ui::widgets;
@@ -66,6 +66,14 @@ pub struct ImportDialog {
 
 /// Folder state namespace for the import tree.
 const SCOPE: &str = "import";
+
+/// Height kept below the list for the summary, note and buttons.
+const FOOTER_HEIGHT: f32 = 92.0;
+/// Space kept for the footer's "already in this workspace" note when it is
+/// not shown, so the footer does not jump when it comes and goes.
+const NOTE_RESERVE: f32 = 15.0;
+/// Indent that lines a row up with the text of a checkbox above it.
+const CHECKBOX_INDENT: f32 = 22.0;
 
 pub enum Outcome {
 	Cancel,
@@ -377,12 +385,11 @@ impl ImportDialog {
 		ui.add_space(4.0);
 
 		// summary and buttons below the list
-		let footer_height = 92.0;
 		widgets::scroll_in_margin(
 			ui,
 			egui::ScrollArea::vertical()
 				.auto_shrink([false, false])
-				.max_height(ui.available_height() - footer_height),
+				.max_height(ui.available_height() - FOOTER_HEIGHT),
 			|ui| {
 				ui.spacing_mut().interact_size.y = ROW;
 				self.select_all_row(ui);
@@ -460,11 +467,11 @@ impl ImportDialog {
 				RichText::new(format!(
 					"{already} already in this workspace; importing again only adds what is new."
 				))
-				.size(crate::ui::theme::CAPTION)
+				.size(CAPTION)
 				.color(p.text_weak),
 			);
 		} else {
-			ui.add_space(15.0);
+			ui.add_space(NOTE_RESERVE);
 		}
 
 		let mut outcome = None;
@@ -544,7 +551,7 @@ impl ImportDialog {
 				ui.set_min_width(240.0);
 				ui.label(
 					RichText::new("Images to download with each mesh")
-						.size(crate::ui::theme::CAPTION)
+						.size(CAPTION)
 						.color(palette(ui.ctx()).text_weak),
 				);
 				for kind in offered {
@@ -597,7 +604,7 @@ impl ImportDialog {
 						let p = palette(ui.ctx());
 						ui.label(
 							RichText::new(format!("{selected}/{}", rows.len()))
-								.size(crate::ui::theme::CAPTION)
+								.size(CAPTION)
 								.color(p.text_weak),
 						);
 					});
@@ -687,16 +694,12 @@ impl ImportDialog {
 		} else {
 			format!("{}  {}", icons::IMAGE, entry.maps.len())
 		};
-		ui.label(
-			RichText::new(text)
-				.size(crate::ui::theme::CAPTION)
-				.color(p.text_weak),
-		)
-		.on_hover_text(hover);
+		ui.label(RichText::new(text).size(CAPTION).color(p.text_weak))
+			.on_hover_text(hover);
 		if self.existing[e] {
 			ui.label(
 				RichText::new("in workspace")
-					.size(crate::ui::theme::CAPTION)
+					.size(CAPTION)
 					.color(p.text_weak),
 			);
 		}
@@ -753,14 +756,14 @@ impl ImportDialog {
 						meshes.len(),
 						icons::FILM_STRIP
 					))
-					.size(crate::ui::theme::CAPTION)
+					.size(CAPTION)
 					.color(p.text_weak),
 				)
 				.on_hover_text("Meshes it uses · playable clips");
 				if existing {
 					ui.label(
 						RichText::new("in workspace")
-							.size(crate::ui::theme::CAPTION)
+							.size(CAPTION)
 							.color(p.text_weak),
 					);
 				}
@@ -768,14 +771,14 @@ impl ImportDialog {
 			.body(|ui| {
 				for &e in &meshes {
 					ui.horizontal(|ui| {
-						ui.add_space(22.0);
+						ui.add_space(CHECKBOX_INDENT);
 						ui.label(format!("{}  {}", icons::CUBE, self.entries[e].name));
 						self.mesh_hint(ui, e);
 					});
 				}
 				if missing > 0 {
 					ui.horizontal(|ui| {
-						ui.add_space(22.0);
+						ui.add_space(CHECKBOX_INDENT);
 						ui.label(
 							RichText::new(format!(
 								"{} not in this export",
@@ -787,7 +790,7 @@ impl ImportDialog {
 				}
 				if meshes.is_empty() && missing == 0 {
 					ui.horizontal(|ui| {
-						ui.add_space(22.0);
+						ui.add_space(CHECKBOX_INDENT);
 						ui.label(
 							RichText::new("No meshes: its parts are drawn as boxes")
 								.color(p.text_weak),

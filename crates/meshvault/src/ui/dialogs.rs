@@ -7,7 +7,7 @@
 use eframe::egui::{self, Id, Key, RichText, Vec2};
 
 use super::layout::SHORTCUTS;
-use super::theme::{BODY_LINE_HEIGHT, dialog_frame, display, palette};
+use super::theme::{BODY_LINE_HEIGHT, CAPTION, dialog_frame, display, palette};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::scene::maps::Slot;
@@ -357,7 +357,7 @@ impl App {
 								.join(workspace::sanitize(dialog.name.trim()))
 								.display()
 						))
-						.size(crate::ui::theme::CAPTION)
+						.size(CAPTION)
 						.color(p.text_weak),
 					);
 				}

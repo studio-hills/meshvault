@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Align2, FontId, RichText, Sense, Vec2};
 
-use super::theme::{CONTROL_XXS, display, palette, semibold};
+use super::theme::{CAPTION, CARD_RADIUS, CONTROL_XXS, display, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -191,7 +191,7 @@ impl App {
 		ui.add_space(18.0);
 		ui.label(
 			RichText::new("Mesh v1–v7 · union graphics CSGMDL v2–v5 · union physics CSGPHS v3–v8")
-				.size(crate::ui::theme::CAPTION)
+				.size(CAPTION)
 				.color(p.text_weak),
 		);
 	}
@@ -218,7 +218,7 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 	let hovered = ui.rect_contains_pointer(rect);
 	let painter = ui.painter_at(rect);
 	if hovered {
-		painter.rect_filled(rect, 8.0, p.accent_soft);
+		painter.rect_filled(rect, CARD_RADIUS, p.accent_soft);
 	}
 	let name = root
 		.file_name()
@@ -247,7 +247,7 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 	let path = widgets::truncated(
 		&painter,
 		&root.display().to_string(),
-		FontId::proportional(crate::ui::theme::CAPTION),
+		FontId::proportional(CAPTION),
 		p.text_weak,
 		path_clip.width(),
 	);

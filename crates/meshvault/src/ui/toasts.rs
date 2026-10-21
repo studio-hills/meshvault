@@ -10,6 +10,11 @@ use super::{icons, widgets};
 
 const LIFETIME: Duration = Duration::from_secs(5);
 const MAX_SHOWN: usize = 5;
+/// The widest a toast grows before its text wraps.
+const MAX_WIDTH: f32 = 380.0;
+/// Where the stack sits from the window's bottom-right corner: 40 clears
+/// the status bar.
+const ANCHOR_OFFSET: Vec2 = Vec2::new(-16.0, -40.0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -70,11 +75,11 @@ impl Toasts {
 		let mut dismiss = None;
 		let start = self.list.len().saturating_sub(MAX_SHOWN);
 		egui::Area::new(egui::Id::unique("toasts"))
-			.anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -40.0))
+			.anchor(Align2::RIGHT_BOTTOM, ANCHOR_OFFSET)
 			.order(egui::Order::Foreground)
 			.interactable(true)
 			.show(ctx, |ui| {
-				ui.set_max_width(380.0);
+				ui.set_max_width(MAX_WIDTH);
 				for (i, toast) in self.list.iter().enumerate().skip(start) {
 					let (icon, colour) = match toast.level {
 						Level::Info => (icons::INFO, p.accent),

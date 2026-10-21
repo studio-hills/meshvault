@@ -5,7 +5,9 @@ use eframe::egui::{
 	Margin, Modifiers, Order, RichText, Sense, Stroke, Vec2,
 };
 
-use super::theme::{CONTROL, CONTROL_RADIUS, ThemeMode, display, medium, palette, semibold};
+use super::theme::{
+	CAPTION, CONTROL, CONTROL_RADIUS, ThemeMode, display, medium, palette, semibold,
+};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::render::viewport::{self, Camera, Lighting, ScenePart, Shading, ViewSettings};
@@ -30,7 +32,7 @@ impl eframe::App for App {
 			.frame(
 				Frame::NONE
 					.fill(p.panel)
-					.inner_margin(Margin::symmetric(12, 8)),
+					.inner_margin(Margin::symmetric(TOP_BAR_MARGIN.0, TOP_BAR_MARGIN.1)),
 			)
 			.show(ui, |ui| self.top_bar(ui));
 		egui::Panel::bottom("status_bar")
@@ -45,14 +47,22 @@ impl eframe::App for App {
 			egui::Panel::left("library")
 				.default_size(290.0)
 				.size_range(220.0..=520.0)
-				.frame(Frame::NONE.fill(p.panel).inner_margin(Margin::same(12)))
+				.frame(
+					Frame::NONE
+						.fill(p.panel)
+						.inner_margin(Margin::same(PANEL_MARGIN)),
+				)
 				.show(ui, |ui| self.library(ui));
 		}
 		if self.show_inspector && (self.doc.is_some() || self.model.is_some()) {
 			egui::Panel::right("inspector")
 				.default_size(300.0)
 				.size_range(240.0..=520.0)
-				.frame(Frame::NONE.fill(p.panel).inner_margin(Margin::same(12)))
+				.frame(
+					Frame::NONE
+						.fill(p.panel)
+						.inner_margin(Margin::same(PANEL_MARGIN)),
+				)
 				.show(ui, |ui| {
 					header_backdrop(ui);
 					self.inspector(ui)
@@ -74,7 +84,9 @@ impl App {
 	fn top_bar(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
 		// the whole bar, margins included
-		let bar = ui.max_rect().expand2(Vec2::new(12.0, 8.0));
+		let bar = ui
+			.max_rect()
+			.expand2(Vec2::new(TOP_BAR_MARGIN.0 as f32, TOP_BAR_MARGIN.1 as f32));
 		super::window::title_bar_drag(ui, bar);
 		ui.horizontal(|ui| {
 			ui.set_min_height(CONTROL);
@@ -319,11 +331,8 @@ impl App {
 		ui.horizontal(|ui| {
 			ui.spacing_mut().item_spacing.x = 10.0;
 			ui.spacing_mut().interact_size.y = 22.0;
-			let small = |text: String, colour: Color32| {
-				RichText::new(text)
-					.size(crate::ui::theme::CAPTION)
-					.color(colour)
-			};
+			let small =
+				|text: String, colour: Color32| RichText::new(text).size(CAPTION).color(colour);
 			match &self.adapter {
 				Some(name) if self.gpu.is_some() => {
 					ui.label(small(format!("{}  GPU", icons::CIRCLE), p.success))
@@ -401,7 +410,7 @@ impl App {
 						bar.rect.center(),
 						Align2::CENTER_CENTER,
 						&format!("{}/{}", d.completed, d.total),
-						&egui::FontId::proportional(crate::ui::theme::CAPTION),
+						&egui::FontId::proportional(CAPTION),
 						p.text,
 					);
 					let mut text = format!("{}  Downloading", icons::CLOUD_ARROW_DOWN);
@@ -821,6 +830,13 @@ impl App {
 	}
 }
 
+/// Margin of the side panels (library and inspector). The inspector's
+/// header backdrop reaches back over it.
+pub(super) const PANEL_MARGIN: i8 = 12;
+/// Margin of the top bar, (horizontal, vertical). The title-bar drag area
+/// reaches back over it.
+pub(super) const TOP_BAR_MARGIN: (i8, i8) = (12, 8);
+
 /// Corner radius of the viewport toolbar; the controls in it are rounded
 /// to this less its padding and border.
 const TOOLBAR_RADIUS: u8 = CONTROL_RADIUS + 6;
@@ -853,7 +869,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
 fn header_backdrop(ui: &egui::Ui) {
 	let p = palette(ui.ctx());
 	// the whole width of the panel, from its top edge (past its margin)
-	let panel = ui.max_rect().expand(12.0);
+	let panel = ui.max_rect().expand(PANEL_MARGIN as f32);
 	let rect = egui::Rect::from_min_size(panel.min, Vec2::new(panel.width(), 170.0));
 	let painter = ui.painter().with_clip_rect(rect);
 	let mut mesh = egui::Mesh::default();

@@ -9,7 +9,8 @@ pub enum Revision7 {
 }
 
 /// v7.00 uses the same chunks as v6.00, but the COREMESH chunk is
-/// usually Draco compressed.
+/// usually Draco compressed. A truncated or over-declared last chunk is
+/// treated as for [`Mesh6`](super::Mesh6).
 #[binrw::binread]
 #[br(little)]
 #[derive(Debug, Clone)]

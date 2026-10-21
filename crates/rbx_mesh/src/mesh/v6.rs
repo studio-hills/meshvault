@@ -20,6 +20,10 @@ pub enum Revision6 {
 /// Reads the u32 chunk size, parses the payload, and then skips any bytes
 /// the payload did not consume so that the next chunk is read from the
 /// right position.  Reading past the end of the chunk is an error.
+///
+/// The skip is a seek, which may land past the end of the file: a final
+/// chunk whose size is larger than the bytes left is accepted as long as
+/// its payload itself parses (see [`Mesh6`]).
 fn sized<T, R>(reader: &mut R, endian: binrw::Endian, args: ()) -> binrw::BinResult<T>
 where
 	T: for<'a> BinRead<Args<'a> = ()>,
@@ -280,6 +284,17 @@ pub trait Chunks6 {
 	}
 }
 
+/// A v6.00 mesh: the version line, then chunks until the end of the file.
+///
+/// Reading is lenient about the end of the file, as upstream rbx_mesh is
+/// (this is deliberate, not checked more strictly):
+/// - a last chunk that declares more bytes than the file has left is
+///   accepted when its payload parses from the bytes that are there;
+/// - a last chunk name cut short (fewer than eight bytes) is taken as the
+///   end of the file and ignored.
+///
+/// A chunk cut short after its full name, or inside its payload, is still
+/// an error. [`Mesh7`](super::Mesh7) reads its chunks the same way.
 #[binrw::binread]
 #[br(little)]
 #[derive(Debug, Clone)]

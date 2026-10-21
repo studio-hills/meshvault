@@ -190,8 +190,9 @@ fn skinning_chunk_is_read() {
 	assert!(skinning.subsets.is_empty());
 }
 
-// How malformed tails are treated today (B50). Stricter rejection is a
-// separate format-policy decision (D20); these pin the current behaviour.
+// How malformed tails are treated (B50). The owner decided to keep this
+// leniency (no stricter rejection); Mesh6's docs describe it, and these pin
+// it.
 #[test]
 fn malformed_tails_today() {
 	// a final chunk whose size runs past the end of the file is accepted

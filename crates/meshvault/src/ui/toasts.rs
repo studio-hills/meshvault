@@ -17,7 +17,7 @@ const MAX_WIDTH: f32 = 380.0;
 const ANCHOR_OFFSET: Vec2 = Vec2::new(-16.0, -40.0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Level {
+enum Level {
 	Info,
 	Success,
 	Warning,
@@ -42,7 +42,7 @@ pub struct Toasts {
 }
 
 impl Toasts {
-	pub fn push(&mut self, level: Level, text: impl Into<String>) {
+	fn push(&mut self, level: Level, text: impl Into<String>) {
 		let text = text.into();
 		// repeating the same message just refreshes it
 		self.list.retain(|t| t.text != text);

@@ -30,7 +30,7 @@ use crate::workspace::facts::Facts;
 use crate::workspace::{Item, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub enum StatusFilter {
+enum StatusFilter {
 	#[default]
 	All,
 	Downloaded,

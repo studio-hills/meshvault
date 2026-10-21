@@ -38,7 +38,7 @@ enum KindFilter {
 }
 
 pub struct ImportDialog {
-	pub source: PathBuf,
+	source: PathBuf,
 	entries: Vec<Entry>,
 	/// Entries already in the workspace.
 	existing: Vec<bool>,

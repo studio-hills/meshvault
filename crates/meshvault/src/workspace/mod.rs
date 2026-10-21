@@ -27,19 +27,59 @@ use crate::scene::maps::MapKind;
 use crate::studio::export_file::{self, Entry};
 
 pub const MANIFEST: &str = "workspace.json";
-pub const MODELS_DIR: &str = "Models";
-pub const RIGS_DIR: &str = "Rigs";
+const MODELS_DIR: &str = "Models";
+const RIGS_DIR: &str = "Rigs";
 pub const CACHE_DIR: &str = ".cache";
 /// Images models use directly (decals), one file per asset.
-pub const IMAGES_DIR: &str = "Images";
+const IMAGES_DIR: &str = "Images";
+/// Manifest format version: 1 had a single texture per item, 2 added
+/// `maps`, 3 added animated models. tools/make_test_workspace.py writes
+/// this version too; update it with this.
+const MANIFEST_VERSION: u32 = 3;
 
 /// Where an image a model uses is stored, without its extension.
-pub fn image_stem(asset_id: u64) -> String {
+fn image_stem(asset_id: u64) -> String {
 	format!("{IMAGES_DIR}/{asset_id}")
 }
-/// 3 added animated models. tools/make_test_workspace.py writes this version
-/// too; update it with this.
-const MANIFEST_VERSION: u32 = 3;
+
+/// Where the raw download of an asset is kept, shared by every item using it.
+pub fn cache_path(root: &Path, asset_id: u64) -> PathBuf {
+	root.join(CACHE_DIR).join(asset_id.to_string())
+}
+
+fn rig_stem(file: &str) -> &str {
+	file.strip_suffix(".rig.json").unwrap_or(file)
+}
+
+/// Makes one path component safe on Windows, macOS and Linux.
+pub fn sanitize(name: &str) -> String {
+	let mut s: String = name
+		.chars()
+		.map(|c| match c {
+			'<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+			c if c.is_control() => '_',
+			c => c,
+		})
+		.collect();
+	// Windows silently drops trailing dots and spaces
+	while s.ends_with(['.', ' ']) {
+		s.pop();
+	}
+	let s = s.trim_start().to_string();
+	if s.is_empty() {
+		return "_".into();
+	}
+	const RESERVED: [&str; 22] = [
+		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+		"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+	];
+	let base = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+	if RESERVED.contains(&base.as_str()) {
+		format!("{s}_")
+	} else {
+		s
+	}
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -52,6 +92,41 @@ pub enum AssetState {
 	Failed {
 		error: String,
 	},
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AssetKind {
+	Mesh,
+	Map(MapKind),
+	/// An image a model uses directly (a decal); its stem is [`image_stem`].
+	Image,
+}
+
+impl AssetKind {
+	pub fn is_image(self) -> bool {
+		matches!(self, AssetKind::Map(_) | AssetKind::Image)
+	}
+	pub fn file_suffix(self) -> &'static str {
+		match self {
+			AssetKind::Mesh | AssetKind::Image => "",
+			AssetKind::Map(k) => k.file_suffix(),
+		}
+	}
+}
+
+/// One asset to download, and every (item stem, use) that needs it. The same
+/// image is often both a model's TextureID and its ColorMap, or shared by
+/// many models; it is downloaded once.
+#[derive(Clone, Debug)]
+pub struct Job {
+	pub asset_id: u64,
+	pub targets: Vec<(String, AssetKind)>,
+}
+
+impl Job {
+	pub fn wants_image(&self) -> bool {
+		self.targets.iter().any(|(_, k)| k.is_image())
+	}
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,80 +220,6 @@ pub struct Workspace {
 	dirty: bool,
 	/// Bumped whenever items are added or removed, so views can cache.
 	generation: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum AssetKind {
-	Mesh,
-	Map(MapKind),
-	/// An image a model uses directly (a decal); its stem is [`image_stem`].
-	Image,
-}
-
-impl AssetKind {
-	pub fn is_image(self) -> bool {
-		matches!(self, AssetKind::Map(_) | AssetKind::Image)
-	}
-	pub fn file_suffix(self) -> &'static str {
-		match self {
-			AssetKind::Mesh | AssetKind::Image => "",
-			AssetKind::Map(k) => k.file_suffix(),
-		}
-	}
-}
-
-/// One asset to download, and every (item stem, use) that needs it. The same
-/// image is often both a model's TextureID and its ColorMap, or shared by
-/// many models; it is downloaded once.
-#[derive(Clone, Debug)]
-pub struct Job {
-	pub asset_id: u64,
-	pub targets: Vec<(String, AssetKind)>,
-}
-
-impl Job {
-	pub fn wants_image(&self) -> bool {
-		self.targets.iter().any(|(_, k)| k.is_image())
-	}
-}
-
-/// Where the raw download of an asset is kept, shared by every item using it.
-pub fn cache_path(root: &Path, asset_id: u64) -> PathBuf {
-	root.join(CACHE_DIR).join(asset_id.to_string())
-}
-
-/// Makes one path component safe on Windows, macOS and Linux.
-pub fn sanitize(name: &str) -> String {
-	let mut s: String = name
-		.chars()
-		.map(|c| match c {
-			'<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-			c if c.is_control() => '_',
-			c => c,
-		})
-		.collect();
-	// Windows silently drops trailing dots and spaces
-	while s.ends_with(['.', ' ']) {
-		s.pop();
-	}
-	let s = s.trim_start().to_string();
-	if s.is_empty() {
-		return "_".into();
-	}
-	const RESERVED: [&str; 22] = [
-		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-		"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-	];
-	let base = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-	if RESERVED.contains(&base.as_str()) {
-		format!("{s}_")
-	} else {
-		s
-	}
-}
-
-fn rig_stem(file: &str) -> &str {
-	file.strip_suffix(".rig.json").unwrap_or(file)
 }
 
 /// Writes a model as a schema 1 export holding just that model and the

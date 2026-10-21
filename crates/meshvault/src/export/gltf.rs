@@ -583,16 +583,17 @@ impl Gltf {
 				})
 			};
 			let (r, m) = (fit(rough), fit(metal));
+			// without a metalness map the part's material decides, as it
+			// does without any map: full metalness (times the factor of 1)
+			// for metal, none for the rest
+			let no_metal_map = if surface.metal { 255 } else { 0 };
 			let packed = image::RgbaImage::from_fn(w, h, |x, y| {
 				let g = r.as_ref().map_or(255, |r| r.get_pixel(x, y)[0]);
-				let b = m.as_ref().map_or(0, |m| m.get_pixel(x, y)[0]);
+				let b = m.as_ref().map_or(no_metal_map, |m| m.get_pixel(x, y)[0]);
 				image::Rgba([255, g, b, 255])
 			});
 			if let Some(t) = self.texture_image(&packed) {
 				pbr["metallicRoughnessTexture"] = json!({ "index": t });
-				if metal.is_none() {
-					pbr["metallicFactor"] = json!(0.0);
-				}
 			}
 		}
 		let mut value = json!({ "pbrMetallicRoughness": pbr });
@@ -1088,6 +1089,46 @@ mod tests {
 			doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"],
 			json!([1.0, 1.0, 1.0, 1.0])
 		);
+	}
+
+	/// A metal part stays metal with a roughness map but no metalness map
+	/// (D16): the packed texture's metalness (blue) is full and the factor
+	/// is 1, as without the roughness map. A plain part stays at zero.
+	#[test]
+	fn metalness_does_not_depend_on_a_roughness_map() {
+		let dir = TempDir::new("glb_metal");
+		let (mut rough, _) = material_with_map(&dir, &[[90, 90, 90, 255]]);
+		let texture = rough.maps.remove(&Slot::Base).unwrap();
+		rough.set(Slot::Roughness, texture);
+		let metallic = |material: &Material, metal: bool| {
+			let mut g = Gltf::default();
+			let surface = Surface {
+				metal,
+				..Surface::OPAQUE
+			};
+			let i = g
+				.material(material, Color32::WHITE, &surface, true)
+				.unwrap();
+			let pbr = g.materials[i]["pbrMetallicRoughness"].clone();
+			let blue = pbr.get("metallicRoughnessTexture").map(|t| {
+				let image = &g.images[g.textures[t["index"].as_u64().unwrap() as usize]["source"]
+					.as_u64()
+					.unwrap() as usize];
+				let view = &g.views[image["bufferView"].as_u64().unwrap() as usize];
+				let at = view["byteOffset"].as_u64().unwrap() as usize;
+				let len = view["byteLength"].as_u64().unwrap() as usize;
+				let png = image::load_from_memory(&g.bin[at..at + len])
+					.unwrap()
+					.to_rgba8();
+				png.get_pixel(0, 0)[2]
+			});
+			(pbr["metallicFactor"].as_f64().unwrap(), blue)
+		};
+		let plain = Material::default();
+		assert_eq!(metallic(&plain, true), (1.0, None));
+		assert_eq!(metallic(&rough, true), (1.0, Some(255)));
+		assert_eq!(metallic(&plain, false), (0.0, None));
+		assert_eq!(metallic(&rough, false).0, 0.0);
 	}
 
 	/// Exports every animated model of the workspace at `MESHVAULT_WS`,

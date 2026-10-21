@@ -21,8 +21,7 @@ impl App {
 		let p = palette(ui.ctx());
 		let counterparts = self.counterparts();
 		let mut switch = None;
-		let mut pick = None;
-		let mut remove_map = None;
+		let mut maps = MapActions::default();
 		widgets::scroll_in_margin(
 			ui,
 			egui::ScrollArea::vertical().auto_shrink([false, false]),
@@ -82,10 +81,8 @@ impl App {
 							);
 							return;
 						}
-						let mut toggle = None;
-						let mut remove = None;
 						for slot in Slot::ALL {
-							map_row(ui, slot, &doc.material, &mut pick, &mut toggle, &mut remove);
+							map_row(ui, slot, &doc.material, &mut maps);
 						}
 						if doc.material.active(Slot::Base).is_some() {
 							ui.add_space(4.0);
@@ -114,18 +111,16 @@ impl App {
 								.color(p.warning),
 							);
 						}
-						if let Some((slot, on)) = toggle {
+						// toggles apply here; picks and removals wait until the panel is drawn
+						if let Some((slot, on)) = maps.toggle.take() {
 							doc.material.toggle(slot, on);
-						}
-						if remove.is_some() {
-							remove_map = remove;
 						}
 					});
 				}
 
 				// levels of detail / hulls
-				let groups = &doc.loaded.geometry.groups;
-				match doc.loaded.geometry.group_kind {
+				let groups = &geometry.groups;
+				match geometry.group_kind {
 					GroupKind::Lod if groups.len() > 1 => {
 						widgets::section(ui, "inspector_lods", "Level of detail", true, |ui| {
 							widgets::compact(ui);
@@ -200,13 +195,26 @@ impl App {
 		if let Some(s) = switch {
 			self.apply_switch(s);
 		}
-		if let Some(slot) = pick {
+		if let Some(slot) = maps.pick {
 			self.pick_map(slot);
 		}
-		if let Some(slot) = remove_map {
+		if let Some(slot) = maps.remove {
 			self.ask(ConfirmAction::RemoveMap(slot));
 		}
 	}
+}
+
+/// What the map rows asked for this frame. The three are independent (one
+/// frame can hold a pick, a toggle and a removal), and within each the
+/// last row to ask wins.
+#[derive(Default)]
+struct MapActions {
+	/// Load or replace this slot's map.
+	pick: Option<Slot>,
+	/// Show (`true`) or hide this slot's map.
+	toggle: Option<(Slot, bool)>,
+	/// Ask to remove this slot's map.
+	remove: Option<Slot>,
 }
 
 /// One material slot: thumbnail, name, and show/replace/remove controls.
@@ -214,9 +222,7 @@ fn map_row(
 	ui: &mut egui::Ui,
 	slot: Slot,
 	material: &crate::scene::texture::Material,
-	pick: &mut Option<Slot>,
-	toggle: &mut Option<(Slot, bool)>,
-	remove: &mut Option<Slot>,
+	actions: &mut MapActions,
 ) {
 	let p = palette(ui.ctx());
 	Frame::NONE
@@ -262,12 +268,12 @@ fn map_row(
 							ui.spacing_mut().item_spacing.x = 0.0;
 							if widgets::danger_icon_button(ui, icons::TRASH, "Remove map").clicked()
 							{
-								*remove = Some(slot);
+								actions.remove = Some(slot);
 							}
 							if widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, "Replace…")
 								.clicked()
 							{
-								*pick = Some(slot);
+								actions.pick = Some(slot);
 							}
 							let (icon, tip) = if on {
 								(icons::EYE, "Hide this map")
@@ -275,7 +281,7 @@ fn map_row(
 								(icons::EYE_SLASH, "Show this map")
 							};
 							if widgets::icon_button(ui, icon, tip).clicked() {
-								*toggle = Some((slot, !on));
+								actions.toggle = Some((slot, !on));
 							}
 							ui.add_space(6.0);
 							ui.vertical(|ui| {
@@ -307,7 +313,7 @@ fn map_row(
 						});
 						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 							if widgets::icon_button(ui, icons::PLUS, "Load…").clicked() {
-								*pick = Some(slot);
+								actions.pick = Some(slot);
 							}
 						});
 					}

@@ -104,7 +104,7 @@ pub struct App {
 	/// Name of the graphics adapter, for the status bar.
 	pub adapter: Option<String>,
 	pub workspace: Option<Workspace>,
-	pub browser: ui::workspace::Browser,
+	pub browser: ui::library::Browser,
 	pub downloader: Downloader,
 	pub import: Option<ImportDialog>,
 	/// An export being read on a background thread.
@@ -162,7 +162,7 @@ impl App {
 			gpu,
 			adapter,
 			workspace: None,
-			browser: ui::workspace::Browser::default(),
+			browser: ui::library::Browser::default(),
 			downloader: Downloader::default(),
 			import: None,
 			parsing: None,
@@ -771,30 +771,30 @@ impl App {
 		self.save_workspace();
 	}
 
-	pub fn handle_browser(&mut self, actions: Vec<ui::workspace::Action>) {
+	pub fn handle_browser(&mut self, actions: Vec<ui::library::Action>) {
 		for action in actions {
 			match action {
-				ui::workspace::Action::Open(i) => self.open_item(i),
-				ui::workspace::Action::OpenModel(i) => self.open_model(i),
-				ui::workspace::Action::RemoveModels(models) => {
+				ui::library::Action::Open(i) => self.open_item(i),
+				ui::library::Action::OpenModel(i) => self.open_model(i),
+				ui::library::Action::RemoveModels(models) => {
 					self.ask(ConfirmAction::RemoveModels(models))
 				}
-				ui::workspace::Action::Retry(items) => {
+				ui::library::Action::Retry(items) => {
 					if let Some(ws) = &mut self.workspace {
 						ws.retry(items);
 					}
 					self.start_downloads();
 				}
 				// deletes files, so it is confirmed first
-				ui::workspace::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
-				ui::workspace::Action::Reveal(path) => {
+				ui::library::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
+				ui::library::Action::Reveal(path) => {
 					// a failure to start the file browser is not shown yet
 					let _ = crate::platform::reveal(&path);
 				}
-				ui::workspace::Action::RemoveSelection { items, models } => {
+				ui::library::Action::RemoveSelection { items, models } => {
 					self.ask(ConfirmAction::RemoveSelection { items, models })
 				}
-				ui::workspace::Action::Export {
+				ui::library::Action::Export {
 					items,
 					models,
 					format,

@@ -62,7 +62,7 @@ impl Browser {
 		};
 		self.facts
 			.as_ref()
-			.and_then(|f| f.get(path))
+			.and_then(|f| f.get(path, item.mesh_id))
 			.is_some_and(|f| f.skinned)
 	}
 
@@ -163,12 +163,13 @@ mod tests {
 	}
 
 	/// A workspace in a temp dir holding `items` and `models`, and a browser
-	/// built for it. `facts` are (mesh path, skinned), written to the facts
-	/// cache first; with `None` the browser has no facts at all.
+	/// built for it. `facts` are (mesh path, mesh asset id, skinned),
+	/// written to the facts cache first; with `None` the browser has no
+	/// facts at all.
 	fn fixture(
 		items: Vec<Item>,
 		models: Vec<ModelItem>,
-		facts: Option<&[(&str, bool)]>,
+		facts: Option<&[(&str, u64, bool)]>,
 	) -> (TempDir, Workspace, Browser) {
 		let dir = TempDir::new("library_ui");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
@@ -176,11 +177,13 @@ mod tests {
 		if let Some(facts) = facts {
 			let known: HashMap<&str, serde_json::Value> = facts
 				.iter()
-				.map(|&(path, skinned)| {
-					(
-						path,
-						serde_json::json!({"skinned": skinned, "triangles": 1}),
-					)
+				.map(|&(path, mesh_id, skinned)| {
+					let facts = serde_json::json!({
+						"mesh_id": mesh_id,
+						"skinned": skinned,
+						"triangles": 1,
+					});
+					(path, facts)
 				})
 				.collect();
 			let cache = dir.join(crate::workspace::CACHE_DIR);
@@ -463,9 +466,9 @@ mod tests {
 			model("Stiff", "RS/S", &["Rigid", "Unread", "Pending"], 1),
 		];
 		let facts = [
-			("Models/Skinned.mesh", true),
-			("Models/Rigid.mesh", false),
-			("Models/Pending.mesh", true),
+			("Models/Skinned.mesh", 1, true),
+			("Models/Rigid.mesh", 2, false),
+			("Models/Pending.mesh", 4, true),
 		];
 		let (_dir, ws, mut b) = fixture(items, models, Some(&facts));
 		let skinned: Vec<&str> = ws

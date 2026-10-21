@@ -19,11 +19,29 @@ pub struct MeshFacts {
 	pub triangles: usize,
 }
 
+/// The facts read from a path, and the mesh asset that was there. A
+/// removed item's path can be reused by a different mesh, whose facts
+/// are then read again.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+struct Known {
+	mesh_id: u64,
+	#[serde(flatten)]
+	facts: MeshFacts,
+}
+
+/// What the scan sends for each mesh: its path, its asset, and its facts,
+/// or `None` when the file could not be read.
+type Scanned = (String, u64, Option<MeshFacts>);
+
 pub struct Facts {
 	file: PathBuf,
 	/// By the mesh's path in the workspace.
-	known: HashMap<String, MeshFacts>,
-	scan: Option<Receiver<(String, MeshFacts)>>,
+	known: HashMap<String, Known>,
+	/// Meshes whose files could not be read this session: path to asset.
+	/// They are not read again until the workspace is opened again, and
+	/// not saved, so a passing failure is not kept for good.
+	unreadable: HashMap<String, u64>,
+	scan: Option<Receiver<Scanned>>,
 	/// Meshes the running scan still has to read.
 	left: usize,
 	dirty: bool,
@@ -32,6 +50,8 @@ pub struct Facts {
 impl Facts {
 	pub fn open(root: &Path) -> Self {
 		let file = root.join(CACHE_DIR).join("facts.json");
+		// a file from before facts recorded the asset does not parse, so
+		// every mesh is read again once
 		let known = std::fs::read_to_string(&file)
 			.ok()
 			.and_then(|text| serde_json::from_str(&text).ok())
@@ -39,15 +59,19 @@ impl Facts {
 		Self {
 			file,
 			known,
+			unreadable: HashMap::new(),
 			scan: None,
 			left: 0,
 			dirty: false,
 		}
 	}
 
-	/// What is known about the mesh downloaded to `path`.
-	pub fn get(&self, path: &str) -> Option<MeshFacts> {
-		self.known.get(path).copied()
+	/// What is known about mesh asset `mesh_id` downloaded to `path`.
+	pub fn get(&self, path: &str, mesh_id: u64) -> Option<MeshFacts> {
+		self.known
+			.get(path)
+			.filter(|k| k.mesh_id == mesh_id)
+			.map(|k| k.facts)
 	}
 
 	/// How many meshes are still being read.
@@ -55,20 +79,31 @@ impl Facts {
 		self.left
 	}
 
+	fn take(&mut self, (path, mesh_id, facts): Scanned) {
+		match facts {
+			Some(facts) => {
+				self.known.insert(path, Known { mesh_id, facts });
+				self.dirty = true;
+			}
+			None => {
+				self.unreadable.insert(path, mesh_id);
+			}
+		}
+		self.left = self.left.saturating_sub(1);
+	}
+
 	/// Takes in what the scan read, and starts a scan of downloaded meshes
 	/// not read yet. Call once a frame.
 	pub fn update(&mut self, ctx: &egui::Context, ws: &Workspace) {
-		if let Some(rx) = &self.scan {
+		if let Some(rx) = self.scan.take() {
 			loop {
 				match rx.try_recv() {
-					Ok((path, facts)) => {
-						self.known.insert(path, facts);
-						self.left = self.left.saturating_sub(1);
-						self.dirty = true;
+					Ok(scanned) => self.take(scanned),
+					Err(TryRecvError::Empty) => {
+						self.scan = Some(rx);
+						break;
 					}
-					Err(TryRecvError::Empty) => break,
 					Err(TryRecvError::Disconnected) => {
-						self.scan = None;
 						self.left = 0;
 						self.save();
 						break;
@@ -77,11 +112,16 @@ impl Facts {
 			}
 			return;
 		}
-		let unread: Vec<String> = ws
+		let unread: Vec<(String, u64)> = ws
 			.items()
 			.iter()
 			.filter_map(|i| match &i.mesh {
-				AssetState::Done { path } if !self.known.contains_key(path) => Some(path.clone()),
+				AssetState::Done { path }
+					if self.get(path, i.mesh_id).is_none()
+						&& self.unreadable.get(path) != Some(&i.mesh_id) =>
+				{
+					Some((path.clone(), i.mesh_id))
+				}
 				_ => None,
 			})
 			.collect();
@@ -93,15 +133,28 @@ impl Facts {
 		let ctx = ctx.clone();
 		self.left = unread.len();
 		std::thread::spawn(move || {
-			for path in unread {
+			for (path, mesh_id) in unread {
 				let facts = read(&root.join(&path));
-				if tx.send((path, facts)).is_err() {
+				if tx.send((path, mesh_id, facts)).is_err() {
 					return;
 				}
 				ctx.request_repaint();
 			}
 		});
 		self.scan = Some(rx);
+	}
+
+	/// Test helper: starts a scan like [`Self::update`], then waits for it
+	/// to finish and takes in all it read.
+	#[cfg(test)]
+	fn scan_all(&mut self, ws: &Workspace) {
+		self.update(&egui::Context::default(), ws);
+		if let Some(rx) = self.scan.take() {
+			for scanned in rx {
+				self.take(scanned);
+			}
+			self.left = 0;
+		}
 	}
 
 	fn save(&mut self) {
@@ -126,41 +179,118 @@ impl Drop for Facts {
 	}
 }
 
-/// Reads a mesh's facts. A file that cannot be read or decoded counts as an
-/// empty, unskinned mesh, so it is not read again.
-fn read(path: &Path) -> MeshFacts {
-	let Ok(bytes) = std::fs::read(path) else {
-		return MeshFacts::default();
-	};
+/// Reads a mesh's facts, or `None` if the file cannot be read. A file that
+/// does not decode counts as an empty, unskinned mesh, so it is not read
+/// again.
+fn read(path: &Path) -> Option<MeshFacts> {
+	let bytes = std::fs::read(path).ok()?;
 	let Ok((loaded, skin)) = geometry::load_with_skin(&bytes) else {
-		return MeshFacts::default();
+		return Some(MeshFacts::default());
 	};
 	let geometry = loaded.geometry;
 	let skinned = skin.ok().flatten().is_some_and(|s| !s.bones.is_empty());
-	MeshFacts {
+	Some(MeshFacts {
 		skinned,
 		triangles: geometry.triangles.len(),
-	}
+	})
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::studio::export_file::Entry;
 	use crate::test_support::{SAMPLE_MESHES, TempDir};
+	use crate::workspace::AssetKind;
 
 	#[test]
 	fn reads_a_mesh() {
-		let facts = read(&Path::new(SAMPLE_MESHES).join("torso.mesh"));
+		let facts = read(&Path::new(SAMPLE_MESHES).join("torso.mesh")).unwrap();
 		assert!(facts.triangles > 0);
 	}
 
-	/// A file that is missing or does not decode reads as empty and
-	/// unskinned (and is then cached as that).
+	/// A file that does not decode reads as empty and unskinned (and is
+	/// then cached as that); one that cannot be read has no facts.
 	#[test]
-	fn a_bad_file_reads_as_empty() {
+	fn a_bad_file_reads_as_empty_and_a_missing_one_as_nothing() {
 		let dir = TempDir::new("facts_bad");
-		assert_eq!(read(&dir.join("missing.mesh")), MeshFacts::default());
+		assert_eq!(read(&dir.join("missing.mesh")), None);
 		std::fs::write(dir.join("bad.mesh"), b"version 9.99\nnot a mesh").unwrap();
-		assert_eq!(read(&dir.join("bad.mesh")), MeshFacts::default());
+		assert_eq!(read(&dir.join("bad.mesh")), Some(MeshFacts::default()));
+	}
+
+	/// Adds a new item A to `ws` whose download is a copy of the sample mesh
+	/// `sample` at `Models/A.mesh`, as mesh asset `mesh_id`; with A removed
+	/// first, this is a removed item's stem used again.
+	fn download_a(ws: &mut Workspace, sample: &str, mesh_id: u64) {
+		let entry = Entry {
+			name: "A".into(),
+			folder: Vec::new(),
+			mesh_id,
+			maps: Default::default(),
+			source_id: None,
+		};
+		let (stem, _) = ws.add_entry(&entry);
+		std::fs::create_dir_all(ws.root.join("Models")).unwrap();
+		std::fs::copy(
+			Path::new(SAMPLE_MESHES).join(sample),
+			ws.root.join("Models/A.mesh"),
+		)
+		.unwrap();
+		let path = "Models/A.mesh".to_string();
+		ws.set_state(&stem, AssetKind::Mesh, AssetState::Done { path });
+	}
+
+	/// A different mesh downloaded to a path whose mesh was read before is
+	/// read again, in the same session and after reopening.
+	#[test]
+	fn a_reused_path_with_another_mesh_is_read_again() {
+		let dir = TempDir::new("facts_reuse");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		download_a(&mut ws, "torso.mesh", 1);
+		let mut facts = Facts::open(&dir);
+		facts.scan_all(&ws);
+		let torso = facts.get("Models/A.mesh", 1).unwrap();
+
+		ws.remove(&[0]).unwrap();
+		download_a(&mut ws, "sphere.mesh", 2);
+		assert_eq!(ws.items()[0].stem, "Models/A");
+		facts.scan_all(&ws);
+		let sphere = facts.get("Models/A.mesh", 2).unwrap();
+		assert_ne!(sphere, torso);
+		// what was read about the old mesh no longer counts
+		assert_eq!(facts.get("Models/A.mesh", 1), None);
+
+		drop(facts);
+		ws.remove(&[0]).unwrap();
+		download_a(&mut ws, "torso.mesh", 3);
+		let mut facts = Facts::open(&dir);
+		assert_eq!(facts.get("Models/A.mesh", 2), Some(sphere));
+		facts.scan_all(&ws);
+		assert_eq!(facts.get("Models/A.mesh", 3), Some(torso));
+	}
+
+	/// A mesh whose file cannot be read is not read again this session,
+	/// but is not saved as empty either, so it is read once the workspace
+	/// opens again.
+	#[test]
+	fn a_file_that_cannot_be_read_is_tried_again_next_time() {
+		let dir = TempDir::new("facts_unreadable");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		download_a(&mut ws, "torso.mesh", 1);
+		let mesh = dir.join("Models/A.mesh");
+		let bytes = std::fs::read(&mesh).unwrap();
+		std::fs::remove_file(&mesh).unwrap();
+		let mut facts = Facts::open(&dir);
+		facts.scan_all(&ws);
+		assert_eq!(facts.get("Models/A.mesh", 1), None);
+		// no second scan this session
+		facts.update(&egui::Context::default(), &ws);
+		assert!(facts.scan.is_none());
+		drop(facts);
+
+		std::fs::write(&mesh, bytes).unwrap();
+		let mut facts = Facts::open(&dir);
+		facts.scan_all(&ws);
+		assert!(facts.get("Models/A.mesh", 1).unwrap().triangles > 0);
 	}
 }

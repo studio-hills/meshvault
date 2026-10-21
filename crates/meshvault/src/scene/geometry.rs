@@ -945,7 +945,12 @@ impl Primitive {
 	pub fn geometry(self) -> &'static Geometry {
 		use std::sync::{Mutex, OnceLock};
 		if let Primitive::Truss { segments, axis } = self {
-			// one per length in use, kept for the life of the app
+			// one per segment count and axis ever drawn, leaked and kept for
+			// the life of the process: closing a model frees none of them.
+			// Each grows with its segment count, and the 4096 clamp in
+			// model_view bounds one shape, not the sum. Deliberate: trusses
+			// are rare and few lengths recur, so this trades memory for not
+			// rebuilding them; any budget or eviction is separate work.
 			static TRUSSES: Mutex<Vec<((u16, u8), &'static Geometry)>> = Mutex::new(Vec::new());
 			let mut built = TRUSSES.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some((_, g)) = built.iter().find(|(k, _)| *k == (segments, axis)) {

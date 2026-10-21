@@ -76,56 +76,26 @@ fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
 	set_aside_with(path, || {})
 }
 
-/// [`set_aside`], calling `before_keep` once a name for the copy is chosen,
-/// just before the copy is made. The copy is made only under a name nothing
-/// has, and the next name is tried if another app took this one meanwhile,
-/// so an earlier kept file is never replaced (a rename could replace it).
+/// [`set_aside`], calling `before_keep` once a name for the kept file is
+/// chosen, just before the file is moved there. The name is this app's own
+/// (by process id and a count), so no other app moves a file over it, and
+/// the move takes whatever is at `path` by then: if another app has saved
+/// its settings there meanwhile, those are what is kept, never deleted.
+/// A file already gone was moved aside by another app (`NotFound`).
 fn set_aside_with(path: &Path, before_keep: impl FnOnce()) -> std::io::Result<PathBuf> {
+	static NEXT: AtomicU64 = AtomicU64::new(0);
 	let name = path.file_name().unwrap_or_default().to_string_lossy();
-	let mut before_keep = Some(before_keep);
-	for n in 1u64.. {
-		let kept = match n {
-			1 => path.with_file_name(format!("{name}.bad")),
-			n => path.with_file_name(format!("{name}.bad{n}")),
-		};
-		if kept.exists() {
-			continue;
+	let kept = loop {
+		let n = NEXT.fetch_add(1, Ordering::Relaxed);
+		let kept = path.with_file_name(format!("{name}.bad-{}-{n}", std::process::id()));
+		// left by an earlier app that had the same process id
+		if !kept.exists() {
+			break kept;
 		}
-		if let Some(before_keep) = before_keep.take() {
-			before_keep();
-		}
-		match copy_new(path, &kept) {
-			Ok(()) => {}
-			Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-			Err(e) => return Err(e),
-		}
-		return match std::fs::remove_file(path) {
-			Ok(()) => Ok(kept),
-			// another app moved it aside too, and kept its own copy
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(kept),
-			Err(e) => {
-				let _ = std::fs::remove_file(&kept);
-				Err(e)
-			}
-		};
-	}
-	unreachable!("an unused name")
-}
-
-/// Copies `from` to `to`, which is made only if it does not exist. A copy
-/// that fails part way is removed.
-fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
-	let mut source = std::fs::File::open(from)?;
-	let mut copy = std::fs::OpenOptions::new()
-		.write(true)
-		.create_new(true)
-		.open(to)?;
-	let copied = std::io::copy(&mut source, &mut copy).map(drop);
-	drop(copy);
-	if copied.is_err() {
-		let _ = std::fs::remove_file(to);
-	}
-	copied
+	};
+	before_keep();
+	std::fs::rename(path, &kept)?;
+	Ok(kept)
 }
 
 /// Writes `bytes` to a new file beside `path` and closes it, returning its
@@ -565,12 +535,9 @@ mod tests {
 			assert!(!path.exists());
 		}
 		// each kept under its own name
-		for (name, text) in ["config.json.bad", "config.json.bad2", "config.json.bad3"]
-			.into_iter()
-			.zip(texts)
-		{
-			assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), text);
-		}
+		let mut texts = texts.map(str::to_string).to_vec();
+		texts.sort();
+		assert_eq!(kept(&dir), texts);
 	}
 
 	#[test]
@@ -584,11 +551,8 @@ mod tests {
 		let (config, problems) = Config::load_from(Some(primary.clone()), Some(legacy));
 		assert_eq!(config.place_id, Some(3));
 		assert_eq!(problems.len(), 1, "{problems:?}");
-		assert!(problems[0].contains("config.json.bad"), "{problems:?}");
-		assert_eq!(
-			std::fs::read_to_string(dir.join("config.json.bad")).unwrap(),
-			"not json"
-		);
+		assert!(problems[0].contains("config.json.bad-"), "{problems:?}");
+		assert_eq!(kept(&dir), ["not json"]);
 		let saved: serde_json::Value =
 			serde_json::from_str(&std::fs::read_to_string(&primary).unwrap()).unwrap();
 		assert_eq!(saved, json(&config));
@@ -672,16 +636,13 @@ mod tests {
 		drop(held);
 		assert_eq!(std::fs::read_to_string(&primary).unwrap(), "not json");
 		config.save_to(&primary).unwrap();
-		assert_eq!(
-			std::fs::read_to_string(dir.join("config.json.bad")).unwrap(),
-			"not json"
-		);
+		assert_eq!(kept(&dir), ["not json"]);
 		assert_eq!(load(Some(primary.clone()), None).theme, ThemeMode::Light);
 		// and from then on saves replace the file as usual
 		config.place_id = Some(4);
 		config.save_to(&primary).unwrap();
 		assert_eq!(load(Some(primary), None).place_id, Some(4));
-		assert!(!dir.join("config.json.bad2").exists());
+		assert_eq!(kept(&dir), ["not json"]);
 	}
 
 	/// The names of the files in `dir`, sorted.
@@ -744,11 +705,27 @@ mod tests {
 		assert_eq!(names(&dir), ["config.json", "config.json.1-0.tmp"]);
 	}
 
-	/// Two apps that both found the settings unreadable each keep a copy
-	/// before saving, and neither copy replaces the other: here the other
-	/// app keeps the file and saves after this one chose a name for its
-	/// copy but before it made it (once this one then moved the other's
-	/// new settings over the kept file, and the original was lost).
+	/// What each kept copy beside `dir`'s config.json holds, sorted.
+	fn kept(dir: &Path) -> Vec<String> {
+		let mut kept: Vec<String> = names(dir)
+			.into_iter()
+			.filter(|n| n.starts_with("config.json.bad"))
+			.map(|n| std::fs::read_to_string(dir.join(n)).unwrap())
+			.collect();
+		kept.sort();
+		kept
+	}
+
+	/// The place id in `text`, if it is a whole settings file.
+	fn place_id(text: &str) -> Option<u64> {
+		serde_json::from_str::<Config>(text).ok()?.place_id
+	}
+
+	/// Two apps that both found the settings unreadable each keep what they
+	/// find before saving, and neither keeps it over the other's: here the
+	/// other app recovers and saves while this one is about to keep the file
+	/// (once this one moved the other's new settings over the kept file, and
+	/// the original was lost; later it removed them without keeping them).
 	#[test]
 	fn two_recovering_saves_both_keep_the_unreadable_file() {
 		let dir = TempDir::new("config");
@@ -770,20 +747,45 @@ mod tests {
 				|| {},
 			)
 			.unwrap();
-		assert_eq!(
-			std::fs::read_to_string(dir.join("config.json.bad")).unwrap(),
-			"not json"
-		);
 		assert_eq!(load(Some(path.clone()), None).place_id, Some(1));
-		// the other app's settings, moved aside by this one, are kept too
-		let kept = std::fs::read_to_string(dir.join("config.json.bad2")).unwrap();
+		// the original, and the other app's settings this one moved aside
+		let kept = kept(&dir);
+		assert_eq!(kept.len(), 2, "{kept:?}");
+		assert_eq!(kept[0], "not json");
+		assert_eq!(place_id(&kept[1]), Some(2), "{kept:?}");
+		assert_eq!(names(&dir).len(), 3, "{:?}", names(&dir));
+	}
+
+	/// The other app recovers and saves while this one is about to keep the
+	/// file, and then this one's own save fails: the other app's settings are
+	/// still there, kept whole beside the settings path (once this one
+	/// removed them, having kept only the original, so they were lost).
+	#[test]
+	fn a_recovery_that_fails_to_save_keeps_the_other_apps_settings() {
+		let dir = TempDir::new("config");
+		let path = dir.join("config.json");
+		std::fs::write(&path, "not json").unwrap();
+		let recovering = |place_id| Config {
+			place_id: Some(place_id),
+			unreadable: Some(path.clone()),
+			..Default::default()
+		};
+		let (mut first, mut second) = (recovering(1), recovering(2));
+		first
+			.save_with(
+				&path,
+				|| second.save_to(&path).unwrap(),
+				// a folder in the way stops this one's file being moved in
+				|| std::fs::create_dir(&path).unwrap(),
+			)
+			.unwrap_err();
+		let kept = kept(&dir);
+		assert_eq!(kept.len(), 2, "{kept:?}");
+		assert_eq!(kept[0], "not json");
 		assert_eq!(
-			serde_json::from_str::<Config>(&kept).unwrap().place_id,
-			Some(2)
-		);
-		assert_eq!(
-			names(&dir),
-			["config.json", "config.json.bad", "config.json.bad2"]
+			place_id(&kept[1]),
+			Some(2),
+			"the other app's settings were lost: {kept:?}"
 		);
 	}
 }

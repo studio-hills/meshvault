@@ -31,9 +31,10 @@ impl App {
 			// an export that stops arriving is forgotten after a while
 			let receiving = self
 				.studio_progress
-				.filter(|(_, _, at)| at.elapsed().as_secs() < 60);
+				.as_ref()
+				.filter(|(_, _, _, at)| at.elapsed().as_secs() < 60);
 			let (text, colour, hover) = match (&self.studio_link.status, receiving) {
-				(Status::Listening, Some((done, count, _))) => (
+				(Status::Listening, Some((_, done, count, _))) => (
 					format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
 					p.accent,
 					"An export is arriving from Roblox Studio".to_owned(),

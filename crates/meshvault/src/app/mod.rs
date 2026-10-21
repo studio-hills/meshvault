@@ -79,8 +79,9 @@ pub struct App {
 	/// Receives exports sent from Roblox Studio.
 	pub studio_link: StudioLink,
 	pub studio_dialog: Option<StudioDialog>,
-	/// Pieces of an export from Studio received so far, out of how many, and when.
-	pub studio_progress: Option<(usize, usize, Instant)>,
+	/// The export from Studio that last had a piece arrive (its id), its
+	/// pieces received so far, out of how many, and when.
+	pub studio_progress: Option<(String, usize, usize, Instant)>,
 	/// Work on background threads (exports, saved images), each ending
 	/// with a message to show.
 	background: Vec<Task<String>>,

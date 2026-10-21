@@ -120,13 +120,24 @@ impl App {
 	pub(super) fn poll_studio_link(&mut self) {
 		for event in self.studio_link.poll() {
 			let received = match event {
-				link::Event::Progress { done, count } => {
-					self.studio_progress = Some((done, count, Instant::now()));
+				link::Event::Progress {
+					export,
+					done,
+					count,
+				} => {
+					self.studio_progress = Some((export, done, count, Instant::now()));
 					continue;
 				}
 				link::Event::Received(received) => received,
 			};
-			self.studio_progress = None;
+			// another export may still be arriving
+			if self
+				.studio_progress
+				.as_ref()
+				.is_some_and(|(export, ..)| *export == received.export)
+			{
+				self.studio_progress = None;
+			}
 			// the export is here, so the instructions are no longer needed
 			self.studio_dialog = None;
 			let path = received.path.clone();

@@ -189,6 +189,8 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 
 /// A complete export received from Studio.
 pub struct Received {
+	/// The id its pieces came with, as in [`Event::Progress`].
+	pub export: String,
 	pub name: String,
 	pub json: Vec<u8>,
 	/// Where the app is to save it: a new file.
@@ -210,8 +212,10 @@ impl Received {
 }
 
 pub enum Event {
-	/// A piece of an export arrived: `done` of `count`.
+	/// A piece of the export `export` (its id) arrived: it has `done` of
+	/// `count`.
 	Progress {
+		export: String,
 		done: usize,
 		count: usize,
 	},
@@ -594,41 +598,47 @@ fn route(request: Request, exports: &mut Exports, tx: &SyncSender<Event>) -> Rep
 			Reply::text(200, script)
 		}
 		("GET", "/") => Reply::text(200, "Meshvault Studio link"),
-		("POST", "/export") => match receive_piece(request, exports) {
-			Ok(Some(done)) => {
-				// the exporter prints this, so Studio users know where it went. Studio's
-				// Output shows only the last part of a path, so the folder is in words
-				// (the same folder receive_piece saves to)
-				let reply = format!(
-					"saving it as {} in Documents › Meshvault › {EXPORTS_FOLDER}",
-					done.path
-						.file_name()
-						.map(|n| n.to_string_lossy())
-						.unwrap_or_default()
-				);
-				// counted until the app takes it; never wait for the app, as
-				// that would hold the link
-				let size = done.json.len();
-				exports.queued.fetch_add(size, Ordering::Relaxed);
-				if tx.try_send(Event::Received(done)).is_err() {
-					exports.queued.fetch_sub(size, Ordering::Relaxed);
-					return Reply::text(503, "Meshvault is busy, send it again later");
+		("POST", "/export") => {
+			let id = request.headers.get("x-meshvault-export").cloned();
+			match receive_piece(request, exports) {
+				Ok(Some(done)) => {
+					// the exporter prints this, so Studio users know where it went. Studio's
+					// Output shows only the last part of a path, so the folder is in words
+					// (the same folder receive_piece saves to)
+					let reply = format!(
+						"saving it as {} in Documents › Meshvault › {EXPORTS_FOLDER}",
+						done.path
+							.file_name()
+							.map(|n| n.to_string_lossy())
+							.unwrap_or_default()
+					);
+					// counted until the app takes it; never wait for the app, as
+					// that would hold the link
+					let size = done.json.len();
+					exports.queued.fetch_add(size, Ordering::Relaxed);
+					if tx.try_send(Event::Received(done)).is_err() {
+						exports.queued.fetch_sub(size, Ordering::Relaxed);
+						return Reply::text(503, "Meshvault is busy, send it again later");
+					}
+					Reply::text(200, reply)
 				}
-				Reply::text(200, reply)
-			}
-			Ok(None) => {
-				// how far the exports still arriving have got; dropped if the
-				// app is behind
-				for p in exports.pending.values() {
-					let _ = tx.try_send(Event::Progress {
-						done: p.chunks.iter().filter(|c| c.is_some()).count(),
-						count: p.chunks.len(),
-					});
+				Ok(None) => {
+					// how far this export has got (only this one: the others have
+					// not changed); dropped if the app is behind
+					if let Some(id) = id
+						&& let Some(p) = exports.pending.get(&id)
+					{
+						let _ = tx.try_send(Event::Progress {
+							export: id,
+							done: p.chunks.iter().filter(|c| c.is_some()).count(),
+							count: p.chunks.len(),
+						});
+					}
+					Reply::text(200, "ok")
 				}
-				Reply::text(200, "ok")
+				Err(reply) => reply,
 			}
-			Err(reply) => reply,
-		},
+		}
 		_ => Reply::text(404, "GET /export.luau or POST /export"),
 	}
 }
@@ -693,6 +703,7 @@ fn receive_piece(request: Request, exports: &mut Exports) -> Result<Option<Recei
 		.duration_since(std::time::UNIX_EPOCH)
 		.map_or(0, |d| d.as_secs());
 	Ok(Some(Received {
+		export: id.clone(),
 		path: exports.path_for(&done.name, stamp),
 		name: done.name,
 		json,
@@ -1398,6 +1409,35 @@ mod tests {
 		));
 	}
 
+	// With two exports arriving at once, each piece reports only its own
+	// export's progress, named, and the finished export says which it was.
+	#[test]
+	fn progress_is_for_the_export_that_moved() {
+		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
+		let mut exports = exports();
+		let mut send = |id: &str, chunk_of: &str| {
+			let reply = route(chunk(id, chunk_of, b"x"), &mut exports, &tx);
+			assert_eq!(reply.code, 200);
+			let events: Vec<Event> = rx.try_iter().collect();
+			match &events[..] {
+				[
+					Event::Progress {
+						export,
+						done,
+						count,
+					},
+				] => format!("{export} {done}/{count}"),
+				[Event::Received(r)] => format!("{} received", r.export),
+				_ => panic!("{} events", events.len()),
+			}
+		};
+		assert_eq!(send("a", "1/3"), "a 1/3");
+		assert_eq!(send("b", "1/2"), "b 1/2");
+		assert_eq!(send("a", "2/3"), "a 2/3");
+		assert_eq!(send("b", "2/2"), "b received");
+		assert_eq!(send("a", "3/3"), "a received");
+	}
+
 	// The app's queue is bounded: when it is full, a finished export is
 	// refused (Studio then prints it) rather than the link waiting for the
 	// app, and the app taking an export frees its bytes.
@@ -1411,7 +1451,12 @@ mod tests {
 			queued: exports.queued.clone(),
 		};
 		for _ in 0..MAX_EVENTS {
-			tx.try_send(Event::Progress { done: 0, count: 1 }).unwrap();
+			tx.try_send(Event::Progress {
+				export: "x".into(),
+				done: 0,
+				count: 1,
+			})
+			.unwrap();
 		}
 		let reply = route(chunk("a", "1/1", b"{}"), &mut exports, &tx);
 		assert_eq!(reply.code, 503);
@@ -1540,6 +1585,7 @@ mod tests {
 	fn saving_never_replaces_a_file() {
 		let folder = crate::test_support::TempDir::new("link_save");
 		let received = Received {
+			export: "a".into(),
 			name: "Place".into(),
 			json: b"{}".to_vec(),
 			path: folder.join("Exports").join("Place-7.json"),

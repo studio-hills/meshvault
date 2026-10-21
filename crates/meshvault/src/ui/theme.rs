@@ -173,7 +173,10 @@ pub fn install_fonts(ctx: &egui::Context) {
 		"display",
 		include_bytes!("../../assets/fonts/cal-sans/CalSans-SemiBold.ttf"),
 	);
-	add("phosphor", include_bytes!("../../assets/fonts/phosphor/Phosphor.ttf"));
+	add(
+		"phosphor",
+		include_bytes!("../../assets/fonts/phosphor/Phosphor.ttf"),
+	);
 
 	// Phosphor first: it has only private-use icon codepoints, so it never
 	// replaces letters, and no text font can shadow an icon. Then the text

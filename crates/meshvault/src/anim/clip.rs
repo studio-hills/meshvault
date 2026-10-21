@@ -24,7 +24,7 @@ enum FaceKeys {
 }
 
 impl FaceTrack {
-	pub fn sample(&self, time: f32) -> f32 {
+	fn sample(&self, time: f32) -> f32 {
 		match &self.keys {
 			FaceKeys::Curve(keys) => sample_scalar(keys, time).unwrap_or(0.0),
 			FaceKeys::Poses(keys) => match segment(keys, time, |k| k.0) {
@@ -406,7 +406,7 @@ fn sample_poses(keys: &[PoseKey], time: f32) -> CFrame {
 /// added with the conventional meaning); Elastic and Bounce are not swapped.
 /// Constant jumps: "In" to the next pose at once, "Out" only when it is
 /// reached, "InOut" halfway.
-pub fn pose_ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
+fn pose_ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
 	let t = t.clamp(0.0, 1.0);
 	match style {
 		EasingStyle::Linear | EasingStyle::Other => t,
@@ -432,7 +432,7 @@ pub fn pose_ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 
 
 /// Easing curve for `style`, shaped by `direction`; Roblox-specific cases
 /// are noted below.
-pub fn ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
+fn ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
 	let f = |x: f32| -> f32 {
 		use std::f32::consts::PI;
 		match style {
@@ -516,7 +516,7 @@ fn bounce_out(x: f32) -> f32 {
 
 /// Samples a float curve. Each key's interpolation shapes the segment that
 /// starts at it; cubic segments use the keys' tangents (value per second).
-pub fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
+fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
 	if keys.is_empty() {
 		return None;
 	}

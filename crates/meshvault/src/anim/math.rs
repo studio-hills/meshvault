@@ -153,7 +153,7 @@ impl CFrame {
 		normalize4(q)
 	}
 
-	pub fn from_quat(pos: V3, q: [f32; 4]) -> CFrame {
+	fn from_quat(pos: V3, q: [f32; 4]) -> CFrame {
 		let [x, y, z, w] = normalize4(q);
 		CFrame {
 			pos,
@@ -252,7 +252,7 @@ fn normalize4(q: [f32; 4]) -> [f32; 4] {
 }
 
 /// Shortest-path spherical interpolation.
-pub fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 	let mut dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 	let b = if dot < 0.0 {
 		dot = -dot;

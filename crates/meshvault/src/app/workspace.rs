@@ -325,10 +325,10 @@ mod tests {
 		let files = ["Rigs/a.rig.json", "Rigs/b.rig.json", "Rigs/c.rig.json"];
 		ws.set_contents(Vec::new(), files.iter().map(|f| model(f)).collect());
 		// c was loading at index 2 when a was removed
-		ws.remove_models(&[0]);
+		ws.remove_models(&[0]).unwrap();
 		assert_eq!(model_with_file(&ws, files[2]), Some(1));
 		// and once c itself is removed it is not shown at all
-		ws.remove_models(&[1]);
+		ws.remove_models(&[1]).unwrap();
 		assert_eq!(model_with_file(&ws, files[2]), None);
 		assert_eq!(model_with_file(&ws, files[1]), Some(0));
 	}

@@ -1085,6 +1085,7 @@ mod tests {
 			binding: view.rig.bind(&clip),
 			clip: Ok(clip),
 			mesh_bone_tracks: 0,
+			unmatched: Vec::new(),
 		});
 		assert_eq!(view.export_nodes()[1].name, "Jaw");
 		assert_eq!(view.export_frame(None, 0.0)[1].pos, [0.0; 3]);
@@ -1117,6 +1118,7 @@ mod tests {
 				unmatched: unmatched.iter().map(|n| n.to_string()).collect(),
 			},
 			mesh_bone_tracks: 0,
+			unmatched: unmatched.iter().map(|n| n.to_string()).collect(),
 		};
 		assert_eq!(stranded_warning(&rig, &[slot(&["Hat"])]), None);
 		assert_eq!(

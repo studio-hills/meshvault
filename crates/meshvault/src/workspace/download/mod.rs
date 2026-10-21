@@ -52,6 +52,9 @@ struct Run {
 	root: PathBuf,
 	client: Arc<Client>,
 	queue: Mutex<VecDeque<Job>>,
+	/// Jobs taken from the queue that have not sent their result yet.
+	/// Locked only with `queue` locked first, or on its own.
+	in_flight: Mutex<Vec<Job>>,
 	cancel: AtomicBool,
 	/// Workers that have not yet decided to stop. Only changed with the
 	/// queue locked, so a worker that finds the queue empty stops counting
@@ -80,6 +83,7 @@ impl Run {
 			root,
 			client,
 			queue: Mutex::default(),
+			in_flight: Mutex::default(),
 			cancel: AtomicBool::new(false),
 			workers: AtomicUsize::new(0),
 			auth_failed: AtomicBool::new(false),
@@ -94,6 +98,21 @@ impl Run {
 		self.queue
 			.lock()
 			.expect("download queue lock poisoned: a queue edit panicked")
+	}
+
+	/// The jobs in flight; see [`Self::queue`] for the panic.
+	fn in_flight(&self) -> MutexGuard<'_, Vec<Job>> {
+		self.in_flight
+			.lock()
+			.expect("download in-flight lock poisoned: an edit panicked")
+	}
+
+	/// Takes the job for `asset_id` out of flight, with every target it
+	/// gained while in flight.
+	fn land(&self, asset_id: u64) -> Option<Job> {
+		let mut in_flight = self.in_flight();
+		let i = in_flight.iter().position(|j| j.asset_id == asset_id)?;
+		Some(in_flight.swap_remove(i))
 	}
 
 	/// Whether the run is over or ending: no new job would be picked up.
@@ -189,12 +208,17 @@ impl Downloader {
 			run = self.new_run(root, client);
 			queue = run.queue();
 		}
+		let mut in_flight = run.in_flight();
 		for job in jobs {
-			// already queued: make sure every target gets written
-			if let Some(queued) = queue.iter_mut().find(|q| q.asset_id == job.asset_id) {
+			// already queued or downloading: make sure every target gets written
+			let existing = queue
+				.iter_mut()
+				.chain(in_flight.iter_mut())
+				.find(|q| q.asset_id == job.asset_id);
+			if let Some(existing) = existing {
 				for target in job.targets {
-					if !queued.targets.contains(&target) {
-						queued.targets.push(target);
+					if !existing.targets.contains(&target) {
+						existing.targets.push(target);
 					}
 				}
 			} else {
@@ -202,6 +226,7 @@ impl Downloader {
 				self.total += 1;
 			}
 		}
+		drop(in_flight);
 		let wanted = concurrency.clamp(1, MAX_WORKERS).min(queue.len());
 		while run.workers.load(Ordering::SeqCst) < wanted {
 			run.workers.fetch_add(1, Ordering::SeqCst);
@@ -288,7 +313,7 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 	let root = &run.root;
 	loop {
 		// deciding to stop and no longer counting happen under one lock
-		let job = {
+		let popped = {
 			let mut queue = run.queue();
 			let next = if run.cancel.load(Ordering::SeqCst) {
 				None
@@ -296,7 +321,10 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 				queue.pop_front()
 			};
 			match next {
-				Some(job) => job,
+				Some(job) => {
+					run.in_flight().push(job.clone());
+					job
+				}
 				None => {
 					let last = run.workers.fetch_sub(1, Ordering::SeqCst) == 1;
 					drop(queue);
@@ -310,18 +338,23 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 				}
 			}
 		};
-		let bytes = match store::read_cache(root, job.asset_id) {
+		let asset_id = popped.asset_id;
+		// an asset is a mesh or an image, so targets added in flight
+		// do not change this
+		let wants_image = popped.wants_image();
+		let bytes = match store::read_cache(root, asset_id) {
 			Some(bytes) => Ok(bytes),
 			None => {
 				match run
 					.client
-					.fetch_with_retry(job.asset_id, job.wants_image(), &run.cancel)
+					.fetch_with_retry(asset_id, wants_image, &run.cancel)
 				{
 					Ok(bytes) => {
-						store::write_cache(root, job.asset_id, &bytes);
+						store::write_cache(root, asset_id, &bytes);
 						Ok(bytes)
 					}
 					Err(FetchError::Auth(message)) => {
+						run.land(asset_id);
 						let first = {
 							let mut queue = run.queue();
 							run.cancel.store(true, Ordering::SeqCst);
@@ -338,6 +371,7 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 					}
 					// cancelled mid-retry: leave the item pending
 					Err(FetchError::Transient(..)) if run.cancel.load(Ordering::SeqCst) => {
+						run.land(asset_id);
 						run.dropped.fetch_add(1, Ordering::SeqCst);
 						continue;
 					}
@@ -345,12 +379,14 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 				}
 			}
 		};
+		// targets added from here on queue a new job, served from the cache
+		let job = run.land(asset_id).unwrap_or(popped);
 		let result = bytes.and_then(|bytes| store::stage(root, &job, &bytes));
 		send(Event::Finished { job, result });
 	}
 }
 
-// A local HTTP server and client for the client and pipeline tests.
+/// A local HTTP server and client for the client and pipeline tests.
 #[cfg(test)]
 mod test_server {
 	use super::{AuthMethod, Client, Credentials, Endpoints};
@@ -1272,5 +1308,46 @@ mod tests {
 		assert_eq!(cache_leftovers(&old), Vec::<String>::new());
 		assert!(!old.join("Models/One.mesh").exists());
 		assert!(!new.join("Models/One.mesh").exists());
+	}
+
+	/// Queuing an asset that is already being downloaded adds its targets
+	/// to that download instead of a second job (B16).
+	#[test]
+	fn an_asset_in_flight_is_not_queued_again() {
+		let dir = TempDir::new("download_in_flight");
+		let assets = Assets::new(&[(1, b"version 4.00\nONE")]);
+		let gate = assets.api.gate("/oc/1");
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let root = dir.to_path_buf();
+		downloader.start(
+			&ctx,
+			root.clone(),
+			assets.client(),
+			vec![mesh_job(1, "Models/One")],
+			2,
+		);
+		gate.wait_for_request();
+		// the same target again, and a new one
+		let jobs = vec![Job {
+			asset_id: 1,
+			targets: vec![
+				("Models/One".into(), crate::workspace::AssetKind::Mesh),
+				("Models/One copy".into(), crate::workspace::AssetKind::Mesh),
+			],
+		}];
+		downloader.start(&ctx, root, assets.client(), jobs, 2);
+		assert_eq!(downloader.total, 1);
+		gate.release();
+		let events = run_to_end(&mut downloader, &dir);
+		let [Event::Finished { job, result: Ok(_) }] = &events[..] else {
+			panic!("one download expected");
+		};
+		let stems: Vec<&str> = job.targets.iter().map(|(s, _)| s.as_str()).collect();
+		assert_eq!(stems, ["Models/One", "Models/One copy"]);
+		publish(&events, &dir);
+		assert!(dir.join("Models/One copy.mesh").is_file());
+		assert_eq!(assets.requests(1), 1);
+		assert_eq!(downloader.completed, 1);
 	}
 }

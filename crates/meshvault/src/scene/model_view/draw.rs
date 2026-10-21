@@ -12,6 +12,10 @@ use crate::scene::geometry::Geometry;
 use crate::scene::surface::DecalDraw;
 use crate::scene::texture::Material;
 
+/// The cone angle, in degrees, this viewer gives a SpotLight or SurfaceLight
+/// whose export has no Angle.
+const DEFAULT_LIGHT_ANGLE: f32 = 90.0;
+
 impl ModelView {
 	/// The skeleton where the model is posed now: lines from joint to joint
 	/// (and on to the middle of each limb's last part), and each joint.
@@ -227,7 +231,9 @@ impl ModelView {
 					brightness: l.brightness,
 					range: l.range,
 					half_angle: match l.class_name.as_str() {
-						"SpotLight" | "SurfaceLight" => Some(l.angle.unwrap_or(90.0) * 0.5),
+						"SpotLight" | "SurfaceLight" => {
+							Some(l.angle.unwrap_or(DEFAULT_LIGHT_ANGLE) * 0.5)
+						}
 						_ => None,
 					},
 				});

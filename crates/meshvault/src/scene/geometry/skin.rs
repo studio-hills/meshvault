@@ -7,6 +7,12 @@ use rbx_mesh::mesh::{Chunks6, CoreMeshChunk, Mesh};
 use super::clean;
 use super::facs::{Facs, facs_of};
 
+/// Where a Draco bitstream says how it encoded the mesh: after "DRACO",
+/// the major and minor version and the encoder type.
+const DRACO_METHOD_BYTE: usize = 8;
+/// The Draco method that keeps vertices in order (edgebreaker, 1, does not).
+const DRACO_SEQUENTIAL: u8 = 0;
+
 /// Per-vertex bone weights from a mesh file (version 4 and later).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Skin {
@@ -66,10 +72,9 @@ fn chunked_skin(m: &impl Chunks6, vertex_count: usize) -> Result<Option<Skin>, S
 	if s.bones.is_empty() {
 		return Ok(None);
 	}
-	// "DRACO", version major and minor, encoder type, then the method:
-	// edgebreaker (1) renumbers vertices, so the weights no longer line up
+	// edgebreaker renumbers vertices, so the weights no longer line up
 	if let Some(CoreMeshChunk::V2(draco)) = m.core_mesh()
-		&& draco.bitstream.get(8) != Some(&0)
+		&& draco.bitstream.get(DRACO_METHOD_BYTE) != Some(&DRACO_SEQUENTIAL)
 	{
 		return Err(
 			"its vertices are Draco compressed with edgebreaker, which reorders them away from their bone weights"

@@ -54,6 +54,13 @@ pub(super) const SECTIONS: [(&[&str], Section); 5] = [
 	),
 ];
 
+/// Width and height in pixels of Roblox's classic shirt and pants template.
+const TEMPLATE_SIZE: [f32; 2] = [585.0, 559.0];
+
+/// The smallest tile a MaterialVariant is drawn with, in studs, so a zero
+/// or negative StudsPerTile cannot divide by zero.
+const MIN_STUDS_PER_TILE: f32 = 0.01;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
 	Torso,
@@ -97,7 +104,8 @@ impl Section {
 			Section::RightArm | Section::RightLeg => right,
 			Section::LeftArm | Section::LeftLeg => left,
 		};
-		pixels.map(|[x, y, w, h]| [x / 585.0, y / 559.0, w / 585.0, h / 559.0])
+		let [tw, th] = TEMPLATE_SIZE;
+		pixels.map(|[x, y, w, h]| [x / tw, y / th, w / tw, h / th])
 	}
 }
 
@@ -349,7 +357,7 @@ pub(super) fn variant_layer(
 	if material.maps.is_empty() {
 		return None;
 	}
-	let tile = v.studs_per_tile.max(0.01);
+	let tile = v.studs_per_tile.max(MIN_STUDS_PER_TILE);
 	Some(PartDecal {
 		face: 0,
 		tiles: Some([tile, tile, 0.0, 0.0]),

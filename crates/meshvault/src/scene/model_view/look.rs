@@ -29,6 +29,11 @@ pub(super) enum Look {
 /// A SpecialMesh head's size relative to its part's size times Scale.
 const HEAD_SIZE: f32 = 0.94;
 
+/// The most segments one truss is built with, which bounds the size of
+/// each truss shape (not of the cache that keeps them; see
+/// `Primitive::geometry`).
+const MAX_TRUSS_SEGMENTS: f32 = 4096.0;
+
 pub(super) fn look(part: &ModelPart) -> Look {
 	let size = part.size;
 	let special = part.special_mesh.as_ref();
@@ -104,7 +109,7 @@ pub(super) fn look(part: &ModelPart) -> Look {
 			let axis = (0..3)
 				.max_by(|&a, &b| size[a].total_cmp(&size[b]))
 				.unwrap_or(1);
-			let segments = (size[axis] / 2.0).round().clamp(1.0, 4096.0) as u16;
+			let segments = (size[axis] / 2.0).round().clamp(1.0, MAX_TRUSS_SEGMENTS) as u16;
 			primitive(
 				Primitive::Truss {
 					segments,

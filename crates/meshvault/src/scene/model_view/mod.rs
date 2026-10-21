@@ -179,12 +179,20 @@ struct LoadCounts {
 	variants_on_meshes: usize,
 }
 
+/// How far, in studs, the joints may place a part from where it was saved
+/// before the rest pose is called out.
+const REST_TOLERANCE: f32 = 0.01;
+
+/// A mesh no thicker than this along an axis (a flat one) is not stretched
+/// along it to the part's size.
+const MIN_FIT_EXTENT: f32 = 1e-6;
+
 /// Why the rest pose is not quite the saved one, when the joints place
-/// parts more than 0.01 studs from where they were.
+/// parts more than [`REST_TOLERANCE`] from where they were.
 fn rest_pose_warning(model: &AnimatedModel, rest_error: f32) -> Option<String> {
 	// schema 2 records each joint's pose, so a difference left over is in
 	// the saved scene itself
-	(rest_error > 0.01).then(|| {
+	(rest_error > REST_TOLERANCE).then(|| {
 		if model.joints.iter().any(|j| j.transform.is_some()) {
 			format!(
 				"The joints place parts up to {rest_error:.2} studs from where they were saved: the parts and their joints do not quite meet in the place (common with AnimationConstraint avatars, which Roblox pulls together once the game runs). Meshvault places them by the joints, as the running game does."
@@ -253,7 +261,7 @@ fn fit(shape: &PartShape, look: &Look, size: V3) -> (V3, V3, V3) {
 				for k in 0..3 {
 					centre[k] = (lo[k] + hi[k]) * 0.5;
 					let extent = hi[k] - lo[k];
-					if extent > 1e-6 {
+					if extent > MIN_FIT_EXTENT {
 						scale[k] = size[k] / extent;
 					}
 				}

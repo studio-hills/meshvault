@@ -124,7 +124,8 @@ pub(super) fn facs_of(f: &rbx_mesh::mesh::Facs5) -> Option<Facs> {
 				..
 			} => matrix
 				.iter()
-				.map(|&q| lerp0 + (lerp1 - lerp0) * q as f32 / 65535.0)
+				// quantised over the whole u16 range
+				.map(|&q| lerp0 + (lerp1 - lerp0) * q as f32 / u16::MAX as f32)
 				.collect(),
 		}
 	};

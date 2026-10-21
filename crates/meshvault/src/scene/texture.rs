@@ -16,6 +16,9 @@ pub const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "bmp", "tga", "we
 const WHITE_ROWS: usize = 4;
 /// Largest side kept in memory; bigger images are scaled down.
 const MAX_SIDE: u32 = 4096;
+/// The GPU's texture size limit is taken as at least this, so subtracting
+/// the white rows always leaves room for the image.
+const MIN_TEXTURE_SIDE: usize = 64;
 
 #[derive(Clone)]
 pub struct Texture {
@@ -77,7 +80,8 @@ pub fn load(ctx: &egui::Context, path: &Path, bytes: &[u8]) -> Result<Texture, S
 	let size = [image.width() as usize, image.height() as usize];
 
 	// leave room for the white rows within the GPU's size limit
-	let max_side = (ctx.input(|i| i.max_texture_side).max(64) - WHITE_ROWS).min(MAX_SIDE as usize);
+	let max_side = (ctx.input(|i| i.max_texture_side).max(MIN_TEXTURE_SIDE) - WHITE_ROWS)
+		.min(MAX_SIDE as usize);
 	let image = if image.width() as usize > max_side || image.height() as usize > max_side {
 		image.resize(
 			max_side as u32,

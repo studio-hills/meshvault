@@ -239,7 +239,7 @@ fn respond(mut stream: TcpStream, reply: Reply) {
 
 /// Reads a whole request, body included: closing a socket with unread data
 /// resets it, and the sender would never see the reply.
-fn read_request(stream: &TcpStream) -> Result<Request, Reply> {
+fn read_request(stream: impl Read) -> Result<Request, Reply> {
 	let mut reader = BufReader::new(stream);
 	let mut line = String::new();
 	reader
@@ -464,7 +464,7 @@ mod tests {
 			String::from_utf8(second.json).unwrap(),
 			"{\"SchemaVersion\":2,\"Models\":[],\"Meshes\":[]}"
 		);
-		// requests without the export headers are refused
+		// invalid piece indices are refused
 		assert!(post(port, "c", "0/1", "x").contains("400"));
 	}
 
@@ -528,5 +528,384 @@ mod tests {
 		assert!(script.contains("loadstring(source)()({ send = false })"));
 		assert!(script.trim_end().ends_with("your own way"));
 		assert!(studio_code(1, CodeMode::Edit, CodeLayout::OneLine).ends_with("send(export)"));
+	}
+
+	// The exact code users paste into Studio, for every mode and layout.
+	const SEND_ONE_LINE: &str = "local h=game:GetService(\"HttpService\") local e=h.HttpEnabled \
+		h.HttpEnabled=true local ok,s=pcall(h.GetAsync,h,\"http://localhost:34875/export.luau\") \
+		h.HttpEnabled=e assert(ok,\"Could not reach Meshvault (is it open, and is Studio in Edit \
+		mode, not Play?): \"..tostring(s)) loadstring(s)()()";
+	const EDIT_ONE_LINE: &str = "local h=game:GetService(\"HttpService\") local e=h.HttpEnabled \
+		h.HttpEnabled=true local ok,s=pcall(h.GetAsync,h,\"http://localhost:34875/export.luau\") \
+		h.HttpEnabled=e assert(ok,\"Could not reach Meshvault (is it open, and is Studio in Edit \
+		mode, not Play?): \"..tostring(s)) local issues,export,send=loadstring(s)()({send=false}) \
+		send(export)";
+	const FORMATTED_FETCH: &str = concat!(
+		"local http = game:GetService(\"HttpService\")\n",
+		"local url = \"http://localhost:34875/export.luau\"\n",
+		"local enabled = http.HttpEnabled\n",
+		"http.HttpEnabled = true\n",
+		"local ok, source = pcall(http.GetAsync, http, url)\n",
+		"http.HttpEnabled = enabled\n",
+		"assert(ok, \"Could not reach Meshvault (is it open, and is Studio in \"\n",
+		"\t.. \"Edit mode, not Play?): \" .. tostring(source))\n",
+		"\n",
+	);
+
+	#[test]
+	fn studio_code_is_exact() {
+		let send_formatted = format!("{FORMATTED_FETCH}loadstring(source)()()");
+		let edit_formatted = format!(
+			"{FORMATTED_FETCH}{}",
+			concat!(
+				"local issues, export, send = loadstring(source)()({ send = false })\n",
+				"\n",
+				"-- change the export here, e.g. keep only the first model:\n",
+				"-- export.Models = { export.Models[1] }\n",
+				"\n",
+				"send(export) -- or save http:JSONEncode(export) your own way",
+			)
+		);
+		let cases = [
+			(
+				CodeMode::Send,
+				CodeLayout::OneLine,
+				SEND_ONE_LINE.to_string(),
+			),
+			(
+				CodeMode::Edit,
+				CodeLayout::OneLine,
+				EDIT_ONE_LINE.to_string(),
+			),
+			(CodeMode::Send, CodeLayout::Formatted, send_formatted),
+			(CodeMode::Edit, CodeLayout::Formatted, edit_formatted),
+		];
+		for (mode, layout, latest) in cases {
+			// the newest schema has no query; any other asks for its schema
+			assert_eq!(studio_code(LATEST_SCHEMA, mode, layout), latest);
+			let explicit = latest.replace("/export.luau\"", "/export.luau?schema=1\"");
+			assert_ne!(explicit, latest);
+			assert_eq!(studio_code(1, mode, layout), explicit);
+		}
+	}
+
+	fn read(bytes: &[u8]) -> Result<Request, Reply> {
+		read_request(std::io::Cursor::new(bytes))
+	}
+
+	/// The request, or a panic naming the refusal (`Reply` has no `Debug`).
+	fn parsed(bytes: &[u8]) -> Request {
+		match read(bytes) {
+			Ok(request) => request,
+			Err(reply) => panic!(
+				"refused with {} {}",
+				reply.code,
+				String::from_utf8_lossy(&reply.body)
+			),
+		}
+	}
+
+	/// The refusal's code and text, or a panic if it was accepted.
+	fn refusal<T>(result: Result<T, Reply>) -> (u16, String) {
+		match result {
+			Ok(_) => panic!("accepted"),
+			Err(reply) => {
+				assert_eq!(reply.content_type, "text/plain; charset=utf-8");
+				(reply.code, String::from_utf8(reply.body).unwrap())
+			}
+		}
+	}
+
+	#[test]
+	fn reads_requests() {
+		let r = parsed(
+			b"POST /export?schema=1&a=b=c&flag&=x HTTP/1.1\r\n\
+			  X-MESHVAULT-Export:  id 1 \r\n\
+			  no colon here\r\n\
+			  x-meshvault-chunk: 1/2\r\n\
+			  X-Meshvault-Chunk: 2/2\r\n\
+			  content-LENGTH: 5\r\n\
+			  \r\n\
+			  hello and more",
+		);
+		assert_eq!(r.method, "POST");
+		assert_eq!(r.path, "/export");
+		// pairs without `=` are dropped; the first `=` splits
+		let mut query: Vec<_> = r.query.iter().collect();
+		query.sort();
+		assert_eq!(
+			query,
+			[
+				(&String::new(), &"x".to_string()),
+				(&"a".to_string(), &"b=c".to_string()),
+				(&"schema".to_string(), &"1".to_string()),
+			]
+		);
+		// names are lower-cased, values trimmed, a repeated header keeps the last,
+		// and lines without a colon are skipped
+		let mut headers: Vec<_> = r.headers.iter().collect();
+		headers.sort();
+		assert_eq!(
+			headers,
+			[
+				(&"content-length".to_string(), &"5".to_string()),
+				(&"x-meshvault-chunk".to_string(), &"2/2".to_string()),
+				(&"x-meshvault-export".to_string(), &"id 1".to_string()),
+			]
+		);
+		// only Content-Length bytes are read
+		assert_eq!(r.body, b"hello");
+	}
+
+	#[test]
+	fn reads_requests_leniently() {
+		// bare newlines work, and without Content-Length the body is empty
+		let r = parsed(b"GET /export.luau HTTP/1.1\nHost: x\n\nignored");
+		assert_eq!(
+			(r.method.as_str(), r.path.as_str()),
+			("GET", "/export.luau")
+		);
+		assert!(r.query.is_empty());
+		assert!(r.body.is_empty());
+		// nothing at all, or a stream that ends inside the headers, is an empty request
+		for bytes in [&b""[..], b"GET / HTTP/1.1\r\nHost: x\r\n"] {
+			let r = parsed(bytes);
+			assert!(r.body.is_empty());
+		}
+		assert_eq!(parsed(b"").method, "");
+		assert_eq!(parsed(b"").path, "");
+		// a missing target is an empty path
+		assert_eq!(parsed(b"GET\r\n\r\n").path, "");
+	}
+
+	#[test]
+	fn refuses_bad_requests() {
+		for (bytes, code, text) in [
+			(&b"GET \xff HTTP/1.1\r\n\r\n"[..], 400, "bad request"),
+			(b"GET / HTTP/1.1\r\nX-A: \xff\r\n\r\n", 400, "bad headers"),
+			(
+				b"POST / HTTP/1.1\r\nContent-Length: x\r\n\r\n",
+				400,
+				"bad Content-Length",
+			),
+			(
+				b"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+				400,
+				"bad Content-Length",
+			),
+			(
+				b"POST / HTTP/1.1\r\nContent-Length:\r\n\r\n",
+				400,
+				"bad Content-Length",
+			),
+			(
+				b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabc",
+				400,
+				"body shorter than Content-Length",
+			),
+		] {
+			assert_eq!(refusal(read(bytes)), (code, text.to_string()));
+		}
+		let over = format!(
+			"POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+			MAX_CHUNK + 1
+		);
+		assert_eq!(
+			refusal(read(over.as_bytes())),
+			(413, "piece too large".to_string())
+		);
+	}
+
+	// Today's weaknesses, pinned until bugs B09 and B10 are fixed: the Host
+	// header is not checked, and request and header lines have no length limit.
+	#[test]
+	fn reads_any_host_and_any_line_length() {
+		let (tx, _rx) = mpsc::channel();
+		let mut pending = HashMap::new();
+		for host in ["", "Host: evil.example\r\n"] {
+			let r = parsed(format!("GET / HTTP/1.1\r\n{host}\r\n").as_bytes());
+			let reply = route(r, &mut pending, &tx);
+			assert_eq!(reply.code, 200);
+			assert_eq!(reply.body, b"Meshvault Studio link");
+		}
+		let long = "a".repeat(1 << 20);
+		let r = parsed(format!("GET /{long} HTTP/1.1\r\nX-Long: {long}\r\n\r\n").as_bytes());
+		assert_eq!(r.path.len(), long.len() + 1);
+		assert_eq!(r.headers["x-long"].len(), long.len());
+	}
+
+	fn piece(headers: &[(&str, &str)], body: &[u8]) -> Request {
+		Request {
+			method: "POST".into(),
+			path: "/export".into(),
+			query: HashMap::new(),
+			headers: headers
+				.iter()
+				.map(|(k, v)| (k.to_string(), v.to_string()))
+				.collect(),
+			body: body.to_vec(),
+		}
+	}
+
+	fn chunk(id: &str, chunk: &str, body: &[u8]) -> Request {
+		piece(
+			&[("x-meshvault-export", id), ("x-meshvault-chunk", chunk)],
+			body,
+		)
+	}
+
+	#[test]
+	fn refuses_pieces_without_valid_headers() {
+		let mut pending = HashMap::new();
+		assert_eq!(
+			refusal(receive_piece(
+				piece(&[("x-meshvault-chunk", "1/1")], b"x"),
+				&mut pending
+			)),
+			(400, "X-Meshvault-Export required".to_string())
+		);
+		let must = (400, "X-Meshvault-Chunk must be i/n".to_string());
+		assert_eq!(
+			refusal(receive_piece(
+				piece(&[("x-meshvault-export", "a")], b"x"),
+				&mut pending
+			)),
+			must
+		);
+		for bad in [
+			"", "1", "/", "1/", "/1", "a/1", "1/b", "1/2/3", "-1/2", "1.0/2", "0/0", "1/0", "0/1",
+			"3/2", "1/100001",
+		] {
+			assert_eq!(
+				refusal(receive_piece(chunk("a", bad, b"x"), &mut pending)),
+				must,
+				"{bad:?}"
+			);
+		}
+		// nothing is kept for a refused piece
+		assert!(pending.is_empty());
+		// the parts are trimmed, and the largest count is allowed
+		assert!(matches!(
+			receive_piece(chunk("a", " 1 / 100000 ", b"x"), &mut pending),
+			Ok(None)
+		));
+		assert_eq!(pending["a"].chunks.len(), 100_000);
+	}
+
+	#[test]
+	fn a_changed_piece_count_drops_the_export() {
+		let mut pending = HashMap::new();
+		assert!(matches!(
+			receive_piece(chunk("a", "1/2", b"x"), &mut pending),
+			Ok(None)
+		));
+		assert!(matches!(
+			receive_piece(chunk("b", "1/2", b"y"), &mut pending),
+			Ok(None)
+		));
+		assert_eq!(
+			refusal(receive_piece(chunk("a", "2/3", b"z"), &mut pending)),
+			(400, "piece count changed".to_string())
+		);
+		assert!(!pending.contains_key("a"));
+		assert!(pending.contains_key("b"));
+	}
+
+	#[test]
+	fn an_export_may_reach_the_size_limit_but_not_pass_it() {
+		let mut pending = HashMap::new();
+		// a nearly full export, without allocating one
+		let nearly_full = || Pending {
+			chunks: vec![None; 2],
+			size: MAX_EXPORT - 1,
+			..Default::default()
+		};
+		pending.insert("at".to_string(), nearly_full());
+		assert!(matches!(
+			receive_piece(chunk("at", "1/2", b"x"), &mut pending),
+			Ok(None)
+		));
+		assert_eq!(pending["at"].size, MAX_EXPORT);
+		pending.insert("over".to_string(), nearly_full());
+		assert_eq!(
+			refusal(receive_piece(chunk("over", "1/2", b"xy"), &mut pending)),
+			(413, "export too large".to_string())
+		);
+		assert!(!pending.contains_key("over"));
+		assert!(pending.contains_key("at"));
+	}
+
+	// Pinned until bug B11 is fixed: a piece sent again replaces the first
+	// copy but is counted towards the size twice.
+	#[test]
+	fn a_resent_piece_replaces_the_first_but_counts_twice() {
+		let mut pending = HashMap::new();
+		for body in [&b"abc"[..], b"def"] {
+			assert!(matches!(
+				receive_piece(chunk("a", "1/2", body), &mut pending),
+				Ok(None)
+			));
+		}
+		assert_eq!(pending["a"].size, 6);
+		assert_eq!(pending["a"].chunks[0].as_deref(), Some(&b"def"[..]));
+	}
+
+	#[test]
+	fn joins_the_last_piece_into_an_export() {
+		let mut pending = HashMap::new();
+		let named = |chunk, name, body| {
+			piece(
+				&[
+					("x-meshvault-export", "a"),
+					("x-meshvault-chunk", chunk),
+					("x-meshvault-name", name),
+				],
+				body,
+			)
+		};
+		assert!(matches!(
+			receive_piece(named("3/3", "First", b"c"), &mut pending),
+			Ok(None)
+		));
+		// a piece without a name keeps the one given before; a later name wins
+		assert!(matches!(
+			receive_piece(chunk("a", "1/3", b"a"), &mut pending),
+			Ok(None)
+		));
+		assert_eq!(pending["a"].name, "First");
+		let Ok(Some(done)) = receive_piece(named("2/3", "My/Place", b"b"), &mut pending) else {
+			panic!("the last piece completes the export");
+		};
+		assert!(pending.is_empty());
+		assert_eq!(done.name, "My/Place");
+		assert_eq!(done.json, b"abc");
+		let file = done.path.file_name().unwrap().to_str().unwrap();
+		assert!(file.starts_with("My_Place-"), "{file}");
+		assert!(file.ends_with(".json"), "{file}");
+		assert_eq!(
+			done.path.parent(),
+			Some(
+				crate::config::Config::default_workspaces_dir()
+					.join("Exports")
+					.as_path()
+			)
+		);
+	}
+
+	#[test]
+	fn names_received_files() {
+		// the stamp is the current second, so only its shape is checked
+		let stamp = |name: &str, prefix: &str| {
+			let file = file_name(name);
+			let stamp = file
+				.strip_prefix(prefix)
+				.and_then(|s| s.strip_suffix(".json"))
+				.unwrap_or_else(|| panic!("{file}"));
+			assert!(stamp.parse::<u64>().is_ok(), "{file}");
+		};
+		stamp("", "studio-export-");
+		stamp("  ", "studio-export-");
+		stamp("a/b", "a_b-");
+		stamp("  Place  ", "Place-");
 	}
 }

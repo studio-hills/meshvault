@@ -83,6 +83,10 @@ pub struct Client {
 	cdn: ureq::Agent,
 	credentials: Credentials,
 	endpoints: Endpoints,
+	/// Called as each slice of a wait before a retry begins, so a test can
+	/// act while a wait is really under way.
+	#[cfg(test)]
+	on_wait: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 const USER_AGENT: &str = concat!("Meshvault/", env!("CARGO_PKG_VERSION"));
@@ -183,6 +187,8 @@ impl Client {
 			cdn,
 			credentials,
 			endpoints,
+			#[cfg(test)]
+			on_wait: None,
 		}
 	}
 
@@ -290,6 +296,10 @@ impl Client {
 						if cancel.load(Ordering::Relaxed) {
 							return Err(FetchError::Transient(msg, None));
 						}
+						#[cfg(test)]
+						if let Some(on_wait) = &self.on_wait {
+							on_wait();
+						}
 						let step = left.min(CANCEL_POLL);
 						std::thread::sleep(step);
 						left -= step;
@@ -314,10 +324,11 @@ mod tests {
 	use super::*;
 	use crate::scene::maps::MapKind;
 	use crate::workspace::AssetKind;
-	use crate::workspace::download::test_server::{client, serve};
+	use crate::workspace::download::test_server::{WATCHDOG, client, serve};
 	use crate::workspace::store::sniff_extension;
 	use std::io::Write;
 	use std::sync::Arc;
+	use std::sync::atomic::AtomicUsize;
 
 	#[test]
 	fn api_key_follows_location_without_leaking_key() {
@@ -408,23 +419,23 @@ mod tests {
 			vec![("Retry-After", "30".into())],
 			vec![],
 		)]);
-		let c = client(&server.base, AuthMethod::ApiKey);
+		let mut c = client(&server.base, AuthMethod::ApiKey);
 		let cancel = Arc::new(AtomicBool::new(false));
-		let canceller = {
-			let cancel = cancel.clone();
-			std::thread::spawn(move || {
-				std::thread::sleep(Duration::from_millis(200));
+		let slices = Arc::new(AtomicUsize::new(0));
+		// cancel from inside the wait, once its first slice has begun
+		c.on_wait = Some(Box::new({
+			let (cancel, slices) = (cancel.clone(), slices.clone());
+			move || {
+				slices.fetch_add(1, Ordering::SeqCst);
 				cancel.store(true, Ordering::Relaxed);
-			})
-		};
+			}
+		}));
 		let started = std::time::Instant::now();
 		let result = c.fetch_with_retry(3, false, &cancel);
-		canceller.join().unwrap();
-		assert!(
-			started.elapsed() < Duration::from_secs(10),
-			"the 30 s wait ran on"
-		);
+		// a watchdog only: the wait is 30 s, one slice is 0.1 s
+		assert!(started.elapsed() < WATCHDOG, "the 30 s wait ran on");
 		assert!(matches!(result, Err(FetchError::Transient(_, None))));
+		assert_eq!(slices.load(Ordering::SeqCst), 1, "the wait went on");
 		assert_eq!(server.log.lock().unwrap().len(), 1);
 	}
 

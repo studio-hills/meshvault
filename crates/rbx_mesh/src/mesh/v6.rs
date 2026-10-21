@@ -83,10 +83,10 @@ pub enum CoreMeshChunk {
 	Unsupported(#[br(args(&[1, 2]))] UnsupportedVersion),
 }
 
+/// Lods are indices into faces.  See [`Lod3`].
 #[binrw::binread]
 #[br(little)]
 #[derive(Debug, Clone)]
-/// Lods are indices into faces.  See [`Lod3`].
 pub struct Lods6 {
 	pub lod_type: LodType4,
 	pub lod_hq_count: u8,
@@ -105,10 +105,10 @@ pub enum LodsChunk {
 	Unsupported(#[br(args(&[1]))] UnsupportedVersion),
 }
 
+/// envelopes has the same length as vertices when there are bones.
 #[binrw::binread]
 #[br(little)]
 #[derive(Debug, Clone)]
-/// envelopes has the same length as vertices when there are bones.
 pub struct Skinning6 {
 	#[br(temp)]
 	envelope_count: u32,
@@ -142,7 +142,6 @@ pub enum SkinningChunk {
 #[br(little)]
 #[derive(Debug, Clone)]
 pub enum FacsChunk {
-	// The payload repeats its own size before the FACS data.
 	#[br(magic = 1u32)]
 	V1(#[br(parse_with = sized)] Facs6),
 	Unsupported(#[br(args(&[1]))] UnsupportedVersion),
@@ -152,17 +151,18 @@ pub enum FacsChunk {
 #[br(little)]
 #[derive(Debug, Clone)]
 pub struct Facs6 {
+	// the payload repeats its own size before the FACS data
 	#[br(temp)]
 	facs_len: u32,
 	#[br(pad_size_to = facs_len)]
 	pub facs: Facs5,
 }
 
+/// One bit per face.  Faces with their bit set are culled by
+/// Hidden Surface Removal when the mesh is worn as layered clothing.
 #[binrw::binread]
 #[br(little)]
 #[derive(Debug, Clone)]
-/// One bit per face.  Faces with their bit set are culled by
-/// Hidden Surface Removal when the mesh is worn as layered clothing.
 pub struct HsrAvis6 {
 	pub bit_count: u32,
 	#[br(count = bit_count.div_ceil(8))]

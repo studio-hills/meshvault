@@ -9,9 +9,10 @@ use std::process::Command;
 pub fn reveal(path: &Path) -> io::Result<()> {
 	#[cfg(target_os = "windows")]
 	let mut cmd = {
+		use std::os::windows::process::CommandExt;
 		let mut cmd = Command::new("explorer");
 		if path.is_file() {
-			cmd.arg(format!("/select,{}", path.display()));
+			cmd.raw_arg(select_arg(path));
 		} else {
 			cmd.arg(path);
 		}
@@ -35,4 +36,31 @@ pub fn reveal(path: &Path) -> io::Result<()> {
 		cmd
 	};
 	cmd.spawn().map(drop)
+}
+
+/// Explorer's argument to open a file's folder with it selected:
+/// `/select,"<path>"`. It goes on the command line as it is, because
+/// Explorer reads its own command line and only knows `/select,` when it
+/// is not quoted, while `Command::arg` quotes the whole argument when the
+/// path has a space in it. A Windows path cannot hold `"`, so quoting the
+/// path alone is safe, and keeps a comma in it from ending the path.
+#[cfg(any(target_os = "windows", test))]
+fn select_arg(path: &Path) -> std::ffi::OsString {
+	let mut arg = std::ffi::OsString::from("/select,\"");
+	arg.push(path);
+	arg.push("\"");
+	arg
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn explorer_selects_a_path_with_spaces_quoted_after_the_switch() {
+		assert_eq!(
+			select_arg(Path::new(r"C:\My workspace\Models\a, b.mesh")),
+			r#"/select,"C:\My workspace\Models\a, b.mesh""#
+		);
+	}
 }

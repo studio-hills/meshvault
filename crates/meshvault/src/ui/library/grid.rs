@@ -42,10 +42,13 @@ fn grid_sections(items: &[Item], models: Vec<Row>, mut meshes: Vec<usize>) -> Ve
 				.cmp(&items[b].name.to_lowercase())
 		})
 	});
-	// a folder's section is titled with its own name; its path is on hover
+	// a folder's section is titled with its own name; its path is on hover.
+	// Only folder sections are joined: root meshes share the models' empty
+	// path but not their section.
+	let folders_from = sections.len();
 	for i in meshes {
 		let path = items[i].folder.join(" / ");
-		match sections.last_mut() {
+		match sections[folders_from..].last_mut() {
 			Some(section) if section.path == path => section.rows.push(Row::Mesh(i)),
 			_ => {
 				let name = items[i].folder.last().map_or("", String::as_str);
@@ -280,10 +283,8 @@ mod tests {
 	}
 
 	#[test]
-	fn grid_puts_models_first_and_root_meshes_with_them_today() {
-		// Bug B32: root-level meshes share the models' empty hover path, so
-		// they land in the "Animated models" section. Flip this when it is
-		// fixed.
+	fn grid_puts_models_first_and_root_meshes_in_their_own_section() {
+		// root meshes once joined the "Animated models" section (bug B32)
 		let items = grid_items();
 		let sections = grid_sections(&items, vec![Row::Model(1), Row::Model(0)], vec![5, 1, 2]);
 		assert_eq!(
@@ -292,8 +293,9 @@ mod tests {
 				section(
 					format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
 					"",
-					&[Row::Model(1), Row::Model(0), Row::Mesh(1)],
+					&[Row::Model(1), Row::Model(0)],
 				),
+				section(folder_title(""), "", &[Row::Mesh(1)]),
 				section(folder_title("Props"), "Props", &[Row::Mesh(5)]),
 				section(folder_title("Sea"), "Sea", &[Row::Mesh(2)]),
 			]

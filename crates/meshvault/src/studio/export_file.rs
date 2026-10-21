@@ -92,7 +92,8 @@ struct Document {
 }
 
 /// The Studio exporter prints long output as `=== JSON CHUNK i/n ===`
-/// blocks; joins the chunk contents back together.
+/// blocks, then `=== END JSON EXPORT ===`; joins the chunk contents back
+/// together.
 fn join_chunks(text: &str) -> Option<String> {
 	if !text.trim_start().starts_with("=== JSON CHUNK") {
 		return None;
@@ -100,7 +101,11 @@ fn join_chunks(text: &str) -> Option<String> {
 	let mut out = String::with_capacity(text.len());
 	for line in text.lines() {
 		let marker = line.trim();
-		if marker.starts_with("=== JSON CHUNK") && marker.ends_with("===") {
+		// the exporter prints the end marker after the last chunk, and users
+		// copy it with the rest
+		if (marker.starts_with("=== JSON CHUNK") && marker.ends_with("==="))
+			|| marker == "=== END JSON EXPORT ==="
+		{
 			continue;
 		}
 		// chunks are split mid-text, so they are joined with nothing between
@@ -327,6 +332,12 @@ mod tests {
 	fn joins_studio_chunks() {
 		let text = "=== JSON CHUNK 1/2 ===\r\n{\"SchemaVersion\":1,\"Mes\r\n=== JSON CHUNK 2/2 ===\nhes\":[],\"Models\":[]}\n";
 		assert!(parse(text).unwrap().models.is_empty());
+		// the whole printed block, end marker included, as copied from the Output
+		let copied = format!("{text}=== END JSON EXPORT ===\r\n");
+		assert!(parse(&copied).unwrap().models.is_empty());
+		// only that exact line is skipped; anything else after the chunks is still an error
+		let other = format!("{text}=== END ===\n");
+		assert!(parse(&other).is_err());
 	}
 
 	/// The v2 export: every key present, empty strings for missing maps.

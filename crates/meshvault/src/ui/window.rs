@@ -178,6 +178,7 @@ pub fn resize_grips(ctx: &egui::Context) {
 #[cfg(windows)]
 pub fn round_corners(window: &impl raw_window_handle::HasWindowHandle) {
 	use raw_window_handle::RawWindowHandle;
+	use windows_sys::Win32::Foundation::HWND;
 	use windows_sys::Win32::Graphics::Dwm::{
 		DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
 	};
@@ -186,13 +187,18 @@ pub fn round_corners(window: &impl raw_window_handle::HasWindowHandle) {
 	};
 	if let RawWindowHandle::Win32(h) = handle.as_raw() {
 		let preference = DWMWCP_ROUND;
-		// SAFETY: a valid window handle, and a pointer to a value of the size given
+		// SAFETY: `handle` is a borrowed window handle, which promises the
+		// window stays alive while it is held, and it is held through this
+		// call, so the HWND is valid. `preference` is a local that outlives
+		// the synchronous call, and the size passed is its own size.
 		unsafe {
+			// best effort: Windows 10 and earlier reject this attribute,
+			// and square corners are fine there, so the HRESULT is ignored
 			DwmSetWindowAttribute(
-				h.hwnd.get() as _,
+				h.hwnd.get() as HWND,
 				DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-				(&preference as *const i32).cast(),
-				std::mem::size_of::<i32>() as u32,
+				std::ptr::from_ref(&preference).cast(),
+				size_of_val(&preference) as u32,
 			);
 		}
 	}

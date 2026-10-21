@@ -171,7 +171,7 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
 }
 
 /// binrw errors embed ANSI colour codes; strip them for display.
-fn clean(e: binrw::Error) -> String {
+fn clean(e: rbx_mesh::mesh::Error) -> String {
 	let s = e.to_string();
 	let mut out = String::with_capacity(s.len());
 	let mut chars = s.chars();

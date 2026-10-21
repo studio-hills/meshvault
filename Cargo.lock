@@ -2001,7 +2001,6 @@ dependencies = [
 name = "meshvault"
 version = "0.1.0"
 dependencies = [
- "binrw",
  "bytemuck",
  "dirs",
  "eframe",
@@ -2016,7 +2015,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

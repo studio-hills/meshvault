@@ -11,7 +11,6 @@ publish = false
 
 [dependencies]
 rbx_mesh = { path = "../rbx_mesh", default-features = false, features = ["mesh-v1", "mesh-v7-draco", "union-graphics", "csgphs-v8-zstd"] }
-binrw = "0.15.0"
 eframe = "0.37.0"
 rfd = "0.17.2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga", "webp", "gif"] }
@@ -26,7 +25,8 @@ bytemuck = { version = "1", features = ["derive"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [dev-dependencies]
+# the shader tests parse mesh.wgsl with naga; keep it in step with the version wgpu uses
 naga = { version = "30.0.1", features = ["wgsl-in"] }

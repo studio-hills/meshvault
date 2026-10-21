@@ -259,7 +259,8 @@ impl App {
 				{
 					ui.close();
 					if let Some(ws) = &self.workspace {
-						crate::ui::workspace::reveal(&ws.root);
+						// a failure to start the file browser is not shown yet
+						let _ = crate::platform::reveal(&ws.root);
 					}
 				}
 				ui.separator();

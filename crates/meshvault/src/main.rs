@@ -10,6 +10,7 @@ mod app;
 mod config;
 mod content_id;
 mod export;
+mod platform;
 mod render;
 mod scene;
 mod studio;

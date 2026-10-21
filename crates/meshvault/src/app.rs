@@ -786,7 +786,10 @@ impl App {
 				}
 				// deletes files, so it is confirmed first
 				ui::workspace::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
-				ui::workspace::Action::Reveal(path) => ui::workspace::reveal(&path),
+				ui::workspace::Action::Reveal(path) => {
+					// a failure to start the file browser is not shown yet
+					let _ = crate::platform::reveal(&path);
+				}
 				ui::workspace::Action::RemoveSelection { items, models } => {
 					self.ask(ConfirmAction::RemoveSelection { items, models })
 				}

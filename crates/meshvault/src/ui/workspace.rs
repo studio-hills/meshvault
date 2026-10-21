@@ -1397,36 +1397,6 @@ fn item_row(
 	response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Opens a file browser at `path` (selecting it if it is a file).
-pub fn reveal(path: &std::path::Path) {
-	#[cfg(target_os = "windows")]
-	{
-		let mut cmd = std::process::Command::new("explorer");
-		if path.is_file() {
-			cmd.arg(format!("/select,{}", path.display()));
-		} else {
-			cmd.arg(path);
-		}
-		let _ = cmd.spawn();
-	}
-	#[cfg(target_os = "macos")]
-	{
-		let _ = std::process::Command::new("open")
-			.arg("-R")
-			.arg(path)
-			.spawn();
-	}
-	#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-	{
-		let dir = if path.is_file() {
-			path.parent().unwrap_or(path)
-		} else {
-			path
-		};
-		let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;

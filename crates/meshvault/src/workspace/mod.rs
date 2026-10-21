@@ -968,6 +968,58 @@ mod tests {
 		assert!(reopened.dirty);
 	}
 
+	/// Opening a workspace also queues again the images models use (a
+	/// decal, a MaterialVariant map, clothing) whose files have gone, in
+	/// every model sharing them; images still there stay done.
+	#[test]
+	fn open_queues_missing_model_images_again() {
+		use crate::anim::schema::{ClothingInfo, DecalInfo, MaterialVariantInfo, ModelPart};
+		let dir = TempDir::new("ws_missing_images");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let model = |name: &str| AnimatedModel {
+			name: name.into(),
+			path: format!("Workspace/{name}"),
+			parts: vec![ModelPart {
+				decals: vec![DecalInfo {
+					texture: "rbxassetid://77".into(),
+					..Default::default()
+				}],
+				material_variant: Some(MaterialVariantInfo {
+					color_map: "rbxassetid://88".into(),
+					..Default::default()
+				}),
+				..Default::default()
+			}],
+			clothing: Some(ClothingInfo {
+				shirt_template: Some("rbxassetid://99".into()),
+				pants_template: Some("rbxassetid://66".into()),
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		ws.add_model(&model("A"), &[]).unwrap();
+		ws.add_model(&model("B"), &[]).unwrap();
+		std::fs::create_dir_all(dir.join("Images")).unwrap();
+		std::fs::write(dir.join("Images/66.png"), b"x").unwrap();
+		let done = |id: u64| AssetState::Done {
+			path: format!("Images/{id}.png"),
+		};
+		for id in [66, 77, 88, 99] {
+			ws.set_state(&image_stem(id), AssetKind::Image, done(id));
+		}
+		ws.save_if_dirty().unwrap();
+
+		let reopened = Workspace::open(&dir).unwrap();
+		for m in reopened.models() {
+			assert_eq!(m.images[&66], done(66));
+			for id in [77, 88, 99] {
+				assert_eq!(m.images[&id], AssetState::Pending, "image {id}");
+			}
+		}
+		assert!(reopened.dirty);
+		assert_eq!(reopened.image_counts(), (3, 0));
+	}
+
 	/// Removing an item deletes its organised files, keeps the cached
 	/// download and frees its stem, so importing it again gets the same one.
 	#[test]

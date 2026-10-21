@@ -138,28 +138,35 @@ pub(super) struct Manifest {
 
 impl Manifest {
 	/// Brings a manifest read from `root` up to [`MANIFEST_VERSION`], and
-	/// resets item downloads whose files are missing. Returns whether anything
-	/// changed.
+	/// resets downloads whose files are missing, items' and models' images
+	/// alike. Returns whether anything changed.
 	pub(super) fn upgrade(&mut self, root: &Path) -> bool {
 		let mut dirty = false;
+		// downloads interrupted by closing the app, or files deleted outside
+		// the app, are downloaded again
+		let reset = |state: &mut AssetState| {
+			let missing = matches!(&*state, AssetState::Done { path } if !root.join(path).exists());
+			if missing {
+				*state = AssetState::Pending;
+			}
+			missing
+		};
 		for item in &mut self.items {
 			// version 1: a single optional texture
 			if let (Some(id), Some(state)) = (item.texture_id.take(), item.texture.take()) {
 				item.maps.insert(MapKind::Texture, MapRef { id, state });
 				dirty = true;
 			}
-			// downloads interrupted by closing the app, or files deleted
-			// outside the app, are downloaded again
-			let missing = |state: &AssetState| matches!(state, AssetState::Done { path } if !root.join(path).exists());
-			if missing(&item.mesh) {
-				item.mesh = AssetState::Pending;
-				dirty = true;
-			}
+			dirty |= reset(&mut item.mesh);
 			for map in item.maps.values_mut() {
-				if missing(&map.state) {
-					map.state = AssetState::Pending;
-					dirty = true;
-				}
+				dirty |= reset(&mut map.state);
+			}
+		}
+		// and so are the images models use (decals, MaterialVariant maps and
+		// clothing)
+		for model in &mut self.models {
+			for state in model.images.values_mut() {
+				dirty |= reset(state);
 			}
 		}
 		if self.version != MANIFEST_VERSION {

@@ -1,9 +1,9 @@
 //! Files dropped onto the window, and the overlay while they hover over it.
 
-use eframe::egui::{self, Align2, Color32, FontId, Id, Order, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Id, Order, Vec2};
 
-use super::icons;
 use super::theme::{palette, semibold};
+use super::{icons, widgets};
 use crate::app::App;
 
 impl App {
@@ -48,22 +48,7 @@ impl App {
 			Id::unique("drop_overlay"),
 		));
 		painter.rect_filled(screen, 0.0, Color32::from_black_alpha(150));
-		let inner = screen.shrink(24.0);
-		let corners = [
-			inner.left_top(),
-			inner.right_top(),
-			inner.right_bottom(),
-			inner.left_bottom(),
-			inner.left_top(),
-		];
-		for pair in corners.windows(2) {
-			painter.extend(egui::Shape::dashed_line(
-				pair,
-				Stroke::new(2.0, p.accent),
-				10.0,
-				8.0,
-			));
-		}
+		widgets::dashed_rect(&painter, screen.shrink(24.0), 2.0, p.accent, (10.0, 8.0));
 		painter.text(
 			screen.center() - Vec2::new(0.0, 24.0),
 			Align2::CENTER_CENTER,

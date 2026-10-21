@@ -305,7 +305,13 @@ fn map_row(
 					}
 					None => {
 						let (rect, _) = ui.allocate_exact_size(thumb, Sense::hover());
-						widgets::dashed_rect(ui, rect, p.text_weak.gamma_multiply(0.55));
+						widgets::dashed_rect(
+							ui.painter(),
+							rect.shrink(1.0),
+							1.5,
+							p.text_weak.gamma_multiply(0.55),
+							(8.0, 6.0),
+						);
 						ui.vertical(|ui| {
 							ui.spacing_mut().item_spacing.y = 1.0;
 							ui.label(RichText::new(slot.label()).color(p.text_weak));
@@ -331,15 +337,12 @@ pub(super) fn header_backdrop(ui: &egui::Ui) {
 	let panel = ui.max_rect().expand(PANEL_MARGIN as f32);
 	let rect = egui::Rect::from_min_size(panel.min, Vec2::new(panel.width(), 170.0));
 	let painter = ui.painter().with_clip_rect(rect);
-	let mut mesh = egui::Mesh::default();
-	let top = p.accent.gamma_multiply(0.08);
-	mesh.colored_vertex(rect.left_top(), top);
-	mesh.colored_vertex(rect.right_top(), top);
-	mesh.colored_vertex(rect.right_bottom(), Color32::TRANSPARENT);
-	mesh.colored_vertex(rect.left_bottom(), Color32::TRANSPARENT);
-	mesh.add_triangle(0, 1, 2);
-	mesh.add_triangle(0, 2, 3);
-	painter.add(egui::Shape::mesh(mesh));
+	widgets::vertical_gradient(
+		&painter,
+		rect,
+		p.accent.gamma_multiply(0.08),
+		Color32::TRANSPARENT,
+	);
 	// Roblox's studs: one a cell, lit from the top left
 	const STEP: f32 = 20.0;
 	const RADIUS: f32 = 6.0;

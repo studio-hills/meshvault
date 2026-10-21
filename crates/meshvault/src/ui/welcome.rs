@@ -10,7 +10,7 @@ impl App {
 	pub(super) fn welcome(&mut self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
 		let area = ui.max_rect();
-		paint_gradient(ui, area, p.viewport_top, p.viewport_bottom);
+		widgets::vertical_gradient(ui.painter(), area, p.viewport_top, p.viewport_bottom);
 
 		// centred both ways: on the height the content took last frame
 		let width = 460.0_f32.min(area.width() - 32.0);
@@ -327,7 +327,13 @@ fn drop_zone(ui: &mut egui::Ui, text: &str) -> egui::Response {
 		p.panel.gamma_multiply(0.6)
 	};
 	ui.painter().rect_filled(rect, 10.0, fill);
-	widgets::dashed_rect(ui, rect, p.text_weak.gamma_multiply(0.55));
+	widgets::dashed_rect(
+		ui.painter(),
+		rect.shrink(1.0),
+		1.5,
+		p.text_weak.gamma_multiply(0.55),
+		(8.0, 6.0),
+	);
 	ui.painter().text(
 		rect.center() - Vec2::new(0.0, 10.0),
 		Align2::CENTER_CENTER,
@@ -343,16 +349,4 @@ fn drop_zone(ui: &mut egui::Ui, text: &str) -> egui::Response {
 		p.text_weak,
 	);
 	response
-}
-
-/// A vertical gradient matching the 3D viewport's background.
-pub fn paint_gradient(ui: &egui::Ui, rect: egui::Rect, top: egui::Color32, bottom: egui::Color32) {
-	let mut mesh = egui::Mesh::default();
-	mesh.colored_vertex(rect.left_top(), top);
-	mesh.colored_vertex(rect.right_top(), top);
-	mesh.colored_vertex(rect.right_bottom(), bottom);
-	mesh.colored_vertex(rect.left_bottom(), bottom);
-	mesh.add_triangle(0, 1, 2);
-	mesh.add_triangle(0, 2, 3);
-	ui.painter().add(egui::Shape::mesh(mesh));
 }

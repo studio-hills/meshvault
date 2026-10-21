@@ -104,7 +104,12 @@ pub fn show(
 ) -> Rect {
 	let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 	let painter = ui.painter_at(rect);
-	crate::ui::paint_gradient(ui, rect, settings.background[0], settings.background[1]);
+	crate::ui::vertical_gradient(
+		ui.painter(),
+		rect,
+		settings.background[0],
+		settings.background[1],
+	);
 
 	// --- input ---
 	if response.dragged_by(egui::PointerButton::Primary) {

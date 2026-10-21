@@ -4,7 +4,25 @@
 use super::{Browser, Status, StatusFilter, status};
 use crate::workspace::{AssetState, Item, ModelItem, Workspace};
 
+/// The search rule both the library and the import dialog use for a mesh:
+/// its name contains `needle`, or its id is exactly `needle`. `needle` is
+/// already lowercased. Folders are matched by the callers where they count.
+pub(in crate::ui) fn mesh_name_or_id_matches(needle: &str, name: &str, mesh_id: u64) -> bool {
+	name.to_lowercase().contains(needle) || mesh_id.to_string() == needle
+}
+
+/// Whether any of `folder`'s names contains `needle` (already lowercased).
+pub(in crate::ui) fn folder_matches(needle: &str, folder: &[String]) -> bool {
+	folder.iter().any(|f| f.to_lowercase().contains(needle))
+}
+
 impl Browser {
+	/// Lowercases the search once for this frame's rows. Called after the
+	/// search field is drawn, so an edit counts in the same frame.
+	pub(super) fn update_needle(&mut self) {
+		self.needle = self.search.to_lowercase();
+	}
+
 	/// The items a model's meshes are, where they are still in the workspace.
 	pub(super) fn model_items<'a>(
 		&'a self,
@@ -71,13 +89,8 @@ impl Browser {
 		if self.search.is_empty() {
 			return true;
 		}
-		let needle = self.search.to_lowercase();
-		item.name.to_lowercase().contains(&needle)
-			|| item
-				.folder
-				.iter()
-				.any(|f| f.to_lowercase().contains(&needle))
-			|| item.mesh_id.to_string() == needle
+		mesh_name_or_id_matches(&self.needle, &item.name, item.mesh_id)
+			|| folder_matches(&self.needle, &item.folder)
 	}
 
 	pub(super) fn model_matches(&self, ws: &Workspace, model: &ModelItem) -> bool {
@@ -98,10 +111,10 @@ impl Browser {
 		{
 			return false;
 		}
-		let needle = self.search.to_lowercase();
+		let needle = &self.needle;
 		needle.is_empty()
-			|| model.name.to_lowercase().contains(&needle)
-			|| model.path.to_lowercase().contains(&needle)
+			|| model.name.to_lowercase().contains(needle)
+			|| model.path.to_lowercase().contains(needle)
 	}
 
 	pub(super) fn narrowed(&self) -> bool {
@@ -186,6 +199,12 @@ mod tests {
 		(dir, ws, browser)
 	}
 
+	/// Types `text` into the search, as the search field does.
+	fn search(b: &mut Browser, text: &str) {
+		b.search = text.into();
+		b.update_needle();
+	}
+
 	fn shown_items<'a>(b: &Browser, ws: &'a Workspace) -> Vec<&'a str> {
 		ws.items()
 			.iter()
@@ -267,17 +286,17 @@ mod tests {
 			item("Rock", &["RS", "Props"], 678, done("2.mesh")),
 		];
 		let (_dir, ws, mut b) = fixture(items, Vec::new(), None);
-		b.search = "BODY".into();
+		search(&mut b, "BODY");
 		assert!(b.narrowed());
 		assert_eq!(shown_items(&b, &ws), ["Shark Body"]);
-		b.search = "prop".into();
+		search(&mut b, "prop");
 		assert_eq!(shown_items(&b, &ws), ["Rock"]);
-		b.search = "rs".into();
+		search(&mut b, "rs");
 		assert_eq!(shown_items(&b, &ws), ["Shark Body", "Rock"]);
-		b.search = "12345".into();
+		search(&mut b, "12345");
 		assert_eq!(shown_items(&b, &ws), ["Shark Body"]);
 		// part of an id is not enough
-		b.search = "1234".into();
+		search(&mut b, "1234");
 		assert!(shown_items(&b, &ws).is_empty());
 	}
 
@@ -349,14 +368,14 @@ mod tests {
 		let items = vec![item("Fin", &["Sea"], 42, done("1.mesh"))];
 		let models = vec![model("Shark", "Workspace/Animals/Shark", &["Sea/Fin"], 1)];
 		let (_dir, ws, mut b) = fixture(items, models, None);
-		b.search = "SHARK".into();
+		search(&mut b, "SHARK");
 		assert_eq!(shown_models(&b, &ws), ["Shark"]);
-		b.search = "animals".into();
+		search(&mut b, "animals");
 		assert_eq!(shown_models(&b, &ws), ["Shark"]);
 		// not by the meshes it uses
-		b.search = "fin".into();
+		search(&mut b, "fin");
 		assert!(shown_models(&b, &ws).is_empty());
-		b.search = "42".into();
+		search(&mut b, "42");
 		assert!(shown_models(&b, &ws).is_empty());
 	}
 

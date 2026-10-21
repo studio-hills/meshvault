@@ -565,24 +565,43 @@ pub fn truncated(
 	painter.layout_job(job)
 }
 
-/// A dashed rectangle with square corners, used as a drop target.
-pub fn dashed_rect(ui: &Ui, rect: egui::Rect, colour: Color32) {
-	let r = rect.shrink(1.0);
+/// A dashed outline along exactly `rect`, with square corners, used as a
+/// drop target. `dash` is the length of a dash and of the gap after it.
+pub fn dashed_rect(
+	painter: &egui::Painter,
+	rect: egui::Rect,
+	width: f32,
+	colour: Color32,
+	dash: (f32, f32),
+) {
 	let corners = [
-		r.left_top(),
-		r.right_top(),
-		r.right_bottom(),
-		r.left_bottom(),
-		r.left_top(),
+		rect.left_top(),
+		rect.right_top(),
+		rect.right_bottom(),
+		rect.left_bottom(),
+		rect.left_top(),
 	];
 	for pair in corners.windows(2) {
-		ui.painter().extend(egui::Shape::dashed_line(
+		painter.extend(egui::Shape::dashed_line(
 			pair,
-			Stroke::new(1.5, colour),
-			8.0,
-			6.0,
+			Stroke::new(width, colour),
+			dash.0,
+			dash.1,
 		));
 	}
+}
+
+/// Fills `rect` with `top` fading down into `bottom`, as the 3D viewport's
+/// background does. Clipped to whatever `painter` clips to.
+pub fn vertical_gradient(painter: &egui::Painter, rect: egui::Rect, top: Color32, bottom: Color32) {
+	let mut mesh = egui::Mesh::default();
+	mesh.colored_vertex(rect.left_top(), top);
+	mesh.colored_vertex(rect.right_top(), top);
+	mesh.colored_vertex(rect.right_bottom(), bottom);
+	mesh.colored_vertex(rect.left_bottom(), bottom);
+	mesh.add_triangle(0, 1, 2);
+	mesh.add_triangle(0, 2, 3);
+	painter.add(egui::Shape::mesh(mesh));
 }
 
 /// How far a panel's scroll bar sits into the panel's own right margin.

@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, RichText, Stroke};
 
+pub(super) use self::filter::{folder_matches, mesh_name_or_id_matches};
 use self::list::nothing_matches;
 use crate::export::Format;
 use crate::render::gpu::GpuRenderer;
@@ -113,6 +114,8 @@ struct Selection {
 #[derive(Default)]
 pub struct Browser {
 	search: String,
+	/// `search` lowercased, for matching this frame's rows.
+	needle: String,
 	status: StatusFilter,
 	filters: Filters,
 	view: View,
@@ -259,6 +262,7 @@ impl Browser {
 		}
 		ui.add_space(4.0);
 		self.search_row(ui);
+		self.update_needle();
 		ui.add_space(2.0);
 		self.status_chips(ui, items);
 		ui.add_space(4.0);

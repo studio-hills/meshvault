@@ -15,6 +15,7 @@ use crate::scene::maps::MapKind;
 use crate::studio::export_file::{Entry, Export};
 use crate::ui::format::plural;
 use crate::ui::icons;
+use crate::ui::library::{folder_matches, mesh_name_or_id_matches};
 use crate::ui::theme::{ROW, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::widgets;
@@ -56,6 +57,8 @@ pub struct ImportDialog {
 	skipped: Vec<String>,
 	warnings: Vec<String>,
 	search: String,
+	/// `search` lowercased, for matching this frame's rows.
+	needle: String,
 	download_now: bool,
 	/// Expand/collapse requested while drawing, applied on the next frame.
 	pending: Option<FolderCommand>,
@@ -163,6 +166,7 @@ impl ImportDialog {
 			skipped: export.skipped,
 			warnings: export.warnings,
 			search: String::new(),
+			needle: String::new(),
 			download_now: true,
 			pending: None,
 			first_frame: true,
@@ -190,20 +194,20 @@ impl ImportDialog {
 		if self.search.is_empty() {
 			return true;
 		}
-		let needle = self.search.to_lowercase();
-		let mesh_matches =
-			|e: &Entry| e.name.to_lowercase().contains(&needle) || e.mesh_id.to_string() == needle;
+		let needle = &self.needle;
+		let mesh_matches = |e: &Entry| mesh_name_or_id_matches(needle, &e.name, e.mesh_id);
 		match row {
+			// a model's own meshes by name or id only, not by their folders
 			Row::Model(i) => {
 				let m = &self.models[i];
-				m.path.to_lowercase().contains(&needle)
+				m.path.to_lowercase().contains(needle)
 					|| self.model_meshes[i]
 						.iter()
 						.any(|&e| mesh_matches(&self.entries[e]))
 			}
 			Row::Mesh(i) => {
 				let e = &self.entries[i];
-				mesh_matches(e) || e.folder.iter().any(|f| f.to_lowercase().contains(&needle))
+				mesh_matches(e) || folder_matches(needle, &e.folder)
 			}
 		}
 	}
@@ -367,6 +371,7 @@ impl ImportDialog {
 				});
 			});
 		});
+		self.needle = self.search.to_lowercase();
 		ui.add_space(4.0);
 
 		// summary and buttons below the list
@@ -785,6 +790,7 @@ mod tests {
 		dialog.show = KindFilter::All;
 		// searching a mesh name finds the model using it
 		dialog.search = "body".into();
+		dialog.needle = "body".into();
 		assert!(dialog.matches(0) && !dialog.matches(1));
 	}
 }

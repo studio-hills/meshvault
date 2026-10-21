@@ -38,11 +38,11 @@ pub enum StatusFilter {
 }
 
 pub enum Action {
-	Open(usize),
+	OpenItem(usize),
 	OpenModel(usize),
 	RemoveModels(Vec<usize>),
 	Retry(Vec<usize>),
-	Remove(Vec<usize>),
+	RemoveItems(Vec<usize>),
 	Reveal(PathBuf),
 	/// Removes meshes and animated models together (a selection).
 	RemoveSelection {
@@ -89,28 +89,30 @@ impl Filters {
 
 /// A row (or tile) of the library.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Key {
+enum Row {
+	/// An animated model, by index into the workspace's models.
 	Model(usize),
-	Item(usize),
+	/// A mesh, by index into the workspace's items.
+	Mesh(usize),
 }
 
 /// The library's selected rows, with what Shift-click needs to select a
 /// range of them.
 #[derive(Default)]
 struct Selection {
-	keys: BTreeSet<Key>,
+	keys: BTreeSet<Row>,
 	/// The row a Shift-click selects from.
-	anchor: Option<Key>,
+	anchor: Option<Row>,
 	/// Rows in the order they are drawn, gathered during this frame.
-	drawn: Vec<Key>,
+	drawn: Vec<Row>,
 	/// Rows in the order the previous frame drew them; clicks, handled
 	/// while this frame draws, select ranges from this complete list.
-	order: Vec<Key>,
+	order: Vec<Row>,
 }
 
 #[derive(Default)]
 pub struct Browser {
-	filter: String,
+	search: String,
 	status: StatusFilter,
 	filters: Filters,
 	view: View,
@@ -236,7 +238,7 @@ impl Browser {
 		if std::mem::take(&mut self.reveal)
 			&& let Some(item) = open_stem.and_then(|stem| items.iter().find(|i| i.stem == stem))
 		{
-			self.filter.clear();
+			self.search.clear();
 			self.status = StatusFilter::All;
 			self.filters = Filters::default();
 			self.view = View::List;

@@ -3,7 +3,7 @@
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Vec2};
 
 use super::menus::item_hover;
-use super::{Action, Browser, Key, SCOPE, Status, status, status_dot};
+use super::{Action, Browser, Row, SCOPE, Status, status, status_dot};
 use crate::ui::theme::{CAPTION, CONTROL_RADIUS, LIST_TEXT, Palette, ROW, palette};
 use crate::ui::tree::{self, FolderTree};
 use crate::ui::{icons, widgets};
@@ -71,7 +71,7 @@ impl Browser {
 			.body(|ui| {
 				for &i in &visible {
 					let model = &ws.models()[i];
-					let key = Key::Model(i);
+					let key = Row::Model(i);
 					let response = model_row(
 						ui,
 						&p,
@@ -163,7 +163,7 @@ impl Browser {
 						}
 						if ui.button("Select all inside").clicked() {
 							let mut s = self.selection.borrow_mut();
-							s.keys = visible.iter().map(|&i| Key::Item(i)).collect();
+							s.keys = visible.iter().map(|&i| Row::Mesh(i)).collect();
 							ui.close();
 						}
 						if let Some(first) = all.first() {
@@ -186,7 +186,7 @@ impl Browser {
 						)
 						.clicked()
 						{
-							actions.push(Action::Remove(all.clone()));
+							actions.push(Action::RemoveItems(all.clone()));
 							ui.close();
 						}
 					});
@@ -204,7 +204,7 @@ impl Browser {
 			}
 			let p = palette(ui.ctx());
 			let is_open = open_stem == Some(item.stem.as_str());
-			let key = Key::Item(i);
+			let key = Row::Mesh(i);
 			let response = item_row(ui, &p, item, is_open, self.is_selected(key));
 			self.drawn(key);
 			if is_open && self.scroll_to_open.replace(false) {

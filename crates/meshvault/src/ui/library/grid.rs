@@ -4,7 +4,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Sense, Stroke, V
 
 use super::list::nothing_matches;
 use super::menus::item_hover;
-use super::{Action, Browser, Key, Opened, Status, status, status_dot};
+use super::{Action, Browser, Opened, Row, Status, status, status_dot};
 use crate::render::thumbnails::Subject;
 use crate::ui::theme::{CAPTION, CARD_RADIUS, palette};
 use crate::ui::{icons, widgets};
@@ -19,10 +19,10 @@ const GAP: f32 = 6.0;
 /// folder and name, one section per folder.
 pub(super) fn grid_sections(
 	items: &[Item],
-	models: Vec<Key>,
+	models: Vec<Row>,
 	mut meshes: Vec<usize>,
-) -> (Vec<(String, Vec<Key>)>, Vec<String>) {
-	let mut sections: Vec<(String, Vec<Key>)> = Vec::new();
+) -> (Vec<(String, Vec<Row>)>, Vec<String>) {
+	let mut sections: Vec<(String, Vec<Row>)> = Vec::new();
 	if !models.is_empty() {
 		sections.push((
 			format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
@@ -42,12 +42,12 @@ pub(super) fn grid_sections(
 	for i in meshes {
 		let path = items[i].folder.join(" / ");
 		match sections.last_mut() {
-			Some((_, keys)) if paths.last() == Some(&path) => keys.push(Key::Item(i)),
+			Some((_, keys)) if paths.last() == Some(&path) => keys.push(Row::Mesh(i)),
 			_ => {
 				let name = items[i].folder.last().map_or("", String::as_str);
 				sections.push((
 					format!("{}  {name}", icons::FOLDER_SIMPLE),
-					vec![Key::Item(i)],
+					vec![Row::Mesh(i)],
 				));
 				paths.push(path);
 			}
@@ -66,9 +66,9 @@ impl Browser {
 		actions: &mut Vec<Action>,
 	) {
 		let items = ws.items();
-		let models: Vec<Key> = (0..ws.models().len())
+		let models: Vec<Row> = (0..ws.models().len())
 			.filter(|&i| self.model_matches(ws, &ws.models()[i]))
-			.map(Key::Model)
+			.map(Row::Model)
 			.collect();
 		let meshes: Vec<usize> = (0..items.len())
 			.filter(|&i| self.matches(&items[i]))
@@ -104,7 +104,7 @@ impl Browser {
 		&mut self,
 		ui: &mut egui::Ui,
 		ws: &Workspace,
-		key: Key,
+		key: Row,
 		side: f32,
 		opened: Opened<'_>,
 		actions: &mut Vec<Action>,
@@ -115,7 +115,7 @@ impl Browser {
 			ui.allocate_exact_size(Vec2::new(side, side + label_height), Sense::click());
 		self.drawn(key);
 		let (name, open, s, subject) = match key {
-			Key::Model(i) => {
+			Row::Model(i) => {
 				let m = &ws.models()[i];
 				(
 					m.name.as_str(),
@@ -124,7 +124,7 @@ impl Browser {
 					Subject::Model(m.path.clone()),
 				)
 			}
-			Key::Item(i) => {
+			Row::Mesh(i) => {
 				let item = &ws.items()[i];
 				(
 					item.name.as_str(),
@@ -166,8 +166,8 @@ impl Browser {
 				}
 				None => {
 					let icon = match key {
-						Key::Model(_) => icons::PERSON_SIMPLE_RUN,
-						Key::Item(_) => icons::CUBE,
+						Row::Model(_) => icons::PERSON_SIMPLE_RUN,
+						Row::Mesh(_) => icons::CUBE,
 					};
 					painter.text(
 						picture.center(),
@@ -182,7 +182,7 @@ impl Browser {
 			if s != Status::Done {
 				status_dot(&painter, &p, picture.left_top() + Vec2::new(10.0, 10.0), s);
 			}
-			if let Key::Model(i) = key {
+			if let Row::Model(i) = key {
 				let clips = format!("{} {}", icons::FILM_STRIP, ws.models()[i].playable_clips);
 				painter.text(
 					picture.right_top() + Vec2::new(-8.0, 8.0),
@@ -208,8 +208,8 @@ impl Browser {
 		}
 		let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 		let response = match key {
-			Key::Model(i) => response.on_hover_text(self.model_hover(ws, &ws.models()[i])),
-			Key::Item(i) => response.on_hover_text(format!(
+			Row::Model(i) => response.on_hover_text(self.model_hover(ws, &ws.models()[i])),
+			Row::Mesh(i) => response.on_hover_text(format!(
 				"{}\n{}",
 				ws.items()[i].folder.join(" / "),
 				item_hover(&ws.items()[i])
@@ -219,8 +219,8 @@ impl Browser {
 			self.click(ui, key, actions);
 		}
 		response.context_menu(|ui| match key {
-			Key::Model(i) => self.model_menu(ui, ws, i, actions),
-			Key::Item(i) => self.item_menu(ui, ws, i, actions),
+			Row::Model(i) => self.model_menu(ui, ws, i, actions),
+			Row::Mesh(i) => self.item_menu(ui, ws, i, actions),
 		});
 	}
 }

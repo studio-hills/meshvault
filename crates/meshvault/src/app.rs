@@ -774,7 +774,7 @@ impl App {
 	pub fn handle_browser(&mut self, actions: Vec<ui::library::Action>) {
 		for action in actions {
 			match action {
-				ui::library::Action::Open(i) => self.open_item(i),
+				ui::library::Action::OpenItem(i) => self.open_item(i),
 				ui::library::Action::OpenModel(i) => self.open_model(i),
 				ui::library::Action::RemoveModels(models) => {
 					self.ask(ConfirmAction::RemoveModels(models))
@@ -786,7 +786,9 @@ impl App {
 					self.start_downloads();
 				}
 				// deletes files, so it is confirmed first
-				ui::library::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
+				ui::library::Action::RemoveItems(items) => {
+					self.ask(ConfirmAction::RemoveItems(items))
+				}
 				ui::library::Action::Reveal(path) => {
 					// a failure to start the file browser is not shown yet
 					let _ = crate::platform::reveal(&path);

@@ -30,7 +30,7 @@ enum Row {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Show {
+enum KindFilter {
 	All,
 	Animated,
 	Meshes,
@@ -52,10 +52,10 @@ pub struct ImportDialog {
 	tree: FolderTree,
 	/// Which kinds of map to download.
 	kinds: BTreeMap<MapKind, bool>,
-	show: Show,
+	show: KindFilter,
 	skipped: Vec<String>,
 	warnings: Vec<String>,
-	filter: String,
+	search: String,
 	download_now: bool,
 	/// Expand/collapse requested while drawing, applied on the next frame.
 	pending: Option<FolderCommand>,
@@ -154,7 +154,7 @@ impl ImportDialog {
 			rows,
 			tree,
 			kinds: MapKind::ALL.iter().map(|&k| (k, true)).collect(),
-			show: Show::All,
+			show: KindFilter::All,
 			existing,
 			model_existing,
 			model_meshes,
@@ -162,7 +162,7 @@ impl ImportDialog {
 			entries: export.entries,
 			skipped: export.skipped,
 			warnings: export.warnings,
-			filter: String::new(),
+			search: String::new(),
 			download_now: true,
 			pending: None,
 			first_frame: true,
@@ -180,15 +180,17 @@ impl ImportDialog {
 		let row = self.rows[r];
 		let kind_ok = matches!(
 			(self.show, row),
-			(Show::All, _) | (Show::Animated, Row::Model(_)) | (Show::Meshes, Row::Mesh(_))
+			(KindFilter::All, _)
+				| (KindFilter::Animated, Row::Model(_))
+				| (KindFilter::Meshes, Row::Mesh(_))
 		);
 		if !kind_ok {
 			return false;
 		}
-		if self.filter.is_empty() {
+		if self.search.is_empty() {
 			return true;
 		}
-		let needle = self.filter.to_lowercase();
+		let needle = self.search.to_lowercase();
 		let mesh_matches =
 			|e: &Entry| e.name.to_lowercase().contains(&needle) || e.mesh_id.to_string() == needle;
 		match row {
@@ -349,16 +351,16 @@ impl ImportDialog {
 						ui,
 						&mut self.show,
 						&[
-							(Show::All, "All"),
-							(Show::Animated, "Animated"),
-							(Show::Meshes, "Meshes"),
+							(KindFilter::All, "All"),
+							(KindFilter::Animated, "Animated"),
+							(KindFilter::Meshes, "Meshes"),
 						],
 					);
 				}
 				ui.add_space(8.0);
 				ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
 					ui.add(
-						widgets::input(&mut self.filter)
+						widgets::input(&mut self.search)
 							.hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
 							.desired_width(ui.available_width()),
 					);
@@ -396,7 +398,7 @@ impl ImportDialog {
 		}
 		let selected = visible.iter().filter(|&&r| self.selected[r]).count();
 		let mut all = selected == visible.len();
-		let label = if self.filter.is_empty() && self.show == Show::All {
+		let label = if self.search.is_empty() && self.show == KindFilter::All {
 			"Select all".to_string()
 		} else {
 			format!("Select all {} shown", visible.len())
@@ -559,7 +561,7 @@ impl ImportDialog {
 				false,
 			);
 			// searching expands everything so matches are visible
-			if !self.filter.is_empty() {
+			if !self.search.is_empty() {
 				state.set_open(true);
 			}
 			let (arrow, _, _) = state
@@ -778,11 +780,11 @@ mod tests {
 		dialog.kinds.insert(MapKind::Texture, false);
 		assert!(dialog.chosen_maps(0).is_empty());
 
-		dialog.show = Show::Meshes;
+		dialog.show = KindFilter::Meshes;
 		assert!(!dialog.matches(0) && dialog.matches(1));
-		dialog.show = Show::All;
+		dialog.show = KindFilter::All;
 		// searching a mesh name finds the model using it
-		dialog.filter = "body".into();
+		dialog.search = "body".into();
 		assert!(dialog.matches(0) && !dialog.matches(1));
 	}
 }

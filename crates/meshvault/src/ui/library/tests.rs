@@ -108,14 +108,14 @@ fn shown_models<'a>(b: &Browser, ws: &'a Workspace) -> Vec<&'a str> {
 
 // ------------------------------------------------------------ selection
 
-const M0: Key = Key::Model(0);
-const I0: Key = Key::Item(0);
-const I1: Key = Key::Item(1);
-const I2: Key = Key::Item(2);
-const I3: Key = Key::Item(3);
+const M0: Row = Row::Model(0);
+const I0: Row = Row::Mesh(0);
+const I1: Row = Row::Mesh(1);
+const I2: Row = Row::Mesh(2);
+const I3: Row = Row::Mesh(3);
 
 /// A selection of `keys` with rows M0, I0, I1, I2 drawn last frame.
-fn selection(keys: &[Key], anchor: Option<Key>) -> Selection {
+fn selection(keys: &[Row], anchor: Option<Row>) -> Selection {
 	Selection {
 		keys: keys.iter().copied().collect(),
 		anchor,
@@ -124,7 +124,7 @@ fn selection(keys: &[Key], anchor: Option<Key>) -> Selection {
 	}
 }
 
-fn keys(s: &Selection) -> Vec<Key> {
+fn keys(s: &Selection) -> Vec<Row> {
 	s.keys.iter().copied().collect()
 }
 
@@ -277,17 +277,17 @@ fn search_finds_names_folders_and_exact_mesh_ids() {
 		item("Rock", &["RS", "Props"], 678, done("2.mesh")),
 	];
 	let (_dir, ws, mut b) = fixture(items, Vec::new(), None);
-	b.filter = "BODY".into();
+	b.search = "BODY".into();
 	assert!(b.narrowed());
 	assert_eq!(shown_items(&b, &ws), ["Shark Body"]);
-	b.filter = "prop".into();
+	b.search = "prop".into();
 	assert_eq!(shown_items(&b, &ws), ["Rock"]);
-	b.filter = "rs".into();
+	b.search = "rs".into();
 	assert_eq!(shown_items(&b, &ws), ["Shark Body", "Rock"]);
-	b.filter = "12345".into();
+	b.search = "12345".into();
 	assert_eq!(shown_items(&b, &ws), ["Shark Body"]);
 	// part of an id is not enough
-	b.filter = "1234".into();
+	b.search = "1234".into();
 	assert!(shown_items(&b, &ws).is_empty());
 }
 
@@ -359,14 +359,14 @@ fn models_are_searched_by_name_and_path_only() {
 	let items = vec![item("Fin", &["Sea"], 42, done("1.mesh"))];
 	let models = vec![model("Shark", "Workspace/Animals/Shark", &["Sea/Fin"], 1)];
 	let (_dir, ws, mut b) = fixture(items, models, None);
-	b.filter = "SHARK".into();
+	b.search = "SHARK".into();
 	assert_eq!(shown_models(&b, &ws), ["Shark"]);
-	b.filter = "animals".into();
+	b.search = "animals".into();
 	assert_eq!(shown_models(&b, &ws), ["Shark"]);
 	// not by the meshes it uses
-	b.filter = "fin".into();
+	b.search = "fin".into();
 	assert!(shown_models(&b, &ws).is_empty());
-	b.filter = "42".into();
+	b.search = "42".into();
 	assert!(shown_models(&b, &ws).is_empty());
 }
 
@@ -508,14 +508,14 @@ fn grid_meshes_group_by_folder_in_order() {
 	assert_eq!(
 		sections,
 		[
-			(folder_title(""), vec![Key::Item(1)]),
+			(folder_title(""), vec![Row::Mesh(1)]),
 			// names sort without regard to case
 			(
 				folder_title("Props"),
-				vec![Key::Item(3), Key::Item(0), Key::Item(5)]
+				vec![Row::Mesh(3), Row::Mesh(0), Row::Mesh(5)]
 			),
-			(folder_title("Indoor"), vec![Key::Item(4)]),
-			(folder_title("Sea"), vec![Key::Item(2)]),
+			(folder_title("Indoor"), vec![Row::Mesh(4)]),
+			(folder_title("Sea"), vec![Row::Mesh(2)]),
 		]
 	);
 }
@@ -527,17 +527,17 @@ fn grid_puts_models_first_and_root_meshes_with_them_today() {
 	// fixed.
 	let items = grid_items();
 	let (sections, paths) =
-		grid_sections(&items, vec![Key::Model(1), Key::Model(0)], vec![5, 1, 2]);
+		grid_sections(&items, vec![Row::Model(1), Row::Model(0)], vec![5, 1, 2]);
 	assert_eq!(paths, ["", "Props", "Sea"]);
 	assert_eq!(
 		sections,
 		[
 			(
 				format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
-				vec![Key::Model(1), Key::Model(0), Key::Item(1)],
+				vec![Row::Model(1), Row::Model(0), Row::Mesh(1)],
 			),
-			(folder_title("Props"), vec![Key::Item(5)]),
-			(folder_title("Sea"), vec![Key::Item(2)]),
+			(folder_title("Props"), vec![Row::Mesh(5)]),
+			(folder_title("Sea"), vec![Row::Mesh(2)]),
 		]
 	);
 }

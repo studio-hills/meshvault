@@ -68,10 +68,10 @@ impl Browser {
 		{
 			return false;
 		}
-		if self.filter.is_empty() {
+		if self.search.is_empty() {
 			return true;
 		}
-		let needle = self.filter.to_lowercase();
+		let needle = self.search.to_lowercase();
 		item.name.to_lowercase().contains(&needle)
 			|| item
 				.folder
@@ -98,13 +98,13 @@ impl Browser {
 		{
 			return false;
 		}
-		let needle = self.filter.to_lowercase();
+		let needle = self.search.to_lowercase();
 		needle.is_empty()
 			|| model.name.to_lowercase().contains(&needle)
 			|| model.path.to_lowercase().contains(&needle)
 	}
 
 	pub(super) fn narrowed(&self) -> bool {
-		!self.filter.is_empty() || self.status != StatusFilter::All || self.filters.count() > 0
+		!self.search.is_empty() || self.status != StatusFilter::All || self.filters.count() > 0
 	}
 }

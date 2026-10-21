@@ -112,19 +112,19 @@ impl Browser {
 	pub(super) fn search_row(&mut self, ui: &mut egui::Ui) {
 		ui.horizontal(|ui| {
 			let button = ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
-			let buttons = if self.filter.is_empty() { 1.0 } else { 2.0 };
+			let buttons = if self.search.is_empty() { 1.0 } else { 2.0 };
 			ui.add(
-				widgets::input(&mut self.filter)
+				widgets::input(&mut self.search)
 					.hint_text(format!(
 						"{}  Search name, folder or id",
 						icons::MAGNIFYING_GLASS
 					))
 					.desired_width(ui.available_width() - button * buttons),
 			);
-			if !self.filter.is_empty()
+			if !self.search.is_empty()
 				&& widgets::icon_button(ui, icons::X, "Clear search").clicked()
 			{
-				self.filter.clear();
+				self.search.clear();
 			}
 			self.filter_button(ui);
 		});

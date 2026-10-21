@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use super::{Action, Browser, Key};
+use super::{Action, Browser, Row};
 use crate::export::Format;
 use crate::ui::{icons, widgets};
 use crate::workspace::{AssetState, Item, ModelItem, Workspace};
@@ -103,7 +103,7 @@ impl Browser {
 		i: usize,
 		actions: &mut Vec<Action>,
 	) {
-		if self.in_multi_selection(Key::Model(i)) {
+		if self.in_multi_selection(Row::Model(i)) {
 			self.selection_menu(ui, ws, actions);
 			return;
 		}
@@ -136,14 +136,14 @@ impl Browser {
 		i: usize,
 		actions: &mut Vec<Action>,
 	) {
-		if self.in_multi_selection(Key::Item(i)) {
+		if self.in_multi_selection(Row::Mesh(i)) {
 			self.selection_menu(ui, ws, actions);
 			return;
 		}
 		let item = &ws.items()[i];
 		widgets::menu_style(ui);
 		if ui.button("Open").clicked() {
-			actions.push(Action::Open(i));
+			actions.push(Action::OpenItem(i));
 			ui.close();
 		}
 		if item.has_failure() && ui.button("Retry").clicked() {
@@ -165,7 +165,7 @@ impl Browser {
 		}
 		ui.separator();
 		if widgets::danger_item(ui, format!("{}  Remove from workspace", icons::TRASH)).clicked() {
-			actions.push(Action::Remove(vec![i]));
+			actions.push(Action::RemoveItems(vec![i]));
 			ui.close();
 		}
 	}

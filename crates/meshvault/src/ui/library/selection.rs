@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use eframe::egui::{self, CornerRadius, RichText};
 
 use super::menus::export_items;
-use super::{Action, Browser, Key, Selection};
+use super::{Action, Browser, Row, Selection};
 use crate::ui::theme::{CARD_RADIUS, CONTROL_XXS, palette};
 use crate::ui::{icons, widgets};
 use crate::workspace::Workspace;
@@ -16,7 +16,7 @@ impl Selection {
 	/// Shift selects the rows in `order` from the anchor (added to the
 	/// selection with Ctrl too) and leaves the anchor where it is; without
 	/// an anchor in `order`, it counts as a click without Shift.
-	pub(super) fn click(&mut self, key: Key, shift: bool, command: bool) -> Option<Key> {
+	pub(super) fn click(&mut self, key: Row, shift: bool, command: bool) -> Option<Row> {
 		if shift
 			&& let Some(anchor) = self.anchor
 			&& let (Some(a), Some(b)) = (
@@ -26,7 +26,7 @@ impl Selection {
 			if !command {
 				self.keys.clear();
 			}
-			let range: Vec<Key> = self.order[a.min(b)..=a.max(b)].to_vec();
+			let range: Vec<Row> = self.order[a.min(b)..=a.max(b)].to_vec();
 			self.keys.extend(range);
 			return None;
 		}
@@ -46,23 +46,23 @@ impl Browser {
 	/// A click on a row: a plain click opens it and selects only it, Ctrl
 	/// adds or takes it away, and Shift selects the rows from the last one
 	/// clicked.
-	pub(super) fn click(&self, ui: &egui::Ui, key: Key, actions: &mut Vec<Action>) {
+	pub(super) fn click(&self, ui: &egui::Ui, key: Row, actions: &mut Vec<Action>) {
 		let m = ui.input(|i| i.modifiers);
 		let open = self.selection.borrow_mut().click(key, m.shift, m.command);
 		if let Some(key) = open {
 			actions.push(match key {
-				Key::Model(i) => Action::OpenModel(i),
-				Key::Item(i) => Action::Open(i),
+				Row::Model(i) => Action::OpenModel(i),
+				Row::Mesh(i) => Action::OpenItem(i),
 			});
 		}
 	}
 
-	pub(super) fn is_selected(&self, key: Key) -> bool {
+	pub(super) fn is_selected(&self, key: Row) -> bool {
 		self.selection.borrow().keys.contains(&key)
 	}
 
 	/// Notes a row as drawn, for Shift-click ranges and Ctrl+A.
-	pub(super) fn drawn(&self, key: Key) {
+	pub(super) fn drawn(&self, key: Row) {
 		self.selection.borrow_mut().drawn.push(key);
 	}
 
@@ -73,16 +73,16 @@ impl Browser {
 			.keys
 			.iter()
 			.filter_map(|k| match k {
-				Key::Item(i) => Some(*i),
-				Key::Model(_) => None,
+				Row::Mesh(i) => Some(*i),
+				Row::Model(_) => None,
 			})
 			.collect();
 		let models = s
 			.keys
 			.iter()
 			.filter_map(|k| match k {
-				Key::Model(i) => Some(*i),
-				Key::Item(_) => None,
+				Row::Model(i) => Some(*i),
+				Row::Mesh(_) => None,
 			})
 			.collect();
 		(items, models)
@@ -107,7 +107,7 @@ impl Browser {
 	}
 
 	/// A right-click on a row in a selection of several acts on all of them.
-	pub(super) fn in_multi_selection(&self, key: Key) -> bool {
+	pub(super) fn in_multi_selection(&self, key: Row) -> bool {
 		let s = self.selection.borrow();
 		s.keys.len() > 1 && s.keys.contains(&key)
 	}

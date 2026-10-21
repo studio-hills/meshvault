@@ -33,7 +33,10 @@ where
 	if end < pos {
 		return Err(binrw::Error::AssertFail {
 			pos: start,
-			message: format!("chunk payload overran its size of {size} bytes by {}", pos - end),
+			message: format!(
+				"chunk payload overran its size of {size} bytes by {}",
+				pos - end
+			),
 		});
 	}
 	reader.seek(std::io::SeekFrom::Start(end))?;

@@ -89,7 +89,12 @@ fn mesh_700() {
 		assert_eq!(core.vertices.len(), 408);
 		assert_eq!(core.faces.len(), 268);
 		let vertex_count = core.vertices.len() as u32;
-		assert!(core.faces.iter().flat_map(|f| &f.0).all(|v| v.0 < vertex_count));
+		assert!(
+			core.faces
+				.iter()
+				.flat_map(|f| &f.0)
+				.all(|v| v.0 < vertex_count)
+		);
 		assert_debug_digest!(core, 0x5f2c52814f8f1186);
 	}
 }

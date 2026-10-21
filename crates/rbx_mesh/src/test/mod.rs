@@ -26,9 +26,11 @@ use std::io::Cursor;
 
 /// 64-bit FNV-1a of `value`'s pretty Debug output.
 pub fn debug_digest(value: &impl std::fmt::Debug) -> u64 {
-	format!("{value:#?}").bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-		(hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-	})
+	format!("{value:#?}")
+		.bytes()
+		.fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+			(hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+		})
 }
 
 fn binread<M>(bytes: Vec<u8>) -> binrw::BinResult<(M, Cursor<Vec<u8>>)>

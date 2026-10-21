@@ -62,8 +62,9 @@ mod draco {
 				.map_err(DracoError::Decode)?;
 
 			let n = mesh.num_points();
-			let attributes: Vec<&PointAttribute> =
-				(0..mesh.num_attributes()).map(|i| mesh.attribute(i)).collect();
+			let attributes: Vec<&PointAttribute> = (0..mesh.num_attributes())
+				.map(|i| mesh.attribute(i))
+				.collect();
 			let find = |ty: GeometryAttributeType, components: Option<u8>| {
 				attributes.iter().copied().find(|a| {
 					a.attribute_type() == ty && components.is_none_or(|c| a.num_components() == c)

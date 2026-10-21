@@ -145,3 +145,25 @@ fn read(path: &Path) -> MeshFacts {
 		triangles: geometry.triangles.len(),
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::test_support::{SAMPLE_MESHES, TempDir};
+
+	#[test]
+	fn reads_a_mesh() {
+		let facts = read(&Path::new(SAMPLE_MESHES).join("torso.mesh"));
+		assert!(facts.triangles > 0);
+	}
+
+	/// A file that is missing or does not decode reads as empty and
+	/// unskinned (and is then cached as that).
+	#[test]
+	fn a_bad_file_reads_as_empty() {
+		let dir = TempDir::new("facts_bad");
+		assert_eq!(read(&dir.join("missing.mesh")), MeshFacts::default());
+		std::fs::write(dir.join("bad.mesh"), b"version 9.99\nnot a mesh").unwrap();
+		assert_eq!(read(&dir.join("bad.mesh")), MeshFacts::default());
+	}
+}

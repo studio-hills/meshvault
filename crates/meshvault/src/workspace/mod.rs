@@ -882,4 +882,102 @@ mod tests {
 		assert!(saved.contains("\"version\": 3"));
 		assert!(!saved.contains("texture_id"));
 	}
+
+	/// Opening a workspace queues again a map whose file has gone, like a
+	/// mesh; files still there stay done.
+	#[test]
+	fn open_queues_missing_maps_again() {
+		let dir = TempDir::new("ws_missing_maps");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([entry(
+			"",
+			"A",
+			1,
+			&[(MapKind::Color, 2), (MapKind::Normal, 3)],
+		)]);
+		std::fs::create_dir_all(dir.join("Models")).unwrap();
+		for file in ["Models/A.mesh", "Models/A.png"] {
+			std::fs::write(dir.join(file), b"x").unwrap();
+		}
+		let done = |path: &str| AssetState::Done { path: path.into() };
+		ws.set_state("Models/A", AssetKind::Mesh, done("Models/A.mesh"));
+		ws.set_state(
+			"Models/A",
+			AssetKind::Map(MapKind::Color),
+			done("Models/A.png"),
+		);
+		ws.set_state(
+			"Models/A",
+			AssetKind::Map(MapKind::Normal),
+			done("Models/A_normal.png"),
+		);
+		ws.save_if_dirty().unwrap();
+
+		let reopened = Workspace::open(&dir).unwrap();
+		let a = &reopened.items()[0];
+		assert_eq!(a.mesh, done("Models/A.mesh"));
+		assert_eq!(a.maps[&MapKind::Color].state, done("Models/A.png"));
+		assert_eq!(a.maps[&MapKind::Normal].state, AssetState::Pending);
+		// so it is saved again
+		assert!(reopened.dirty);
+	}
+
+	/// Removing an item deletes its organised files, keeps the cached
+	/// download and frees its stem, so importing it again gets the same one.
+	#[test]
+	fn remove_deletes_files_and_frees_the_stem() {
+		let dir = TempDir::new("ws_remove");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([entry("F", "A", 1, &[]), entry("F", "B", 2, &[])]);
+		std::fs::create_dir_all(dir.join("Models/F")).unwrap();
+		std::fs::write(dir.join("Models/F/A.mesh"), b"x").unwrap();
+		let cache = cache_path(&dir, 1);
+		std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+		std::fs::write(&cache, b"x").unwrap();
+		ws.set_state(
+			"Models/F/A",
+			AssetKind::Mesh,
+			AssetState::Done {
+				path: "Models/F/A.mesh".into(),
+			},
+		);
+		let generation = ws.generation();
+
+		// an index past the end is skipped
+		ws.remove(&[0, 0, 9]);
+		assert_eq!(ws.items().len(), 1);
+		assert_eq!(ws.items()[0].stem, "Models/F/B");
+		assert!(!dir.join("Models/F/A.mesh").exists());
+		assert!(cache.exists());
+		assert_eq!(ws.generation(), generation + 1);
+
+		let (stem, new) = ws.add_entry(&entry("F", "a", 1, &[]));
+		assert!(new);
+		assert_eq!(stem, "Models/F/a");
+	}
+
+	/// A download that finishes after its item was removed changes nothing.
+	#[test]
+	fn set_state_ignores_removed_items() {
+		let dir = TempDir::new("ws_set_state");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([entry("", "A", 1, &[(MapKind::Color, 2)])]);
+		ws.remove(&[0]);
+		ws.save_if_dirty().unwrap();
+		let done = AssetState::Done {
+			path: "Models/A.mesh".into(),
+		};
+		ws.set_state("Models/A", AssetKind::Mesh, done.clone());
+		ws.set_state("Models/A", AssetKind::Map(MapKind::Color), done.clone());
+		assert!(ws.items().is_empty());
+		assert!(!ws.dirty);
+
+		// nor does a map the item does not have, or an image no model uses
+		ws.add([entry("", "B", 3, &[])]);
+		ws.save_if_dirty().unwrap();
+		ws.set_state("Models/B", AssetKind::Map(MapKind::Normal), done.clone());
+		ws.set_state("Images/5", AssetKind::Image, done);
+		assert!(ws.items()[0].maps.is_empty());
+		assert!(!ws.dirty);
+	}
 }

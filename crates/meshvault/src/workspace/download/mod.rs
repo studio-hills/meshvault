@@ -423,4 +423,29 @@ mod tests {
 		// the viewer can open what was downloaded
 		assert!(crate::scene::geometry::load(&mesh).is_ok());
 	}
+
+	/// Cancelling drops the queued jobs from the total, so the progress
+	/// counts only what was started; the jobs already done stay counted.
+	#[test]
+	fn cancel_takes_the_queued_jobs_off_the_total() {
+		let mut downloader = Downloader::default();
+		let job = |asset_id| Job {
+			asset_id,
+			targets: vec![(
+				format!("Models/{asset_id}"),
+				crate::workspace::AssetKind::Mesh,
+			)],
+		};
+		downloader.shared.queue().extend([job(1), job(2), job(3)]);
+		downloader.total = 5;
+		downloader.completed = 2;
+		downloader.cancel();
+		assert_eq!(downloader.total, 2);
+		assert_eq!(downloader.completed, 2);
+		assert!(downloader.shared.queue().is_empty());
+		assert!(downloader.shared.cancel.load(Ordering::SeqCst));
+		// cancelling again with nothing queued changes nothing
+		downloader.cancel();
+		assert_eq!(downloader.total, 2);
+	}
 }

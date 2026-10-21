@@ -317,6 +317,7 @@ mod tests {
 	use crate::workspace::download::test_server::{client, serve};
 	use crate::workspace::store::sniff_extension;
 	use std::io::Write;
+	use std::sync::Arc;
 
 	#[test]
 	fn api_key_follows_location_without_leaking_key() {
@@ -395,6 +396,72 @@ mod tests {
 			c.fetch_with_retry(3, false, &cancel),
 			Err(FetchError::Transient(..))
 		));
+	}
+
+	/// Cancelling while waiting to retry ends the wait at once, after the
+	/// one request already made.
+	#[test]
+	fn cancel_ends_a_retry_wait() {
+		let (base, log) = serve(vec![(
+			"/oc/3",
+			429,
+			vec![("Retry-After", "30".into())],
+			vec![],
+		)]);
+		let c = client(&base, AuthMethod::ApiKey);
+		let cancel = Arc::new(AtomicBool::new(false));
+		let canceller = {
+			let cancel = cancel.clone();
+			std::thread::spawn(move || {
+				std::thread::sleep(Duration::from_millis(200));
+				cancel.store(true, Ordering::Relaxed);
+			})
+		};
+		let started = std::time::Instant::now();
+		let result = c.fetch_with_retry(3, false, &cancel);
+		canceller.join().unwrap();
+		assert!(
+			started.elapsed() < Duration::from_secs(10),
+			"the 30 s wait ran on"
+		);
+		assert!(matches!(result, Err(FetchError::Transient(_, None))));
+		assert_eq!(log.lock().unwrap().len(), 1);
+	}
+
+	/// Today a cancel set before the call still lets the first request
+	/// through; it is only seen in the wait before a retry.
+	#[test]
+	fn cancel_set_first_still_makes_one_request() {
+		let (base, log) = serve(vec![(
+			"/oc/3",
+			429,
+			vec![("Retry-After", "30".into())],
+			vec![],
+		)]);
+		let c = client(&base, AuthMethod::ApiKey);
+		let cancel = AtomicBool::new(true);
+		let result = c.fetch_with_retry(3, false, &cancel);
+		assert!(matches!(result, Err(FetchError::Transient(_, None))));
+		assert_eq!(log.lock().unwrap().len(), 1);
+	}
+
+	#[test]
+	fn reads_the_image_id_from_a_decal() {
+		let decal = |url: &str| {
+			format!(
+				"<roblox><Item class=\"Decal\"><Content name=\"Texture\"><url>{url}</url></Content></Item></roblox>"
+			)
+		};
+		let id = |xml: String| decal_image_id(xml.as_bytes());
+		assert_eq!(id(decal("http://www.roblox.com/asset/?id=11")), Some(11));
+		assert_eq!(id(decal("rbxassetid://12")), Some(12));
+		assert_eq!(id(decal(" 13 ")), Some(13));
+		assert_eq!(id(decal("rbxasset://textures/face.png")), None);
+		assert_eq!(id(decal("")), None);
+		// the first url is the one used
+		assert_eq!(id(format!("{}{}", decal("14"), decal("15"))), Some(14));
+		assert_eq!(id("<roblox><url>16".into()), None);
+		assert_eq!(id("<roblox></roblox>".into()), None);
 	}
 
 	#[test]

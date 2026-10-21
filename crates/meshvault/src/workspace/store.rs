@@ -55,3 +55,42 @@ pub fn store(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String
 	}
 	Ok(written)
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::scene::maps::MapKind;
+
+	#[test]
+	fn sniffs_each_kind_of_file() {
+		let mesh = AssetKind::Mesh;
+		let map = AssetKind::Map(MapKind::Color);
+		assert_eq!(sniff_extension(b"version 4.00\n", mesh), "mesh");
+		assert_eq!(sniff_extension(b"\x89PNG\r\n\x1a\n", map), "png");
+		assert_eq!(sniff_extension(&[0xFF, 0xD8, 0xFF, 0xE0], map), "jpg");
+		assert_eq!(sniff_extension(b"RIFF\0\0\0\0WEBPVP8 ", map), "webp");
+		assert_eq!(sniff_extension(b"<roblox!\x89\xff", mesh), "rbxm");
+		assert_eq!(sniff_extension(b"<roblox xmlns:xmime=", map), "rbxmx");
+		assert_eq!(sniff_extension(b"something else", mesh), "bin");
+		assert_eq!(sniff_extension(b"", map), "bin");
+	}
+
+	/// "BM" starts too many other files to trust it for a mesh.
+	#[test]
+	fn bmp_is_only_sniffed_for_images() {
+		assert_eq!(
+			sniff_extension(b"BM\x36\0", AssetKind::Map(MapKind::Normal)),
+			"bmp"
+		);
+		assert_eq!(sniff_extension(b"BM\x36\0", AssetKind::Image), "bmp");
+		assert_eq!(sniff_extension(b"BM\x36\0", AssetKind::Mesh), "bin");
+	}
+
+	/// WEBP needs more than its 12-byte header, and "WEBP" in the right place.
+	#[test]
+	fn webp_needs_its_whole_header() {
+		let map = AssetKind::Map(MapKind::Color);
+		assert_eq!(sniff_extension(b"RIFF\0\0\0\0WEBP", map), "bin");
+		assert_eq!(sniff_extension(b"RIFF\0\0\0\0WAVEfmt ", map), "bin");
+	}
+}

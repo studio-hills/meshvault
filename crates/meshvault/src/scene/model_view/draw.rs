@@ -94,42 +94,47 @@ impl ModelView {
 				// SpecialMesh.Offset moves the mesh in the part's own space
 				let in_part = CFrame::from_position(*offset);
 				let world = part_world.mul(&in_part);
-				// what is drawn: geometry, groups, mesh to world, mesh to part,
-				// whether the vertices moved, and the material
-				let drawn: Option<(&Geometry, &[usize], _, _, bool, &Material)> = match shape {
+				let drawn = match shape {
 					PartShape::Mesh(asset) => {
 						let material = plain.unwrap_or(&asset.material);
 						Some(match skin {
 							// skinned vertices are already in world space
-							Some(skin) => (
-								&skin.geometry,
-								asset.groups.as_slice(),
-								IDENTITY,
-								part_world.inverse().to_matrix([1.0; 3]),
-								std::mem::take(&mut skin.moved),
+							Some(skin) => Drawn {
+								geometry: &skin.geometry,
+								groups: asset.groups.as_slice(),
+								transform: IDENTITY,
+								part_from_mesh: part_world.inverse().to_matrix([1.0; 3]),
+								moved: std::mem::take(&mut skin.moved),
 								material,
-							),
-							None => (
-								&asset.geometry,
-								asset.groups.as_slice(),
-								placement(&world, *scale, *centre),
-								placement(&in_part, *scale, *centre),
-								false,
+							},
+							None => Drawn {
+								geometry: &asset.geometry,
+								groups: asset.groups.as_slice(),
+								transform: placement(&world, *scale, *centre),
+								part_from_mesh: placement(&in_part, *scale, *centre),
+								moved: false,
 								material,
-							),
+							},
 						})
 					}
-					PartShape::Primitive(kind) if show_blocks => Some((
-						kind.geometry(),
-						&[0][..],
-						placement(&world, *scale, [0.0; 3]),
-						placement(&in_part, *scale, [0.0; 3]),
-						false,
-						plain.unwrap_or_else(|| empty_material()),
-					)),
+					PartShape::Primitive(kind) if show_blocks => Some(Drawn {
+						geometry: kind.geometry(),
+						groups: &[0][..],
+						transform: placement(&world, *scale, [0.0; 3]),
+						part_from_mesh: placement(&in_part, *scale, [0.0; 3]),
+						moved: false,
+						material: plain.unwrap_or_else(|| empty_material()),
+					}),
 					_ => None,
 				};
-				let Some((geometry, groups, transform, part_from_mesh, moved, material)) = drawn
+				let Some(Drawn {
+					geometry,
+					groups,
+					transform,
+					part_from_mesh,
+					moved,
+					material,
+				}) = drawn
 				else {
 					return Vec::new();
 				};
@@ -230,6 +235,19 @@ impl ModelView {
 		}
 		lights
 	}
+}
+
+/// What one part draws this frame.
+struct Drawn<'a> {
+	geometry: &'a Geometry,
+	groups: &'a [usize],
+	/// Mesh to world.
+	transform: [[f32; 4]; 4],
+	/// Mesh to the part's own space, which decals are laid out in.
+	part_from_mesh: [[f32; 4]; 4],
+	/// Whether the vertices moved since they were last drawn.
+	moved: bool,
+	material: &'a Material,
 }
 
 /// What the skeleton overlay draws, in world space.

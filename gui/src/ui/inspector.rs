@@ -292,7 +292,7 @@ fn map_row(
 											"{}×{} · {name}",
 											texture.size[0], texture.size[1]
 										))
-										.size(11.0)
+										.size(crate::ui::theme::CAPTION)
 										.color(p.text_weak),
 									)
 									.truncate(),
@@ -307,7 +307,11 @@ fn map_row(
 						ui.vertical(|ui| {
 							ui.spacing_mut().item_spacing.y = 1.0;
 							ui.label(RichText::new(slot.label()).color(p.text_weak));
-							ui.label(RichText::new("No map").size(11.0).color(p.text_weak));
+							ui.label(
+								RichText::new("No map")
+									.size(crate::ui::theme::CAPTION)
+									.color(p.text_weak),
+							);
 						});
 						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 							if widgets::icon_button(ui, icons::PLUS, "Load…").clicked() {

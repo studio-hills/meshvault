@@ -306,7 +306,7 @@ pub fn section<R>(
 			super::icons::CARET_RIGHT
 		};
 		let text = RichText::new(format!("{icon}  {}", title.to_uppercase()))
-			.size(11.0)
+			.size(crate::ui::theme::CAPTION)
 			.family(semibold())
 			.color(p.text_weak);
 		ui.add(
@@ -391,7 +391,7 @@ pub fn stat_strip(ui: &mut Ui, stats: &[(String, &str)]) {
 					egui::pos2(left, rect.bottom()),
 					Align2::LEFT_BOTTOM,
 					*caption,
-					FontId::proportional(11.0),
+					FontId::proportional(crate::ui::theme::CAPTION),
 					p.text_weak,
 				);
 			}

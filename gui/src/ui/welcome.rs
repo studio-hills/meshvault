@@ -152,7 +152,7 @@ impl App {
 			ui.add_space(18.0);
 			ui.label(
 				RichText::new("RECENT WORKSPACES")
-					.size(11.0)
+					.size(crate::ui::theme::CAPTION)
 					.family(semibold())
 					.color(p.text_weak),
 			);
@@ -177,7 +177,7 @@ impl App {
 		ui.add_space(18.0);
 		ui.label(
 			RichText::new("Mesh v1–v7 · union graphics CSGMDL v2–v5 · union physics CSGPHS v3–v8")
-				.size(11.0)
+				.size(crate::ui::theme::CAPTION)
 				.color(p.text_weak),
 		);
 	}
@@ -234,7 +234,7 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 		egui::pos2(path_clip.left(), rect.center().y),
 		Align2::LEFT_CENTER,
 		root.display().to_string(),
-		FontId::proportional(11.5),
+		FontId::proportional(crate::ui::theme::CAPTION),
 		p.text_weak,
 	);
 

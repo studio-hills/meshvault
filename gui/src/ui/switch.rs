@@ -175,7 +175,7 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 						} else {
 							targets.len().to_string()
 						},
-						FontId::proportional(11.5),
+						FontId::proportional(crate::ui::theme::CAPTION),
 						if current {
 							p.accent.gamma_multiply(0.7)
 						} else {

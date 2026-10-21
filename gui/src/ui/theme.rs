@@ -123,6 +123,9 @@ pub const CONTROL: f32 = 36.0;
 pub const CONTROL_SM: f32 = 32.0;
 /// Height of rows in trees and lists.
 pub const ROW: f32 = 26.0;
+/// Size of captions, counts and small labels: `TextStyle::Small`, and the
+/// smallest interface text.
+pub const CAPTION: f32 = 12.0;
 /// Line height of body text that can wrap to several lines: 20px at 14px
 /// (about 1.43). Cal Sans's own is 1.145, too tight for paragraphs.
 pub const BODY_LINE_HEIGHT: f32 = 20.0;

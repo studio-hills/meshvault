@@ -355,7 +355,7 @@ impl App {
 								.join(workspace::sanitize(dialog.name.trim()))
 								.display()
 						))
-						.size(11.5)
+						.size(crate::ui::theme::CAPTION)
 						.color(p.text_weak),
 					);
 				}

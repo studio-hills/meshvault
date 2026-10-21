@@ -204,7 +204,12 @@ impl App {
 				// line the heading up with the menu items' text
 				ui.horizontal(|ui| {
 					ui.add_space(ui.spacing().button_padding.x);
-					ui.label(RichText::new("RECENT").size(11.0).family(semibold()).weak());
+					ui.label(
+						RichText::new("RECENT")
+							.size(crate::ui::theme::CAPTION)
+							.family(semibold())
+							.weak(),
+					);
 				});
 				for root in recent {
 					let name = root
@@ -319,8 +324,11 @@ impl App {
 		ui.horizontal(|ui| {
 			ui.spacing_mut().item_spacing.x = 10.0;
 			ui.spacing_mut().interact_size.y = 22.0;
-			let small =
-				|text: String, colour: Color32| RichText::new(text).size(11.5).color(colour);
+			let small = |text: String, colour: Color32| {
+				RichText::new(text)
+					.size(crate::ui::theme::CAPTION)
+					.color(colour)
+			};
 			match &self.adapter {
 				Some(name) if self.gpu.is_some() => {
 					ui.label(small(format!("{}  GPU", icons::CIRCLE), p.success))
@@ -398,7 +406,7 @@ impl App {
 						bar.rect.center(),
 						Align2::CENTER_CENTER,
 						&format!("{}/{}", d.completed, d.total),
-						&egui::FontId::proportional(10.5),
+						&egui::FontId::proportional(crate::ui::theme::CAPTION),
 						p.text,
 					);
 					let mut text = format!("{}  Downloading", icons::CLOUD_ARROW_DOWN);

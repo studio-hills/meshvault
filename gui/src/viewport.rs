@@ -990,7 +990,7 @@ fn draw_axes(painter: &egui::Painter, rect: Rect, right: V3, up: V3) {
 			tip + (tip - origin).normalized() * 8.0,
 			egui::Align2::CENTER_CENTER,
 			label,
-			egui::FontId::proportional(11.0),
+			egui::FontId::proportional(crate::ui::theme::CAPTION),
 			colour,
 		);
 	}

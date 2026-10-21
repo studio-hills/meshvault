@@ -468,7 +468,7 @@ fn clip_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
 				ui.label(
 					RichText::new(slot.status.label())
-						.size(11.0)
+						.size(crate::ui::theme::CAPTION)
 						.color(status_colour(p, slot.status)),
 				);
 			});
@@ -624,7 +624,11 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 						rp.path, rp.transparency
 					));
 					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-						ui.label(RichText::new(tag).size(11.0).color(colour));
+						ui.label(
+							RichText::new(tag)
+								.size(crate::ui::theme::CAPTION)
+								.color(colour),
+						);
 					});
 				});
 				if ui.rect_contains_pointer(row.response.rect) {

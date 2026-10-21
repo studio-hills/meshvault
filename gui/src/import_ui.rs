@@ -462,7 +462,7 @@ impl ImportDialog {
 				RichText::new(format!(
 					"{already} already in this workspace; importing again only adds what is new."
 				))
-				.size(11.5)
+				.size(crate::ui::theme::CAPTION)
 				.color(p.text_weak),
 			);
 		} else {
@@ -546,7 +546,7 @@ impl ImportDialog {
 				ui.set_min_width(240.0);
 				ui.label(
 					RichText::new("Images to download with each mesh")
-						.size(11.5)
+						.size(crate::ui::theme::CAPTION)
 						.color(palette(ui.ctx()).text_weak),
 				);
 				for kind in offered {
@@ -599,7 +599,7 @@ impl ImportDialog {
 						let p = palette(ui.ctx());
 						ui.label(
 							RichText::new(format!("{selected}/{}", rows.len()))
-								.size(11.5)
+								.size(crate::ui::theme::CAPTION)
 								.color(p.text_weak),
 						);
 					});
@@ -686,10 +686,18 @@ impl ImportDialog {
 		} else {
 			format!("{}  {}", icons::IMAGE, entry.maps.len())
 		};
-		ui.label(RichText::new(text).size(11.5).color(p.text_weak))
-			.on_hover_text(hover);
+		ui.label(
+			RichText::new(text)
+				.size(crate::ui::theme::CAPTION)
+				.color(p.text_weak),
+		)
+		.on_hover_text(hover);
 		if self.existing[e] {
-			ui.label(RichText::new("in workspace").size(11.5).color(p.text_weak));
+			ui.label(
+				RichText::new("in workspace")
+					.size(crate::ui::theme::CAPTION)
+					.color(p.text_weak),
+			);
 		}
 	}
 
@@ -744,12 +752,16 @@ impl ImportDialog {
 						meshes.len(),
 						icons::FILM_STRIP
 					))
-					.size(11.5)
+					.size(crate::ui::theme::CAPTION)
 					.color(p.text_weak),
 				)
 				.on_hover_text("Meshes it uses · playable clips");
 				if existing {
-					ui.label(RichText::new("in workspace").size(11.5).color(p.text_weak));
+					ui.label(
+						RichText::new("in workspace")
+							.size(crate::ui::theme::CAPTION)
+							.color(p.text_weak),
+					);
 				}
 			})
 			.body(|ui| {

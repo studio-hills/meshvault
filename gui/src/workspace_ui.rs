@@ -659,7 +659,7 @@ impl Browser {
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 					ui.label(
 						RichText::new(ws.models().len().to_string())
-							.size(11.5)
+							.size(crate::ui::theme::CAPTION)
 							.color(p.text_weak),
 					);
 				});
@@ -923,19 +923,27 @@ impl Browser {
 				widgets::menu_style(ui);
 				ui.set_min_width(200.0);
 				let f = &mut self.filters;
-				ui.label(RichText::new("Show only").size(11.5).color(p.text_weak));
+				ui.label(
+					RichText::new("Show only")
+						.size(crate::ui::theme::CAPTION)
+						.color(p.text_weak),
+				);
 				ui.checkbox(&mut f.animated, "Has animations");
 				ui.checkbox(&mut f.skinned, "Skinned (bends with bones)");
 				if f.skinned && reading > 0 {
 					ui.label(
 						RichText::new(format!("Reading meshes… {reading} left"))
-							.size(11.5)
+							.size(crate::ui::theme::CAPTION)
 							.color(p.text_weak),
 					);
 				}
 				ui.checkbox(&mut f.missing, "Missing meshes");
 				ui.add_space(4.0);
-				ui.label(RichText::new("Has a map").size(11.5).color(p.text_weak));
+				ui.label(
+					RichText::new("Has a map")
+						.size(crate::ui::theme::CAPTION)
+						.color(p.text_weak),
+				);
 				for kind in MapKind::ALL {
 					let mut on = f.maps.contains(&kind);
 					if ui.checkbox(&mut on, kind.label()).changed() {
@@ -1011,7 +1019,7 @@ impl Browser {
 					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 						ui.label(
 							RichText::new(format!("{done}/{}", all.len()))
-								.size(11.5)
+								.size(crate::ui::theme::CAPTION)
 								.color(p.text_weak),
 						);
 					});
@@ -1276,7 +1284,7 @@ impl Browser {
 					picture.right_top() + Vec2::new(-8.0, 8.0),
 					Align2::RIGHT_TOP,
 					clips,
-					FontId::proportional(11.0),
+					FontId::proportional(crate::ui::theme::CAPTION),
 					p.text_weak,
 				);
 			}
@@ -1351,7 +1359,11 @@ fn model_row(
 	);
 	status_dot(&painter, p, rect.left_center() + Vec2::new(11.0, 0.0), s);
 	let clips = format!("{}  {}", icons::FILM_STRIP, model.playable_clips);
-	let clips_galley = painter.layout_no_wrap(clips, FontId::proportional(11.5), p.text_weak);
+	let clips_galley = painter.layout_no_wrap(
+		clips,
+		FontId::proportional(crate::ui::theme::CAPTION),
+		p.text_weak,
+	);
 	let text_rect = egui::Rect::from_min_max(
 		rect.left_top() + Vec2::new(24.0, 0.0),
 		rect.right_bottom() - Vec2::new(clips_galley.size().x + 16.0, 0.0),

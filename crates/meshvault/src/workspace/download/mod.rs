@@ -205,55 +205,179 @@ fn worker(
 #[cfg(test)]
 mod test_server {
 	use super::{AuthMethod, Client, Credentials, Endpoints};
+	use std::collections::HashMap;
 	use std::io::{BufRead, BufReader, Write};
-	use std::net::TcpListener;
+	use std::net::{TcpListener, TcpStream};
+	use std::sync::atomic::{AtomicBool, Ordering};
+	use std::sync::mpsc::{Receiver, Sender, channel};
 	use std::sync::{Arc, Mutex};
+	use std::thread::JoinHandle;
+	use std::time::Duration;
 
-	/// A minimal HTTP server: `routes` maps a request path to
-	/// (status, extra headers, body). Records every request line and headers.
-	/// (path, status, extra headers, body)
-	pub(super) type Route = (&'static str, u16, Vec<(&'static str, String)>, Vec<u8>);
+	/// One canned reply: (request path, status, extra headers, body).
+	pub(crate) type Route = (&'static str, u16, Vec<(&'static str, String)>, Vec<u8>);
 
-	pub(super) fn serve(routes: Vec<Route>) -> (String, Arc<Mutex<Vec<String>>>) {
+	/// How long the server and the tests wait for something that should
+	/// happen before giving up. Only a watchdog: the tests wait on events.
+	pub(crate) const WATCHDOG: Duration = Duration::from_secs(20);
+
+	/// The server side of a [`Gate`].
+	struct Held {
+		arrived: Sender<()>,
+		release: Mutex<Receiver<()>>,
+	}
+
+	type Gates = Arc<Mutex<HashMap<&'static str, Arc<Held>>>>;
+
+	/// Holds every request for one path until the test lets it through, so
+	/// a test can pause a download at a known point.
+	pub(crate) struct Gate {
+		arrived: Receiver<()>,
+		release: Sender<()>,
+	}
+
+	impl Gate {
+		/// Waits until a request for the path is being held.
+		pub(crate) fn wait_for_request(&self) {
+			self.arrived
+				.recv_timeout(WATCHDOG)
+				.expect("no request reached the gate");
+		}
+
+		/// Lets one held request (or the next one to arrive) through.
+		pub(crate) fn release(&self) {
+			let _ = self.release.send(());
+		}
+	}
+
+	/// A minimal HTTP server answering from a list of [`Route`]s (404 for
+	/// any other path), one thread per connection. It records each
+	/// request's line and headers in `log`.
+	///
+	/// Dropping it stops the server and waits for its threads. Dropping a
+	/// [`Gate`] lets its held requests through, so a failing test still ends.
+	pub(crate) struct Server {
+		pub(crate) base: String,
+		pub(crate) log: Arc<Mutex<Vec<String>>>,
+		gates: Gates,
+		stop: Arc<AtomicBool>,
+		thread: Option<JoinHandle<()>>,
+	}
+
+	impl Server {
+		/// Holds requests for `path` from now on; see [`Gate`].
+		pub(crate) fn gate(&self, path: &'static str) -> Gate {
+			let (arrived_tx, arrived) = channel();
+			let (release, release_rx) = channel();
+			let held = Held {
+				arrived: arrived_tx,
+				release: Mutex::new(release_rx),
+			};
+			self.gates.lock().unwrap().insert(path, Arc::new(held));
+			Gate { arrived, release }
+		}
+
+		/// How many requests began with `prefix`, such as `"GET /oc/1 "`.
+		pub(crate) fn count(&self, prefix: &str) -> usize {
+			let log = self.log.lock().unwrap();
+			log.iter().filter(|r| r.starts_with(prefix)).count()
+		}
+	}
+
+	impl Drop for Server {
+		fn drop(&mut self) {
+			self.stop.store(true, Ordering::SeqCst);
+			// wake the accept loop so it sees the flag
+			if let Some(addr) = self.base.strip_prefix("http://") {
+				let _ = TcpStream::connect(addr);
+			}
+			if let Some(thread) = self.thread.take() {
+				let _ = thread.join();
+			}
+		}
+	}
+
+	pub(crate) fn serve(routes: Vec<Route>) -> Server {
 		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
 		let base = format!("http://{}", listener.local_addr().unwrap());
 		let log = Arc::new(Mutex::new(Vec::new()));
-		let log2 = log.clone();
-		std::thread::spawn(move || {
-			for stream in listener.incoming() {
-				let mut stream = stream.unwrap();
-				let mut reader = BufReader::new(stream.try_clone().unwrap());
-				let mut request = String::new();
-				loop {
-					let mut line = String::new();
-					if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+		let gates = Gates::default();
+		let stop = Arc::new(AtomicBool::new(false));
+		let routes = Arc::new(routes);
+		let thread = {
+			let (log, gates, stop) = (log.clone(), gates.clone(), stop.clone());
+			std::thread::spawn(move || {
+				let mut connections = Vec::new();
+				for stream in listener.incoming() {
+					if stop.load(Ordering::SeqCst) {
 						break;
 					}
-					request.push_str(&line);
+					let Ok(stream) = stream else { continue };
+					let (routes, log, gates) = (routes.clone(), log.clone(), gates.clone());
+					connections.push(std::thread::spawn(move || {
+						answer(stream, &routes, &log, &gates);
+					}));
 				}
-				let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
-				log2.lock().unwrap().push(request);
-				let (status, headers, body) = routes
-					.iter()
-					.find(|(p, ..)| *p == path)
-					.map(|(_, s, h, b)| (*s, h.clone(), b.clone()))
-					.unwrap_or((404, vec![], b"not found".to_vec()));
-				let mut head = format!(
-					"HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-					body.len()
-				);
-				for (k, v) in headers {
-					head.push_str(&format!("{k}: {v}\r\n"));
+				for connection in connections {
+					let _ = connection.join();
 				}
-				head.push_str("\r\n");
-				let _ = stream.write_all(head.as_bytes());
-				let _ = stream.write_all(&body);
-			}
-		});
-		(base, log)
+			})
+		};
+		Server {
+			base,
+			log,
+			gates,
+			stop,
+			thread: Some(thread),
+		}
 	}
 
-	pub(super) fn client(base: &str, method: AuthMethod) -> Client {
+	/// Reads one request, holds it at its path's gate if there is one, and
+	/// sends the matching route's reply.
+	fn answer(mut stream: TcpStream, routes: &[Route], log: &Mutex<Vec<String>>, gates: &Gates) {
+		let _ = stream.set_read_timeout(Some(WATCHDOG));
+		let Ok(read_half) = stream.try_clone() else {
+			return;
+		};
+		let mut reader = BufReader::new(read_half);
+		let mut request = String::new();
+		loop {
+			let mut line = String::new();
+			match reader.read_line(&mut line) {
+				Ok(0) | Err(_) => break,
+				Ok(_) if line == "\r\n" => break,
+				Ok(_) => request.push_str(&line),
+			}
+		}
+		// the connection that wakes a stopping server sends nothing
+		if request.is_empty() {
+			return;
+		}
+		let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+		log.lock().unwrap().push(request);
+		let held = gates.lock().unwrap().get(path.as_str()).cloned();
+		if let Some(held) = held {
+			let _ = held.arrived.send(());
+			let _ = held.release.lock().unwrap().recv_timeout(WATCHDOG);
+		}
+		let (status, headers, body) = routes
+			.iter()
+			.find(|(p, ..)| *p == path)
+			.map(|(_, s, h, b)| (*s, h.clone(), b.clone()))
+			.unwrap_or((404, vec![], b"not found".to_vec()));
+		let mut head = format!(
+			"HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+			body.len()
+		);
+		for (k, v) in headers {
+			head.push_str(&format!("{k}: {v}\r\n"));
+		}
+		head.push_str("\r\n");
+		let _ = stream.write_all(head.as_bytes());
+		let _ = stream.write_all(&body);
+	}
+
+	pub(crate) fn client(base: &str, method: AuthMethod) -> Client {
 		Client::new(
 			Credentials {
 				method,
@@ -265,6 +389,45 @@ mod test_server {
 				asset_delivery: format!("{base}/ad?id="),
 			},
 		)
+	}
+
+	mod tests {
+		use super::*;
+		use std::io::Read;
+
+		fn get(base: &str, path: &str) -> String {
+			let mut stream = TcpStream::connect(base.strip_prefix("http://").unwrap()).unwrap();
+			write!(stream, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+			let mut reply = String::new();
+			stream.read_to_string(&mut reply).unwrap();
+			reply
+		}
+
+		/// A gated request is answered only once the test lets it through,
+		/// while other paths are answered meanwhile.
+		#[test]
+		fn a_gate_holds_its_requests_until_released() {
+			let server = serve(vec![("/a", 200, vec![], b"A".to_vec())]);
+			let gate = server.gate("/a");
+			let base = server.base.clone();
+			let held = std::thread::spawn(move || get(&base, "/a"));
+			gate.wait_for_request();
+			assert!(get(&server.base, "/b").starts_with("HTTP/1.1 404"));
+			assert!(!held.is_finished());
+			gate.release();
+			assert!(held.join().unwrap().ends_with("\r\n\r\nA"));
+			assert_eq!(server.count("GET /a "), 1);
+			assert_eq!(server.count("GET "), 2);
+		}
+
+		/// Dropping the server ends its thread, so the port stops answering.
+		#[test]
+		fn dropping_the_server_stops_it() {
+			let server = serve(vec![]);
+			let addr = server.base.strip_prefix("http://").unwrap().to_string();
+			drop(server);
+			assert!(TcpStream::connect(addr).is_err());
+		}
 	}
 }
 
@@ -284,30 +447,30 @@ mod tests {
 
 		let mesh = std::fs::read(Path::new(SAMPLE_MESHES).join("torso.mesh")).unwrap();
 		let png = b"\x89PNG\r\n\x1a\nFAKE".to_vec();
-		let (cdn, _) = serve(vec![
+		let cdn = serve(vec![
 			("/cdn/1", 200, vec![], mesh.clone()),
 			("/cdn/2", 200, vec![], png.clone()),
 			("/cdn/4", 200, vec![], png.clone()),
 		]);
-		let (api, api_log) = serve(vec![
+		let api = serve(vec![
 			(
 				"/oc/1",
 				200,
 				vec![],
-				format!(r#"{{"location":"{cdn}/cdn/1"}}"#).into_bytes(),
+				format!(r#"{{"location":"{}/cdn/1"}}"#, cdn.base).into_bytes(),
 			),
 			(
 				"/oc/2",
 				200,
 				vec![],
-				format!(r#"{{"location":"{cdn}/cdn/2"}}"#).into_bytes(),
+				format!(r#"{{"location":"{}/cdn/2"}}"#, cdn.base).into_bytes(),
 			),
 			("/oc/3", 403, vec![], vec![]),
 			(
 				"/oc/4",
 				200,
 				vec![],
-				format!(r#"{{"location":"{cdn}/cdn/4"}}"#).into_bytes(),
+				format!(r#"{{"location":"{}/cdn/4"}}"#, cdn.base).into_bytes(),
 			),
 		]);
 
@@ -342,7 +505,7 @@ mod tests {
 		downloader.start(
 			&ctx,
 			dir.to_path_buf(),
-			Arc::new(client(&api, AuthMethod::ApiKey)),
+			Arc::new(client(&api.base, AuthMethod::ApiKey)),
 			ws.pending_jobs(),
 			3,
 		);
@@ -404,7 +567,7 @@ mod tests {
 			png
 		);
 		// asset 1 was requested once even though two items use it
-		let requests = api_log.lock().unwrap();
+		let requests = api.log.lock().unwrap();
 		assert_eq!(
 			requests
 				.iter()

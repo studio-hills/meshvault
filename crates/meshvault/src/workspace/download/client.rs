@@ -321,68 +321,68 @@ mod tests {
 
 	#[test]
 	fn api_key_follows_location_without_leaking_key() {
-		let (cdn, cdn_log) = serve(vec![(
+		let cdn = serve(vec![(
 			"/cdn/5",
 			200,
 			vec![],
 			b"version 4.00\nDATA".to_vec(),
 		)]);
-		let (api, api_log) = serve(vec![(
+		let api = serve(vec![(
 			"/oc/5",
 			200,
 			vec![],
-			format!(r#"{{"location":"{cdn}/cdn/5"}}"#).into_bytes(),
+			format!(r#"{{"location":"{}/cdn/5"}}"#, cdn.base).into_bytes(),
 		)]);
-		let c = client(&api, AuthMethod::ApiKey);
+		let c = client(&api.base, AuthMethod::ApiKey);
 		let bytes = c.fetch(5, false).unwrap();
 		assert_eq!(bytes, b"version 4.00\nDATA");
-		let api_req = api_log.lock().unwrap()[0].to_lowercase();
+		let api_req = api.log.lock().unwrap()[0].to_lowercase();
 		assert!(api_req.contains("x-api-key: secret"));
 		assert!(api_req.contains("roblox-place-id: 77"));
-		let cdn_req = cdn_log.lock().unwrap()[0].to_lowercase();
+		let cdn_req = cdn.log.lock().unwrap()[0].to_lowercase();
 		assert!(!cdn_req.contains("secret"), "credentials leaked to CDN");
 	}
 
 	#[test]
 	fn cookie_redirect_strips_cookie_and_resolves_decal() {
-		let (cdn, cdn_log) = serve(vec![
+		let cdn = serve(vec![
 			("/cdn/10", 200, vec![], b"<roblox><Item class=\"Decal\"><Content name=\"Texture\"><url>http://www.roblox.com/asset/?id=11</url></Content></Item></roblox>".to_vec()),
 			("/cdn/11", 200, vec![], b"\x89PNG\r\n\x1a\nIMAGE".to_vec()),
 		]);
-		let (base, log) = serve(vec![
+		let server = serve(vec![
 			(
 				"/ad?id=10",
 				302,
-				vec![("Location", format!("{cdn}/cdn/10"))],
+				vec![("Location", format!("{}/cdn/10", cdn.base))],
 				vec![],
 			),
 			(
 				"/ad?id=11",
 				302,
-				vec![("Location", format!("{cdn}/cdn/11"))],
+				vec![("Location", format!("{}/cdn/11", cdn.base))],
 				vec![],
 			),
 		]);
-		let c = client(&base, AuthMethod::Cookie);
+		let c = client(&server.base, AuthMethod::Cookie);
 		let bytes = c.fetch(10, true).unwrap();
 		assert_eq!(
 			sniff_extension(&bytes, AssetKind::Map(MapKind::Color)),
 			"png"
 		);
-		assert!(log.lock().unwrap()[0].contains(".ROBLOSECURITY=SECRET"));
-		for req in cdn_log.lock().unwrap().iter() {
+		assert!(server.log.lock().unwrap()[0].contains(".ROBLOSECURITY=SECRET"));
+		for req in cdn.log.lock().unwrap().iter() {
 			assert!(!req.contains("SECRET"), "cookie leaked to CDN");
 		}
 	}
 
 	#[test]
 	fn maps_errors() {
-		let (base, _) = serve(vec![
+		let server = serve(vec![
 			("/oc/1", 401, vec![], vec![]),
 			("/oc/2", 403, vec![], vec![]),
 			("/oc/3", 429, vec![("Retry-After", "0".into())], vec![]),
 		]);
-		let c = client(&base, AuthMethod::ApiKey);
+		let c = client(&server.base, AuthMethod::ApiKey);
 		assert!(matches!(c.fetch(1, false), Err(FetchError::Auth(_))));
 		assert!(matches!(c.fetch(2, false), Err(FetchError::Permanent(_))));
 		assert!(matches!(
@@ -402,13 +402,13 @@ mod tests {
 	/// one request already made.
 	#[test]
 	fn cancel_ends_a_retry_wait() {
-		let (base, log) = serve(vec![(
+		let server = serve(vec![(
 			"/oc/3",
 			429,
 			vec![("Retry-After", "30".into())],
 			vec![],
 		)]);
-		let c = client(&base, AuthMethod::ApiKey);
+		let c = client(&server.base, AuthMethod::ApiKey);
 		let cancel = Arc::new(AtomicBool::new(false));
 		let canceller = {
 			let cancel = cancel.clone();
@@ -425,24 +425,24 @@ mod tests {
 			"the 30 s wait ran on"
 		);
 		assert!(matches!(result, Err(FetchError::Transient(_, None))));
-		assert_eq!(log.lock().unwrap().len(), 1);
+		assert_eq!(server.log.lock().unwrap().len(), 1);
 	}
 
 	/// Today a cancel set before the call still lets the first request
 	/// through; it is only seen in the wait before a retry.
 	#[test]
 	fn cancel_set_first_still_makes_one_request() {
-		let (base, log) = serve(vec![(
+		let server = serve(vec![(
 			"/oc/3",
 			429,
 			vec![("Retry-After", "30".into())],
 			vec![],
 		)]);
-		let c = client(&base, AuthMethod::ApiKey);
+		let c = client(&server.base, AuthMethod::ApiKey);
 		let cancel = AtomicBool::new(true);
 		let result = c.fetch_with_retry(3, false, &cancel);
 		assert!(matches!(result, Err(FetchError::Transient(_, None))));
-		assert_eq!(log.lock().unwrap().len(), 1);
+		assert_eq!(server.log.lock().unwrap().len(), 1);
 	}
 
 	#[test]

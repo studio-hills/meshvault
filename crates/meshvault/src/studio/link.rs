@@ -37,8 +37,20 @@ const EXPORTERS: [(u32, &str); 2] = [
 	(1, include_str!("../../studio/exporter_v1.luau")),
 	(2, include_str!("../../studio/exporter_v2.luau")),
 ];
-pub const LATEST_SCHEMA: u32 = 2;
-pub const SCHEMAS: [u32; 2] = [1, 2];
+/// The schema served by default: the one this build writes.
+pub const LATEST_SCHEMA: u32 = super::export_file::SCHEMA_VERSION;
+/// The schemas there are exporters for, oldest first.
+pub const SCHEMAS: [u32; EXPORTERS.len()] = {
+	let mut schemas = [0; EXPORTERS.len()];
+	let mut i = 0;
+	while i < EXPORTERS.len() {
+		schemas[i] = EXPORTERS[i].0;
+		i += 1;
+	}
+	schemas
+};
+// raising SCHEMA_VERSION needs an exporter for it
+const _: () = assert!(EXPORTERS[EXPORTERS.len() - 1].0 == LATEST_SCHEMA);
 
 /// The exporter for a schema version, ready to run: its send address and
 /// Meshvault's version (for bug reports) filled in.
@@ -478,12 +490,14 @@ mod tests {
 		let (port, _rx) = start();
 		let latest = request(port, "GET /export.luau HTTP/1.1", "");
 		assert!(latest.starts_with("HTTP/1.1 200"));
-		assert!(latest.contains("SchemaVersion=2"));
+		assert!(latest.contains("local SCHEMA = 2\n"));
+		assert!(latest.contains("{SchemaVersion=SCHEMA,"));
 		assert!(latest.contains(&format!("http://localhost:{PORT}/export")));
 		assert!(!latest.contains("__MESHVAULT_"));
 		assert!(latest.contains(env!("CARGO_PKG_VERSION")));
 		let v1 = request(port, "GET /export.luau?schema=1 HTTP/1.1", "");
-		assert!(v1.contains("SchemaVersion=1"));
+		assert!(v1.contains("local SCHEMA = 1\n"));
+		assert!(v1.contains("{SchemaVersion=SCHEMA,"));
 		let unknown = request(port, "GET /export.luau?schema=9 HTTP/1.1", "");
 		assert!(unknown.contains("error(\"Meshvault has exporters for schemas 1 and 2, not 9\")"));
 	}
@@ -499,7 +513,9 @@ mod tests {
 			assert!(source.contains("local ok, clip = loadClip(animationId)"));
 			// current avatars' limbs are AnimationConstraints
 			assert!(source.contains("inst:IsA(\"AnimationConstraint\")"));
-			assert!(source.contains(&format!("SchemaVersion={v}")));
+			// the declared schema, and the payload saying it
+			assert!(source.contains(&format!("local SCHEMA = {v}\n")));
+			assert!(source.contains("local payload = {SchemaVersion=SCHEMA,"));
 			assert!(source.trim_end().ends_with("end"));
 		}
 		let command = studio_code(1, CodeMode::Send, CodeLayout::OneLine);

@@ -620,7 +620,7 @@ for _, root in ipairs(roots) do
         addModel(root)
     end
 end
-local payload = {SchemaVersion=1, Meshes=meshes, Models=models}
+local payload = {SchemaVersion=SCHEMA, Meshes=meshes, Models=models}
 local clipsOk, clipsFailed = 0, 0
 for _, clip in pairs(clipCache) do
     if clip.Status == "KeyframeSequence" or clip.Status == "CurveAnimation" then

@@ -212,7 +212,11 @@ const KNOWN_CHUNKS: [&[u8; 8]; 5] = [
 #[br(little)]
 #[derive(Debug, Clone)]
 pub struct UnknownChunk {
-	#[br(assert(!KNOWN_CHUNKS.contains(&&name)))]
+	#[br(assert(
+		!KNOWN_CHUNKS.contains(&&name),
+		"{} chunk failed to parse",
+		String::from_utf8_lossy(&name).trim_end_matches('\0')
+	))]
 	pub name: [u8; 8],
 	pub version: u32,
 	#[br(temp)]

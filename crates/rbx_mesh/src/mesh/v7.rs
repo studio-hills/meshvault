@@ -29,6 +29,8 @@ pub use draco::DracoError;
 
 #[cfg(feature = "mesh-v7-draco")]
 mod draco {
+	use core::error::Error;
+
 	use crate::mesh::{CoreMesh6, CoreMeshDraco7, Face2, Vertex2, VertexId2};
 	use draco_core::{DecoderBuffer, GeometryAttributeType, MeshDecoder, PointAttribute};
 
@@ -45,7 +47,14 @@ mod draco {
 			}
 		}
 	}
-	impl core::error::Error for DracoError {}
+	impl Error for DracoError {
+		fn source(&self) -> Option<&(dyn Error + 'static)> {
+			match self {
+				DracoError::Decode(e) => Some(e),
+				DracoError::MissingPositions => None,
+			}
+		}
+	}
 
 	impl CoreMeshDraco7 {
 		/// Decompress the Draco bitstream into the same vertex and face
@@ -115,6 +124,23 @@ mod draco {
 				.collect();
 
 			Ok(CoreMesh6 { vertices, faces })
+		}
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn a_decode_error_keeps_the_draco_error_as_its_source() {
+			let error = DracoError::Decode(draco_core::DracoError::general("bad bitstream"));
+			let source = error.source().expect("a source");
+			assert_eq!(source.to_string(), "General error: bad bitstream");
+		}
+
+		#[test]
+		fn missing_positions_has_no_source() {
+			assert!(DracoError::MissingPositions.source().is_none());
 		}
 	}
 }

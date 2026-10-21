@@ -513,6 +513,18 @@ mod tests {
 		assert!(unknown.contains("error(\"Meshvault has exporters for schemas 1 and 2, not 9\")"));
 	}
 
+	// Studio is the only thing that runs the exporters, so check here that
+	// what is served at least parses as Luau
+	#[test]
+	fn exporters_parse_as_luau() {
+		for v in SCHEMAS {
+			let source = exporter(v).unwrap();
+			let parsed = full_moon::parse_fallible(&source, full_moon::LuaVersion::luau());
+			let errors: Vec<String> = parsed.errors().iter().map(|e| e.to_string()).collect();
+			assert!(errors.is_empty(), "schema {v} exporter: {errors:#?}");
+		}
+	}
+
 	#[test]
 	fn exporters_are_functions_of_options() {
 		for v in SCHEMAS {

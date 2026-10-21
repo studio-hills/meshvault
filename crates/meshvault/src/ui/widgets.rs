@@ -6,8 +6,8 @@ use eframe::egui::{
 };
 
 use super::theme::{
-	CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, CONTROL_XS, LIST_TEXT, MODAL_BACKDROP,
-	PILL_RADIUS, Palette, TITLE, dialog_frame, display, medium, palette, semibold,
+	BODY_LINE_HEIGHT, CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, CONTROL_XS, LIST_TEXT,
+	MODAL_BACKDROP, PILL_RADIUS, Palette, TITLE, dialog_frame, display, medium, palette, semibold,
 };
 
 /// Shows a pointing hand while hovering something clickable. egui does this
@@ -401,6 +401,16 @@ pub fn badge(ui: &mut Ui, text: impl Into<WidgetText>, colour: Color32) -> Respo
 			ui.label(text.color(colour))
 		})
 		.inner
+}
+
+/// An icon and a note beside it that wraps, both at the body line height
+/// so the icon sits on the first line. Callers style both parts.
+pub fn note(ui: &mut Ui, icon: RichText, text: RichText) -> Response {
+	ui.horizontal_top(|ui| {
+		ui.label(icon.line_height(Some(BODY_LINE_HEIGHT)));
+		ui.add(egui::Label::new(text.line_height(Some(BODY_LINE_HEIGHT))).wrap());
+	})
+	.response
 }
 
 /// Two-column label/value rows with weak labels.

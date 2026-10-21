@@ -65,21 +65,11 @@ impl App {
 					.corner_radius(CornerRadius::same(CARD_RADIUS))
 					.inner_margin(Margin::symmetric(12, 10))
 					.show(ui, |ui| {
-						ui.horizontal_top(|ui| {
-							ui.label(
-								RichText::new(icons::WARNING)
-									.size(16.0)
-									.color(p.warning)
-									.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
-							);
-							ui.add(
-								egui::Label::new(
-									egui::RichText::new(unavailable_text(why))
-										.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
-								)
-								.wrap(),
-							);
-						});
+						widgets::note(
+							ui,
+							RichText::new(icons::WARNING).size(16.0).color(p.warning),
+							RichText::new(unavailable_text(why)),
+						);
 					});
 				ui.add_space(14.0);
 			}

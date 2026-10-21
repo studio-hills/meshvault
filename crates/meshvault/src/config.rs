@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ui::theme::ThemeMode;
-use crate::workspace::download::AuthMethod;
+use crate::workspace::download::{AuthMethod, DEFAULT_CONCURRENCY};
 
 /// Name used for the config folder and the credential store.
 const APP_ID: &str = "meshvault";
@@ -36,7 +36,7 @@ impl Default for Config {
 			recent_workspaces: Vec::new(),
 			auth_method: AuthMethod::ApiKey,
 			place_id: None,
-			concurrency: 4,
+			concurrency: DEFAULT_CONCURRENCY,
 			theme: ThemeMode::Dark,
 			lighting: Default::default(),
 		}

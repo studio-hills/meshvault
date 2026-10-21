@@ -93,6 +93,24 @@ pub struct Client {
 const USER_AGENT: &str = concat!("Meshvault/", env!("CARGO_PKG_VERSION"));
 /// Largest asset accepted; Roblox meshes and textures are far smaller.
 const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
+/// Time allowed for a whole request to the asset delivery APIs.
+const API_TIMEOUT: Duration = Duration::from_secs(60);
+/// Time allowed for a whole download from the CDN.
+const CDN_TIMEOUT: Duration = Duration::from_secs(120);
+/// Retries of a transient failure, after the first attempt.
+const MAX_RETRIES: u32 = 4;
+/// The first retry's wait when the server names none, in milliseconds;
+/// it doubles with each retry.
+const BACKOFF_BASE_MS: u64 = 500;
+/// Longest wait before a retry, whatever the server asks for.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
+/// How often a wait before a retry checks for cancelling.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+/// Most download threads at once. The settings allow fewer, but a
+/// hand-edited config can ask for up to this many.
+const MAX_WORKERS: usize = 16;
+/// Download threads used until the settings say otherwise.
+pub const DEFAULT_CONCURRENCY: usize = 4;
 
 fn status_error(status: u16, retry_after: Option<Duration>, method: AuthMethod) -> FetchError {
 	match status {
@@ -160,13 +178,13 @@ impl Client {
 		let api = ureq::Agent::config_builder()
 			.http_status_as_error(false)
 			.max_redirects(0)
-			.timeout_global(Some(Duration::from_secs(60)))
+			.timeout_global(Some(API_TIMEOUT))
 			.user_agent(USER_AGENT)
 			.build()
 			.into();
 		let cdn = ureq::Agent::config_builder()
 			.http_status_as_error(false)
-			.timeout_global(Some(Duration::from_secs(120)))
+			.timeout_global(Some(CDN_TIMEOUT))
 			.user_agent(USER_AGENT)
 			.build()
 			.into();
@@ -271,16 +289,16 @@ impl Client {
 		let mut attempt = 0;
 		loop {
 			match self.fetch(asset_id, want_image) {
-				Err(FetchError::Transient(msg, wait)) if attempt < 4 => {
-					let wait = wait.unwrap_or(Duration::from_millis(500 << attempt));
+				Err(FetchError::Transient(msg, wait)) if attempt < MAX_RETRIES => {
+					let wait = wait.unwrap_or(Duration::from_millis(BACKOFF_BASE_MS << attempt));
 					attempt += 1;
 					// sleep in slices so cancelling stays responsive
-					let mut left = wait.min(Duration::from_secs(60));
+					let mut left = wait.min(MAX_RETRY_WAIT);
 					while !left.is_zero() {
 						if cancel.load(Ordering::Relaxed) {
 							return Err(FetchError::Transient(msg, None));
 						}
-						let step = left.min(Duration::from_millis(100));
+						let step = left.min(CANCEL_POLL);
 						std::thread::sleep(step);
 						left -= step;
 					}
@@ -423,7 +441,7 @@ impl Downloader {
 				self.total += 1;
 			}
 		}
-		let wanted = concurrency.clamp(1, 16).min(queue.len());
+		let wanted = concurrency.clamp(1, MAX_WORKERS).min(queue.len());
 		drop(queue);
 		while self.shared.workers.load(Ordering::SeqCst) < wanted {
 			self.shared.workers.fetch_add(1, Ordering::SeqCst);

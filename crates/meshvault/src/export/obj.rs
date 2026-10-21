@@ -399,6 +399,8 @@ impl Obj {
 }
 
 #[cfg(test)]
+// geometry groups are lists of ranges, so one-element lists are intended
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
 	use super::*;
 	use crate::export::fixtures::{parse_glb, sample_mesh};

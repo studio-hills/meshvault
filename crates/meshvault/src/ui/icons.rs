@@ -1,5 +1,5 @@
 //! Phosphor icon codepoints (see assets/fonts/phosphor/LICENSE.txt). Only the
-//! icons this app uses are listed; add more from https://phosphoricons.com.
+//! icons this app uses are listed; add more from <https://phosphoricons.com>.
 
 pub const ARROWS_CLOCKWISE: &str = "\u{E094}";
 pub const BOUNDING_BOX: &str = "\u{E6CE}";

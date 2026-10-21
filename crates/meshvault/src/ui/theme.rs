@@ -204,22 +204,24 @@ pub fn install_fonts(ctx: &egui::Context) {
 }
 
 fn style_for(p: &Palette, dark: bool) -> egui::Style {
-	let mut style = egui::Style::default();
-	style.text_styles = [
-		(
-			TextStyle::Small,
-			FontId::new(12.0, FontFamily::Proportional),
-		),
-		// shadcn's `text-sm`
-		(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-		(TextStyle::Button, FontId::new(14.0, medium())),
-		(TextStyle::Heading, FontId::new(18.0, display())),
-		(
-			TextStyle::Monospace,
-			FontId::new(12.5, FontFamily::Monospace),
-		),
-	]
-	.into();
+	let mut style = egui::Style {
+		text_styles: [
+			(
+				TextStyle::Small,
+				FontId::new(12.0, FontFamily::Proportional),
+			),
+			// shadcn's `text-sm`
+			(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+			(TextStyle::Button, FontId::new(14.0, medium())),
+			(TextStyle::Heading, FontId::new(18.0, display())),
+			(
+				TextStyle::Monospace,
+				FontId::new(12.5, FontFamily::Monospace),
+			),
+		]
+		.into(),
+		..Default::default()
+	};
 
 	let s = &mut style.spacing;
 	s.item_spacing = Vec2::new(8.0, 6.0);

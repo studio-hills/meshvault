@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use eframe::egui::Color32;
 
-use super::skin::{Driver, PartSkin, fitted, normalize};
+use super::skin::{Driver, PartSkin, fit_point, normalize};
 use super::{ModelView, PartShape, PartView};
 use crate::anim::math::{CFrame, V3};
 use crate::anim::rig::BoneParent;
@@ -162,7 +162,7 @@ impl ModelView {
 				}
 				(PartShape::Mesh(asset), None) => {
 					let (positions, normals) =
-						placed(&asset.geometry, &rest, part.scale, part.centre);
+						fit_vertices(&asset.geometry, &rest, part.scale, part.centre);
 					out.push(ExportMesh {
 						geometry: &asset.geometry,
 						groups: asset.groups.clone(),
@@ -175,7 +175,7 @@ impl ModelView {
 				}
 				(PartShape::Primitive(kind), _) if self.show_blocks => {
 					let geometry = kind.geometry();
-					let (positions, normals) = placed(geometry, &rest, part.scale, [0.0; 3]);
+					let (positions, normals) = fit_vertices(geometry, &rest, part.scale, [0.0; 3]);
 					out.push(ExportMesh {
 						geometry,
 						groups: vec![0],
@@ -218,13 +218,18 @@ pub struct ExportMesh<'a> {
 	pub surface: Surface,
 }
 
-/// A mesh's vertices and normals placed in the world by `cf`, fitted by
-/// `scale` and `centre`.
-fn placed(geometry: &Geometry, cf: &CFrame, scale: V3, centre: V3) -> (Vec<V3>, Option<Vec<V3>>) {
+/// A mesh's vertices and normals fitted by `scale` and `centre`, then placed
+/// in the world by `cf` (each vertex as [`fit_point`] places it).
+fn fit_vertices(
+	geometry: &Geometry,
+	cf: &CFrame,
+	scale: V3,
+	centre: V3,
+) -> (Vec<V3>, Option<Vec<V3>>) {
 	let positions = geometry
 		.positions
 		.iter()
-		.map(|&v| fitted(cf, scale, centre, v))
+		.map(|&v| fit_point(cf, scale, centre, v))
 		.collect();
 	let normals = geometry.normals.as_ref().map(|normals| {
 		normals

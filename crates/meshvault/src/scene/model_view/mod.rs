@@ -389,7 +389,7 @@ fn translation_scales(
 	let motor_scale = vec![model_scale.unwrap_or(1.0); rig.motors.len()];
 	if let Some(s) = model_scale {
 		for skin in parts.iter_mut().filter_map(|p| p.skin.as_mut()) {
-			skin.unit_scale = s;
+			skin.track_scale = s;
 		}
 	}
 	let bone_scale = (0..rig.bones.len())

@@ -34,18 +34,21 @@ pub struct PartSkin {
 	/// World-space vertices in the current pose.
 	pub(super) geometry: Geometry,
 	pub(super) moved: bool,
-	/// The part's mesh scale, applied to clip translations of mesh-only bones.
-	pub(super) unit_scale: f32,
+	/// Scale for clip translations of mesh-only bones: the part's mesh
+	/// scale, or the model's scale when the export has one.
+	pub(super) track_scale: f32,
 	/// The mesh's FACS poses, which move its face bones by face control.
 	facs: Option<geometry::Facs>,
-	/// Mesh units to studs, for FACS offsets.
-	mesh_scale: f32,
+	/// Mesh units to studs for FACS offsets: always the part's mesh scale.
+	facs_scale: f32,
 	/// How many of the mesh's bones matched a Bone or part in the model.
 	pub matched: usize,
 	pub bones: usize,
 }
 
-pub(super) fn fitted(cf: &CFrame, scale: V3, centre: V3, v: V3) -> V3 {
+/// A mesh point fitted to its part (moved off `centre`, then scaled) and
+/// placed by `cf`.
+pub(super) fn fit_point(cf: &CFrame, scale: V3, centre: V3, v: V3) -> V3 {
 	cf.point([
 		(v[0] - centre[0]) * scale[0],
 		(v[1] - centre[1]) * scale[1],
@@ -124,7 +127,7 @@ impl PartSkin {
 		let rest_positions = g
 			.positions
 			.iter()
-			.map(|&v| fitted(&owner_rest, scale, centre, v))
+			.map(|&v| fit_point(&owner_rest, scale, centre, v))
 			.collect();
 		// normals transform by the inverse scale before rotating
 		let rest_normals = g.normals.as_ref().map(|normals| {
@@ -144,9 +147,9 @@ impl PartSkin {
 			rest_normals,
 			geometry: g.clone(),
 			moved: true,
-			unit_scale: mean(scale),
+			track_scale: mean(scale),
 			facs: skin.facs.clone(),
-			mesh_scale: mean(scale),
+			facs_scale: mean(scale),
 			matched,
 			bones: skin.bones.len(),
 		};
@@ -218,7 +221,7 @@ impl PartSkin {
 				// read (degrees about X, Y, Z) curls lips far more than Studio
 				// does, and how Roblox applies them is not yet known
 				.map(|(b, o)| {
-					let pos = [o[0], o[1], o[2]].map(|v| v * self.mesh_scale);
+					let pos = [o[0], o[1], o[2]].map(|v| v * self.facs_scale);
 					(facs.bones[b].as_str(), CFrame::from_position(pos))
 				})
 				.collect(),
@@ -242,9 +245,9 @@ impl PartSkin {
 					};
 					let t = match face_bones.get(name.as_str()) {
 						Some(&t) => t,
-						None => by_name
-							.get(name.as_str())
-							.map_or(CFrame::IDENTITY, |&t| scale_translation(t, self.unit_scale)),
+						None => by_name.get(name.as_str()).map_or(CFrame::IDENTITY, |&t| {
+							scale_translation(t, self.track_scale)
+						}),
 					};
 					(pn.mul(local).mul(&t), pr.mul(local))
 				}

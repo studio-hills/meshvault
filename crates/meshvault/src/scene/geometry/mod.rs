@@ -226,23 +226,23 @@ fn decode(bytes: &[u8]) -> Result<(Loaded, Option<Mesh>), String> {
 			)),
 			Err(e) => Err(format!(
 				"Mesh version {version} failed to decode:\n{}",
-				clean(e)
+				strip_ansi(e)
 			)),
 		};
 	}
 	if bytes.starts_with(b"CSGPHS") {
 		return rbx_mesh::read_union_physics_versioned(Cursor::new(bytes))
 			.map(|m| (finish(from_union_physics(m)), None))
-			.map_err(|e| format!("Union physics data failed to decode:\n{}", clean(e)));
+			.map_err(|e| format!("Union physics data failed to decode:\n{}", strip_ansi(e)));
 	}
 	let mut errors = Vec::new();
 	match rbx_mesh::read_union_graphics_versioned(Cursor::new(bytes)) {
 		Ok(mesh) => return Ok((finish(from_union_graphics(mesh)), None)),
-		Err(e) => errors.push(format!("union graphics: {}", clean(e))),
+		Err(e) => errors.push(format!("union graphics: {}", strip_ansi(e))),
 	}
 	match rbx_mesh::read_union_physics_versioned(Cursor::new(bytes)) {
 		Ok(mesh) => return Ok((finish(from_union_physics(mesh)), None)),
-		Err(e) => errors.push(format!("union physics: {}", clean(e))),
+		Err(e) => errors.push(format!("union physics: {}", strip_ansi(e))),
 	}
 	Err(format!(
 		"Not a recognised Roblox mesh, union graphics or union physics file.\n\n{}",
@@ -251,7 +251,7 @@ fn decode(bytes: &[u8]) -> Result<(Loaded, Option<Mesh>), String> {
 }
 
 /// binrw errors embed ANSI colour codes; strip them for display.
-fn clean(e: rbx_mesh::mesh::Error) -> String {
+fn strip_ansi(e: rbx_mesh::mesh::Error) -> String {
 	let s = e.to_string();
 	let mut out = String::with_capacity(s.len());
 	let mut chars = s.chars();

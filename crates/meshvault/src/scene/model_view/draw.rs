@@ -115,8 +115,8 @@ impl ModelView {
 							None => Drawn {
 								geometry: &asset.geometry,
 								groups: asset.groups.as_slice(),
-								transform: placement(&world, *scale, *centre),
-								part_from_mesh: placement(&in_part, *scale, *centre),
+								transform: fit_matrix(&world, *scale, *centre),
+								part_from_mesh: fit_matrix(&in_part, *scale, *centre),
 								moved: false,
 								material,
 							},
@@ -125,8 +125,8 @@ impl ModelView {
 					PartShape::Primitive(kind) if show_blocks => Some(Drawn {
 						geometry: kind.geometry(),
 						groups: &[0][..],
-						transform: placement(&world, *scale, [0.0; 3]),
-						part_from_mesh: placement(&in_part, *scale, [0.0; 3]),
+						transform: fit_matrix(&world, *scale, [0.0; 3]),
+						part_from_mesh: fit_matrix(&in_part, *scale, [0.0; 3]),
 						moved: false,
 						material: plain.unwrap_or_else(|| empty_material()),
 					}),
@@ -277,7 +277,7 @@ fn mat_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 }
 
 /// `transform * diag(scale) * translate(-centre)` as a row-major matrix.
-fn placement(cf: &CFrame, scale: V3, centre: V3) -> [[f32; 4]; 4] {
+fn fit_matrix(cf: &CFrame, scale: V3, centre: V3) -> [[f32; 4]; 4] {
 	let mut m = cf.to_matrix(scale);
 	for row in m.iter_mut().take(3) {
 		row[3] -= row[0] * centre[0] + row[1] * centre[1] + row[2] * centre[2];
@@ -346,8 +346,8 @@ mod tests {
 	}
 
 	#[test]
-	fn placement_centres_and_scales() {
-		let m = placement(
+	fn fit_matrix_centres_and_scales() {
+		let m = fit_matrix(
 			&CFrame::from_position([10.0, 0.0, 0.0]),
 			[2.0, 2.0, 2.0],
 			[1.0, 1.0, 1.0],

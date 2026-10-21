@@ -6,7 +6,9 @@ use rbx_mesh::union_physics::UnionPhysics;
 use super::{Geometry, GroupKind, Loaded, attributes, detail};
 use crate::scene::primitive::unit_cube;
 
-fn csgk(uuid: &[u8; 32], kind: &str) -> Loaded {
+/// What a CSGK file opens as: no geometry, since it only holds the UUID of
+/// the real union data.
+fn csgk_placeholder(uuid: &[u8; 32], kind: &str) -> Loaded {
 	Loaded {
 		format: format!("{kind} CSGK"),
 		details: vec![detail("UUID", String::from_utf8_lossy(uuid))],
@@ -39,7 +41,7 @@ fn csgmdl(m: &rbx_mesh::union_graphics::Mesh2, format: &str) -> Loaded {
 
 pub(super) fn from_union_graphics(mesh: UnionGraphics) -> Loaded {
 	match mesh {
-		UnionGraphics::CSGK(c) => csgk(&c.uuid_ascii_hex, "Union graphics"),
+		UnionGraphics::CSGK(c) => csgk_placeholder(&c.uuid_ascii_hex, "Union graphics"),
 		UnionGraphics::V2(m) => csgmdl(&m.mesh, "Union graphics CSGMDL v2"),
 		UnionGraphics::V4(m) => csgmdl(&m.mesh, "Union graphics CSGMDL v4"),
 		UnionGraphics::V5(m) => {
@@ -118,7 +120,7 @@ fn csgphs(meshes: &[rbx_mesh::union_physics::Mesh], format: &str) -> Loaded {
 
 pub(super) fn from_union_physics(mesh: UnionPhysics) -> Loaded {
 	match mesh {
-		UnionPhysics::CSGK(c) => csgk(&c.uuid_ascii_hex, "Union physics"),
+		UnionPhysics::CSGK(c) => csgk_placeholder(&c.uuid_ascii_hex, "Union physics"),
 		UnionPhysics::Block(_) => Loaded {
 			format: "Union physics BLOCK".into(),
 			details: Vec::new(),

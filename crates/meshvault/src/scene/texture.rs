@@ -131,21 +131,31 @@ pub struct Material {
 }
 
 impl Material {
+	/// Puts `texture` in `slot`, replacing any map there, and switches the
+	/// slot on.
 	pub fn set(&mut self, slot: Slot, texture: Texture) {
 		self.maps.insert(slot, texture);
 		self.disabled.retain(|s| *s != slot);
 		self.generation += 1;
 	}
+
+	/// Takes the map out of `slot`, bumping the generation only when there
+	/// was one. A slot switched off stays marked off, but a later `set`
+	/// clears the mark, so a map put back is shown.
 	pub fn remove(&mut self, slot: Slot) {
 		if self.maps.remove(&slot).is_some() {
 			self.generation += 1;
 		}
 	}
+
+	/// The map in `slot`, unless there is none or the slot is switched off.
 	pub fn active(&self, slot: Slot) -> Option<&Texture> {
 		self.maps
 			.get(&slot)
 			.filter(|_| !self.disabled.contains(&slot))
 	}
+
+	/// Switches `slot` on or off, with or without a map in it.
 	pub fn toggle(&mut self, slot: Slot, on: bool) {
 		self.disabled.retain(|s| *s != slot);
 		if !on {

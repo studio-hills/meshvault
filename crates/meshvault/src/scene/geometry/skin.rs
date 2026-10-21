@@ -4,8 +4,8 @@ use std::io::Cursor;
 
 use rbx_mesh::mesh::{Chunks6, CoreMeshChunk, Mesh};
 
-use super::clean;
 use super::facs::{Facs, facs_of};
+use super::strip_ansi;
 
 /// Where a Draco bitstream says how it encoded the mesh: after "DRACO",
 /// the major and minor version and the encoder type.
@@ -39,7 +39,7 @@ pub fn skin(bytes: &[u8], vertex_count: usize) -> Result<Option<Skin>, String> {
 	if !bytes.starts_with(b"version ") {
 		return Ok(None);
 	}
-	let mesh = rbx_mesh::read_mesh_versioned(Cursor::new(bytes)).map_err(clean)?;
+	let mesh = rbx_mesh::read_mesh_versioned(Cursor::new(bytes)).map_err(strip_ansi)?;
 	skin_of(&mesh, vertex_count)
 }
 

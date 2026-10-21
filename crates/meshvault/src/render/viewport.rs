@@ -995,3 +995,202 @@ fn draw_axes(painter: &egui::Painter, rect: Rect, right: V3, up: V3) {
 		);
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn close(a: f32, b: f32) -> bool {
+		(a - b).abs() < 1e-5
+	}
+
+	fn assert_matrix(actual: [[f32; 4]; 4], expected: [[f32; 4]; 4]) {
+		for r in 0..4 {
+			for c in 0..4 {
+				assert!(
+					close(actual[r][c], expected[r][c]),
+					"[{r}][{c}]: {actual:?} is not {expected:?}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn normal_matrix_of_a_scale_is_the_inverse_scale() {
+		let m = [
+			[2.0, 0.0, 0.0, 5.0],
+			[0.0, 4.0, 0.0, 6.0],
+			[0.0, 0.0, 0.5, 7.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+		// the translation does not reach the normals
+		assert_matrix(
+			normal_matrix(m),
+			[
+				[0.5, 0.0, 0.0, 0.0],
+				[0.0, 0.25, 0.0, 0.0],
+				[0.0, 0.0, 2.0, 0.0],
+				[0.0, 0.0, 0.0, 1.0],
+			],
+		);
+	}
+
+	#[test]
+	fn normal_matrix_of_a_rotation_is_the_rotation() {
+		let (s, c) = 0.7f32.sin_cos();
+		let m = [
+			[c, 0.0, s, 0.0],
+			[0.0, 1.0, 0.0, 0.0],
+			[-s, 0.0, c, 0.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+		assert_matrix(normal_matrix(m), m);
+	}
+
+	#[test]
+	fn normal_matrix_of_a_flat_transform_is_zero() {
+		let mut m = IDENTITY;
+		m[1][1] = 0.0;
+		let mut expected = [[0.0; 4]; 4];
+		expected[3][3] = 1.0;
+		assert_matrix(normal_matrix(m), expected);
+	}
+
+	fn light(x: f32) -> SceneLight {
+		SceneLight {
+			position: [x, 0.0, 0.0],
+			direction: [0.0, -1.0, 0.0],
+			colour: [1.0, 1.0, 1.0],
+			brightness: 1.0,
+			range: 10.0,
+			half_angle: None,
+		}
+	}
+
+	#[test]
+	fn light_uniforms_keeps_the_nearest_lit_lights() {
+		// out of order, with a dark light and a zero-range light nearest
+		let mut lights: Vec<SceneLight> = [7.0, 3.0, 10.0, 1.0, 9.0, 5.0, 2.0, 8.0, 4.0, 6.0]
+			.into_iter()
+			.map(light)
+			.collect();
+		lights.push(SceneLight {
+			brightness: 0.0,
+			..light(0.25)
+		});
+		lights.push(SceneLight {
+			range: 0.0,
+			..light(0.5)
+		});
+		let u = light_uniforms(&lights, [0.0; 3]);
+		assert_eq!(u.light_count, [MAX_LIGHTS as f32, 0.0, 0.0, 0.0]);
+		for i in 0..MAX_LIGHTS {
+			assert_eq!(u.lights[i * 3], [i as f32 + 1.0, 0.0, 0.0, 10.0]);
+		}
+	}
+
+	#[test]
+	fn light_uniforms_packs_colour_and_cone() {
+		let spot = SceneLight {
+			colour: [1.0, 0.0, 0.5],
+			brightness: 2.0,
+			half_angle: Some(60.0),
+			..light(1.0)
+		};
+		let u = light_uniforms(&[spot, light(2.0)], [0.0; 3]);
+		assert_eq!(u.light_count[0], 2.0);
+		// sRGB colour to linear, times brightness; 1 marks a cone
+		let [r, g, b, cone] = u.lights[1];
+		assert!(close(r, 2.0) && close(g, 0.0) && cone == 1.0);
+		assert!(close(b, 2.0 * srgb_channel_to_linear(0.5)));
+		assert_eq!(&u.lights[2][..3], &[0.0, -1.0, 0.0]);
+		assert!(close(u.lights[2][3], 0.5));
+		// a point light has no cone, and a cosine of -1
+		assert_eq!(u.lights[4][3], 0.0);
+		assert_eq!(u.lights[5][3], -1.0);
+		assert_eq!(u.lights[6], [0.0; 4]);
+	}
+
+	#[test]
+	fn light_uniforms_without_lit_lights_is_empty() {
+		let dark = SceneLight {
+			brightness: -1.0,
+			..light(1.0)
+		};
+		let u = light_uniforms(&[dark], [0.0; 3]);
+		assert_eq!(u.light_count, [0.0; 4]);
+		assert!(u.lights.iter().all(|l| *l == [0.0; 4]));
+	}
+
+	#[test]
+	fn framing_nothing_gives_a_unit_radius() {
+		let camera = Camera::framing_bounds(None);
+		assert_eq!(camera.target, [0.0; 3]);
+		assert_eq!(camera.radius, 1.0);
+		assert_eq!(camera.floor, 0.0);
+		assert!(close(camera.distance, 1.9));
+	}
+
+	#[test]
+	fn framing_a_point_does_not_give_a_zero_radius() {
+		let camera = Camera::framing_bounds(Some(([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])));
+		assert_eq!(camera.target, [1.0, 2.0, 3.0]);
+		assert_eq!(camera.radius, 1.0);
+		assert_eq!(camera.floor, 2.0);
+	}
+
+	#[test]
+	fn framing_a_box_centres_on_it() {
+		let camera = Camera::framing_bounds(Some(([-1.0, -2.0, 0.0], [1.0, 2.0, 4.0])));
+		assert_eq!(camera.target, [0.0, 0.0, 2.0]);
+		assert!(close(camera.radius, 3.0));
+		assert!(close(camera.distance, 3.0 * 1.9));
+		assert_eq!(camera.floor, -2.0);
+		assert!(close(camera.yaw, std::f32::consts::PI - 0.6));
+		assert_eq!(camera.pitch, 0.4);
+	}
+
+	#[test]
+	fn project_puts_the_target_at_the_centre() {
+		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
+		let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(300.0, 200.0));
+		let p = project(&camera, rect, camera.target).unwrap();
+		assert!(close(p.x, rect.center().x) && close(p.y, rect.center().y));
+	}
+
+	#[test]
+	fn project_follows_the_camera_basis() {
+		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
+		let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 200.0));
+		let (right, up, _) = camera.basis();
+		let focal = 100.0 / 35f32.to_radians().tan();
+		let shift = focal / camera.distance;
+		let to_right = project(&camera, rect, add(camera.target, right)).unwrap();
+		assert!((to_right.x - (150.0 + shift)).abs() < 1e-3);
+		assert!((to_right.y - 100.0).abs() < 1e-3);
+		// screen y grows downwards
+		let above = project(&camera, rect, add(camera.target, up)).unwrap();
+		assert!((above.x - 150.0).abs() < 1e-3);
+		assert!((above.y - (100.0 - shift)).abs() < 1e-3);
+	}
+
+	#[test]
+	fn project_rejects_points_behind_or_at_the_eye() {
+		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
+		let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 200.0));
+		let eye = camera.eye();
+		let (_, _, forward) = camera.basis();
+		assert_eq!(project(&camera, rect, eye), None);
+		assert_eq!(project(&camera, rect, sub(eye, forward)), None);
+		// the near limit is a hundredth of the radius
+		let near = camera.radius * 0.01;
+		let just_inside = add(eye, forward.map(|f| f * near * 0.5));
+		assert_eq!(project(&camera, rect, just_inside), None);
+		let just_beyond = add(eye, forward.map(|f| f * near * 2.0));
+		assert!(project(&camera, rect, just_beyond).is_some());
+	}
+
+	fn add(a: V3, b: V3) -> V3 {
+		[a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+	}
+}

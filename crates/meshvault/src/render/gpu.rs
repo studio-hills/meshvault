@@ -789,6 +789,8 @@ impl MeshCallback {
 }
 
 #[cfg(test)]
+// geometry groups are lists of ranges, so one-element lists are intended
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
 	/// The shader is only compiled when the app starts; validate it here so a
 	/// mistake fails the test suite instead of crashing the viewer.
@@ -804,16 +806,185 @@ mod tests {
 		.unwrap_or_else(|e| panic!("{e:?}"));
 	}
 
-	/// The Rust uniform struct must match the WGSL one byte for byte.
+	/// The Rust uniform struct must match the WGSL one byte for byte: the
+	/// same members in the same order, each at the same offset with the same
+	/// scalar type and size, so reordering two same-sized members fails here.
 	#[test]
 	fn uniform_layout_matches_shader() {
+		use std::mem::{offset_of, size_of};
+
+		use super::Uniforms;
+
 		let module = naga::front::wgsl::parse_str(include_str!("mesh.wgsl")).unwrap();
-		let size = module
+		let (_, ty) = module
 			.types
 			.iter()
 			.find(|(_, t)| t.name.as_deref() == Some("Uniforms"))
-			.map(|(_, t)| t.inner.size(module.to_ctx()))
 			.unwrap();
-		assert_eq!(size as usize, std::mem::size_of::<super::Uniforms>());
+		let naga::TypeInner::Struct { members, span } = &ty.inner else {
+			panic!("Uniforms is not a struct");
+		};
+		assert_eq!(*span as usize, size_of::<Uniforms>());
+
+		// Rust's side: each field's name, offset, size and how many vec4s of
+		// which scalar it holds (a mat4x4 and an array of four vec4s are laid
+		// out alike)
+		macro_rules! field {
+			($name:ident, $scalar:expr, $vec4s:expr) => {
+				(
+					stringify!($name),
+					offset_of!(Uniforms, $name) as u32,
+					size_of_field(|u: &Uniforms| &u.$name),
+					($scalar, $vec4s),
+				)
+			};
+		}
+		fn size_of_field<T>(_: fn(&Uniforms) -> &T) -> u32 {
+			size_of::<T>() as u32
+		}
+		use naga::ScalarKind::{Float, Uint};
+		let rust = [
+			field!(view_proj, Float, 4),
+			field!(model, Float, 4),
+			field!(normal_model, Float, 4),
+			field!(eye, Float, 1),
+			field!(light_dir, Float, 1),
+			field!(wire_color, Float, 1),
+			field!(params, Float, 1),
+			field!(flags, Uint, 1),
+			field!(surface, Float, 1),
+			field!(tint, Float, 1),
+			field!(part_from_mesh, Float, 4),
+			field!(decal, Float, 1),
+			field!(decal_size, Float, 1),
+			field!(decal_tile, Float, 1),
+			field!(decal_colour, Float, 1),
+			field!(
+				lights,
+				Float,
+				crate::render::viewport::MAX_LIGHTS as u32 * 3
+			),
+			field!(light_count, Float, 1),
+			field!(clothing, Float, 8),
+			field!(env, Float, 4),
+		];
+		// each Rust field is 4-byte scalars, so its size follows from the shape
+		for (name, _, size, (_, vec4s)) in rust {
+			assert_eq!(size, vec4s * 16, "{name}");
+		}
+
+		// the shader's side, in the same terms
+		let vec4 = |inner: &naga::TypeInner| match *inner {
+			naga::TypeInner::Vector {
+				size: naga::VectorSize::Quad,
+				scalar,
+			} if scalar.width == 4 => Some(scalar.kind),
+			_ => None,
+		};
+		let shape = |inner: &naga::TypeInner| match *inner {
+			naga::TypeInner::Matrix {
+				columns: naga::VectorSize::Quad,
+				rows: naga::VectorSize::Quad,
+				scalar,
+			} if scalar.width == 4 => Some((scalar.kind, 4)),
+			naga::TypeInner::Array {
+				base,
+				size: naga::ArraySize::Constant(n),
+				stride: 16,
+			} => vec4(&module.types[base].inner).map(|kind| (kind, n.get())),
+			_ => vec4(inner).map(|kind| (kind, 1)),
+		};
+		let shader: Vec<_> = members
+			.iter()
+			.map(|m| {
+				let inner = &module.types[m.ty].inner;
+				(
+					m.name.clone().unwrap_or_default(),
+					m.offset,
+					inner.size(module.to_ctx()),
+					shape(inner).unwrap_or_else(|| panic!("{:?} has an unexpected type", m.name)),
+				)
+			})
+			.collect();
+
+		assert_eq!(shader.len(), rust.len(), "member count");
+		for ((name, offset, size, shape), wgsl) in rust.into_iter().zip(&shader) {
+			assert_eq!((name.to_string(), offset, size, shape), *wgsl);
+		}
+	}
+
+	use super::{Vertex, build_vertices};
+	use crate::scene::geometry::{Geometry, GroupKind};
+
+	fn geometry(groups: Vec<std::ops::Range<usize>>) -> Geometry {
+		Geometry {
+			positions: vec![
+				[0.0, 0.0, 0.0],
+				[1.0, 0.0, 0.0],
+				[0.0, 1.0, 0.0],
+				[0.0, 0.0, 1.0],
+			],
+			uvs: None,
+			normals: None,
+			triangles: vec![[0, 1, 2], [0, 2, 3], [1, 3, 2]],
+			groups,
+			group_kind: GroupKind::Lod,
+		}
+	}
+
+	const BARY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+	#[test]
+	fn build_vertices_expands_each_group_triangle() {
+		let g = geometry(vec![0..1, 1..3]);
+		let (vertices, groups) = build_vertices(&g, &[[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+		assert_eq!(groups, vec![0..3, 3..9]);
+		assert_eq!(vertices.len(), 9);
+		let corners = g.triangles.iter().flatten();
+		for (k, (v, &i)) in vertices.iter().zip(corners).enumerate() {
+			assert_eq!(v.pos, g.positions[i as usize]);
+			assert_eq!(v.bary, BARY[k % 3], "vertex {k}");
+			// no normals or UVs: zeros
+			assert_eq!((v.normal, v.uv), ([0.0; 3], [0.0; 2]));
+			let colour = if k < 3 {
+				[1.0, 0.0, 0.0]
+			} else {
+				[0.0, 0.0, 1.0]
+			};
+			assert_eq!(v.color, colour, "vertex {k}");
+		}
+	}
+
+	#[test]
+	fn build_vertices_copies_normals_and_uvs() {
+		let mut g = geometry(vec![2..3]);
+		g.normals = Some(vec![
+			[0.0, 0.0, 1.0],
+			[0.0, 1.0, 0.0],
+			[1.0, 0.0, 0.0],
+			[0.5; 3],
+		]);
+		g.uvs = Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]);
+		// a group without a colour of its own is grey
+		let (vertices, groups) = build_vertices(&g, &[]);
+		assert_eq!(groups, vec![0..3]);
+		let normals: Vec<_> = vertices.iter().map(|v| v.normal).collect();
+		let uvs: Vec<_> = vertices.iter().map(|v| v.uv).collect();
+		assert_eq!(normals, vec![[0.0, 1.0, 0.0], [0.5; 3], [1.0, 0.0, 0.0]]);
+		assert_eq!(uvs, vec![[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+		assert!(vertices.iter().all(|v| v.color == [0.8; 3]));
+	}
+
+	/// Only triangles in a group are drawn; with none, one zeroed vertex
+	/// stands in (wgpu rejects empty buffers), drawn by no range.
+	#[test]
+	fn build_vertices_without_groups_gives_one_dummy_vertex() {
+		for g in [geometry(Vec::new()), geometry(vec![1..1])] {
+			let (vertices, groups) = build_vertices(&g, &[]);
+			assert_eq!(vertices.len(), 1);
+			let zero: Vertex = bytemuck::Zeroable::zeroed();
+			assert_eq!(bytemuck::bytes_of(&vertices[0]), bytemuck::bytes_of(&zero));
+			assert!(groups.iter().all(|r| r.is_empty()), "{groups:?}");
+		}
 	}
 }

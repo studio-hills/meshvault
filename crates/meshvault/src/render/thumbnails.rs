@@ -374,3 +374,136 @@ fn fnv1a(text: &str) -> u64 {
 		(h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
 	})
 }
+
+#[cfg(test)]
+mod tests {
+	use std::time::Duration;
+
+	use super::*;
+	use crate::render::viewport::{DecalDraw, IDENTITY, Surface};
+	use crate::test_support::TempDir;
+
+	/// Cached thumbnails are named by these hashes, so they must never change.
+	#[test]
+	fn fnv1a_is_stable() {
+		assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
+		assert_eq!(fnv1a("item:abc"), 0xdaa7_b814_1855_7efc);
+		assert_eq!(
+			fnv1a(&Subject::Item("abc".into()).key()),
+			0xdaa7_b814_1855_7efc
+		);
+	}
+
+	fn geometry() -> Geometry {
+		Geometry {
+			positions: vec![
+				[0.0, 0.0, 0.0],
+				[1.0, 0.0, 0.0],
+				[0.0, 2.0, 0.0],
+				[0.0, 0.0, 3.0],
+				// in no triangle
+				[100.0, 100.0, 100.0],
+			],
+			uvs: None,
+			normals: None,
+			triangles: vec![[0, 1, 2], [0, 2, 3]],
+			groups: vec![0..1, 1..2],
+			group_kind: GroupKind::Lod,
+		}
+	}
+
+	fn part<'a>(
+		geometry: &'a Geometry,
+		groups: &'a [usize],
+		material: &'a Material,
+		scene: &'a mut Option<crate::render::gpu::GpuScene>,
+	) -> ScenePart<'a> {
+		ScenePart {
+			geometry,
+			groups,
+			transform: IDENTITY,
+			material,
+			colour_groups: false,
+			colour: egui::Color32::WHITE,
+			scene,
+			moved: false,
+			surface: Surface::OPAQUE,
+			decal: None,
+			highlight: false,
+		}
+	}
+
+	#[test]
+	fn drawn_bounds_of_nothing_is_none() {
+		assert_eq!(drawn_bounds(&[]), None);
+		let (g, material) = (geometry(), Material::default());
+		let mut scene = None;
+		// a group index past the geometry's groups is skipped
+		assert_eq!(drawn_bounds(&[part(&g, &[5], &material, &mut scene)]), None);
+	}
+
+	#[test]
+	fn drawn_bounds_covers_the_drawn_groups_moved_and_skips_decals() {
+		let (g, material) = (geometry(), Material::default());
+		let (mut a, mut b, mut c) = (None, None, None);
+		// only group 0 (the first triangle), moved 10 along X and doubled in Y
+		let mut moved = part(&g, &[0], &material, &mut a);
+		moved.transform[0][3] = 10.0;
+		moved.transform[1][1] = 2.0;
+		// group 1 only, as it is
+		let other = part(&g, &[1], &material, &mut b);
+		let mut decal = part(&g, &[0, 1], &material, &mut c);
+		decal.transform[0][3] = -50.0;
+		decal.decal = Some(DecalDraw {
+			part_from_mesh: IDENTITY,
+			size: [1.0; 3],
+			face: 0,
+			tiles: None,
+			colour: [1.0; 3],
+			transparency: 0.0,
+			variant: false,
+			clothing: None,
+		});
+		let parts = [moved, other, decal];
+		assert_eq!(
+			drawn_bounds(&parts[..1]),
+			Some(([10.0, 0.0, 0.0], [11.0, 4.0, 0.0]))
+		);
+		assert_eq!(
+			drawn_bounds(&parts),
+			Some(([0.0, 0.0, 0.0], [11.0, 4.0, 3.0]))
+		);
+	}
+
+	fn touch(path: &Path, when: SystemTime) {
+		let file = std::fs::File::create(path).unwrap();
+		file.set_modified(when).unwrap();
+	}
+
+	#[test]
+	fn is_fresh_compares_modified_times() {
+		let dir = TempDir::new("thumb_fresh");
+		let now = SystemTime::now();
+		let (thumb, mesh, map) = (dir.join("t.png"), dir.join("a.mesh"), dir.join("a.png"));
+		// no thumbnail yet
+		assert!(!is_fresh(&thumb, &[]));
+		touch(&thumb, now);
+		touch(&mesh, now - Duration::from_secs(60));
+		touch(&map, now);
+		// as new as the thumbnail still counts as fresh
+		assert!(is_fresh(&thumb, &[mesh.clone(), map.clone()]));
+		assert!(is_fresh(&thumb, &[]));
+		touch(&map, now + Duration::from_secs(60));
+		assert!(!is_fresh(&thumb, &[mesh.clone(), map.clone()]));
+	}
+
+	/// Files that cannot be read are left out of the comparison rather than
+	/// making the thumbnail stale (characterised as it is today).
+	#[test]
+	fn is_fresh_ignores_missing_files() {
+		let dir = TempDir::new("thumb_missing");
+		let thumb = dir.join("t.png");
+		touch(&thumb, SystemTime::now());
+		assert!(is_fresh(&thumb, &[dir.join("gone.mesh")]));
+	}
+}

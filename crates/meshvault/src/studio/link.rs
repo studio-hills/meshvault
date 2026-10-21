@@ -27,9 +27,10 @@
 //! still arriving plus received exports the app has not taken share one
 //! byte limit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -190,8 +191,22 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 pub struct Received {
 	pub name: String,
 	pub json: Vec<u8>,
-	/// Where the app is to save it.
-	pub path: std::path::PathBuf,
+	/// Where the app is to save it: a new file.
+	pub path: PathBuf,
+}
+
+impl Received {
+	/// Saves the export to `path`, never over an existing file.
+	pub fn save(&self) -> std::io::Result<()> {
+		if let Some(folder) = self.path.parent() {
+			std::fs::create_dir_all(folder)?;
+		}
+		std::fs::OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(&self.path)?
+			.write_all(&self.json)
+	}
 }
 
 pub enum Event {
@@ -220,7 +235,8 @@ pub struct StudioLink {
 impl StudioLink {
 	pub fn start(ctx: &egui::Context) -> Self {
 		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
-		let exports = Exports::default();
+		let exports =
+			Exports::new(crate::config::Config::default_workspaces_dir().join(EXPORTS_FOLDER));
 		let queued = exports.queued.clone();
 		let status = match TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) {
 			Ok(listener) => {
@@ -255,16 +271,59 @@ impl StudioLink {
 }
 
 /// What the server keeps between requests.
-#[derive(Default)]
 struct Exports {
 	/// Exports still arriving, by id.
 	pending: HashMap<String, Pending>,
 	/// Bytes of received exports sent to the app and not yet taken by it,
 	/// shared with [`StudioLink::poll`] so they count towards [`MAX_HELD`].
 	queued: Arc<AtomicUsize>,
+	/// The folder received exports are saved in.
+	folder: PathBuf,
+	/// The second of the file names last handed out, and those names, so
+	/// two exports finishing in the same second get different files.
+	named: (u64, HashSet<String>),
 }
 
 impl Exports {
+	fn new(folder: PathBuf) -> Self {
+		Self {
+			pending: HashMap::new(),
+			queued: Arc::default(),
+			folder,
+			named: (0, HashSet::new()),
+		}
+	}
+
+	/// Where to save a received export: its name (made safe) and `stamp`
+	/// (the time, in seconds), with `-2`, `-3` and so on added when that file
+	/// was handed out already or is there on disk.
+	fn path_for(&mut self, name: &str, stamp: u64) -> PathBuf {
+		let base = if name.trim().is_empty() {
+			"studio-export"
+		} else {
+			name.trim()
+		};
+		let base = format!("{}-{stamp}", crate::workspace::sanitize(base));
+		if self.named.0 != stamp {
+			// names carry their second, so older ones cannot clash
+			self.named = (stamp, HashSet::new());
+		}
+		let mut n = 1;
+		loop {
+			let file = if n == 1 {
+				format!("{base}.json")
+			} else {
+				format!("{base}-{n}.json")
+			};
+			let path = self.folder.join(&file);
+			if !self.named.1.contains(&file) && !path.exists() {
+				self.named.1.insert(file);
+				return path;
+			}
+			n += 1;
+		}
+	}
+
 	/// Bytes held for the app: pieces still arriving and received exports
 	/// it has not taken.
 	fn held(&self) -> usize {
@@ -630,39 +689,30 @@ fn receive_piece(request: Request, exports: &mut Exports) -> Result<Option<Recei
 	// still there: `entry` was this id's entry a moment ago
 	let done = pending.remove(id).expect("present");
 	let json = done.chunks.into_iter().flatten().flatten().collect();
-	Ok(Some(Received {
-		path: crate::config::Config::default_workspaces_dir()
-			.join(EXPORTS_FOLDER)
-			.join(file_name(&done.name)),
-		name: done.name,
-		json,
-	}))
-}
-
-/// A file name for a received export: its name (made safe) and the time.
-fn file_name(name: &str) -> String {
 	let stamp = std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.map_or(0, |d| d.as_secs());
-	let base = if name.trim().is_empty() {
-		"studio-export"
-	} else {
-		name.trim()
-	};
-	format!("{}-{stamp}.json", crate::workspace::sanitize(base))
+	Ok(Some(Received {
+		path: exports.path_for(&done.name, stamp),
+		name: done.name,
+		json,
+	}))
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
+	/// The server's state, saving to a folder that is never made.
+	fn exports() -> Exports {
+		Exports::new(std::env::temp_dir().join("meshvault_link_tests_never_made"))
+	}
+
 	fn start() -> (u16, Receiver<Event>) {
 		let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
 		let port = listener.local_addr().unwrap().port();
 		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
-		std::thread::spawn(move || {
-			serve(listener, tx, Exports::default(), egui::Context::default())
-		});
+		std::thread::spawn(move || serve(listener, tx, exports(), egui::Context::default()));
 		(port, rx)
 	}
 
@@ -1140,7 +1190,7 @@ mod tests {
 
 	#[test]
 	fn refuses_pieces_without_valid_headers() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		assert_eq!(
 			refusal(receive_piece(
 				piece(&[("x-meshvault-chunk", "1/1")], b"x"),
@@ -1178,7 +1228,7 @@ mod tests {
 
 	#[test]
 	fn a_changed_piece_count_drops_the_export() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		assert!(matches!(
 			receive_piece(chunk("a", "1/2", b"x"), &mut exports),
 			Ok(None)
@@ -1197,7 +1247,7 @@ mod tests {
 
 	#[test]
 	fn an_export_may_reach_the_size_limit_but_not_pass_it() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		// a nearly full export, without allocating one
 		let nearly_full = || Pending {
 			chunks: vec![None; 2],
@@ -1223,7 +1273,7 @@ mod tests {
 	// counts towards the size.
 	#[test]
 	fn a_resent_piece_replaces_the_first_and_counts_once() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		for body in [&b"abc"[..], b"def", b"ghij"] {
 			assert!(matches!(
 				receive_piece(chunk("a", "1/2", body), &mut exports),
@@ -1248,7 +1298,7 @@ mod tests {
 	// come for a while; one still arriving is kept.
 	#[test]
 	fn abandoned_exports_are_forgotten() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		for id in ["stopped", "arriving"] {
 			assert!(matches!(
 				receive_piece(chunk(id, "1/2", b"x"), &mut exports),
@@ -1268,7 +1318,7 @@ mod tests {
 
 	#[test]
 	fn only_so_many_exports_may_arrive_at_once() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		for i in 0..MAX_PENDING {
 			assert!(matches!(
 				receive_piece(chunk(&i.to_string(), "1/2", b"x"), &mut exports),
@@ -1298,7 +1348,7 @@ mod tests {
 			503,
 			"too much arriving at once, send it again later".to_string(),
 		);
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		// a nearly full export, without allocating one
 		exports.pending.insert(
 			"big".to_string(),
@@ -1354,7 +1404,7 @@ mod tests {
 	#[test]
 	fn received_exports_wait_in_a_bounded_queue() {
 		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		let link = StudioLink {
 			status: Status::Listening,
 			rx,
@@ -1382,7 +1432,7 @@ mod tests {
 
 	#[test]
 	fn joins_the_last_piece_into_an_export() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		let named = |chunk, name, body| {
 			piece(
 				&[
@@ -1412,21 +1462,14 @@ mod tests {
 		let file = done.path.file_name().unwrap().to_str().unwrap();
 		assert!(file.starts_with("My_Place-"), "{file}");
 		assert!(file.ends_with(".json"), "{file}");
-		assert_eq!(
-			done.path.parent(),
-			Some(
-				crate::config::Config::default_workspaces_dir()
-					.join("Exports")
-					.as_path()
-			)
-		);
+		assert_eq!(done.path.parent(), Some(exports.folder.as_path()));
 	}
 
 	// The name becomes the file name and comes back in the reply, so only its
 	// start is kept.
 	#[test]
 	fn a_long_name_is_cut_short() {
-		let mut exports = Exports::default();
+		let mut exports = exports();
 		let long = "é".repeat(MAX_NAME * 10);
 		let Ok(Some(done)) = receive_piece(
 			piece(
@@ -1446,20 +1489,69 @@ mod tests {
 		assert!(file.starts_with(&format!("{}-", done.name)), "{file}");
 	}
 
+	// Two exports with the same name (or names that are made safe alike)
+	// finishing in the same second must not be saved over each other.
+	#[test]
+	fn exports_with_the_same_name_get_their_own_files() {
+		let mut exports = exports();
+		let mut paths = Vec::new();
+		for (id, name) in [("a", "Place"), ("b", "Place"), ("c", "a/b"), ("d", "a\\b")] {
+			let named = piece(
+				&[
+					("x-meshvault-export", id),
+					("x-meshvault-chunk", "1/1"),
+					("x-meshvault-name", name),
+				],
+				b"{}",
+			);
+			let Ok(Some(done)) = receive_piece(named, &mut exports) else {
+				panic!("one piece is the whole export");
+			};
+			paths.push(done.path);
+		}
+		assert_ne!(paths[0], paths[1]);
+		assert_ne!(paths[2], paths[3]);
+	}
+
 	#[test]
 	fn names_received_files() {
-		// the stamp is the current second, so only its shape is checked
-		let stamp = |name: &str, prefix: &str| {
-			let file = file_name(name);
-			let stamp = file
-				.strip_prefix(prefix)
-				.and_then(|s| s.strip_suffix(".json"))
-				.unwrap_or_else(|| panic!("{file}"));
-			assert!(stamp.parse::<u64>().is_ok(), "{file}");
+		let folder = crate::test_support::TempDir::new("link_names");
+		let mut exports = Exports::new(folder.to_path_buf());
+		let mut file = |name: &str, stamp: u64| {
+			let path = exports.path_for(name, stamp);
+			assert_eq!(path.parent(), Some(&*folder));
+			path.file_name().unwrap().to_str().unwrap().to_string()
 		};
-		stamp("", "studio-export-");
-		stamp("  ", "studio-export-");
-		stamp("a/b", "a_b-");
-		stamp("  Place  ", "Place-");
+		assert_eq!(file("", 7), "studio-export-7.json");
+		assert_eq!(file("  ", 7), "studio-export-7-2.json");
+		assert_eq!(file("  Place  ", 7), "Place-7.json");
+		// names made safe alike, in the same second, are told apart
+		assert_eq!(file("a/b", 7), "a_b-7.json");
+		assert_eq!(file(r"a\b", 7), "a_b-7-2.json");
+		assert_eq!(file("a_b", 7), "a_b-7-3.json");
+		// a new second starts again
+		assert_eq!(file("Place", 8), "Place-8.json");
+		// and a file already there (from an earlier run, say) is not reused
+		std::fs::write(folder.join("Place-9.json"), "kept").unwrap();
+		assert_eq!(file("Place", 9), "Place-9-2.json");
+	}
+
+	#[test]
+	fn saving_never_replaces_a_file() {
+		let folder = crate::test_support::TempDir::new("link_save");
+		let received = Received {
+			name: "Place".into(),
+			json: b"{}".to_vec(),
+			path: folder.join("Exports").join("Place-7.json"),
+		};
+		// the folder is made when needed
+		received.save().unwrap();
+		assert_eq!(std::fs::read(&received.path).unwrap(), b"{}");
+		let again = Received {
+			json: b"[]".to_vec(),
+			..received
+		};
+		assert_eq!(again.save().unwrap_err().kind(), ErrorKind::AlreadyExists);
+		assert_eq!(std::fs::read(&again.path).unwrap(), b"{}");
 	}
 }

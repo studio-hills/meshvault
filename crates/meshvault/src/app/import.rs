@@ -130,11 +130,7 @@ impl App {
 			// the export is here, so the instructions are no longer needed
 			self.studio_dialog = None;
 			let path = received.path.clone();
-			let saved = path
-				.parent()
-				.map_or(Ok(()), std::fs::create_dir_all)
-				.and_then(|_| std::fs::write(&path, &received.json));
-			match saved {
+			match received.save() {
 				Ok(()) => {
 					self.toasts.success(format!(
 						"Received {} from Roblox Studio ({}), saved to {}",

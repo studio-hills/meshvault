@@ -10,7 +10,9 @@ use crate::ui::icons;
 use crate::ui::theme::{dialog_frame, display, palette};
 use crate::ui::widgets;
 use crate::workspace::AssetKind;
-use crate::workspace::download::{AuthMethod, Client, Credentials, Endpoints, sniff_extension};
+use crate::workspace::download::{
+	AuthMethod, Client, Credentials, Endpoints, MAX_CONCURRENCY_SETTING, sniff_extension,
+};
 
 pub struct SettingsDialog {
 	method: AuthMethod,
@@ -298,11 +300,11 @@ impl SettingsDialog {
 							let height = ui.spacing().interact_size.y;
 							widgets::pointer(ui.add_sized(
 								[48.0, height],
-								egui::DragValue::new(&mut self.concurrency).range(1..=8),
+								egui::DragValue::new(&mut self.concurrency).range(1..=MAX_CONCURRENCY_SETTING),
 							));
 							ui.spacing_mut().slider_width = ui.available_width() - ui.spacing().item_spacing.x;
 							widgets::pointer(ui.add(
-								egui::Slider::new(&mut self.concurrency, 1..=8).show_value(false),
+								egui::Slider::new(&mut self.concurrency, 1..=MAX_CONCURRENCY_SETTING).show_value(false),
 							));
 						});
 						ui.end_row();

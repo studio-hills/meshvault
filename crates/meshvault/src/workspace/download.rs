@@ -111,6 +111,9 @@ const CANCEL_POLL: Duration = Duration::from_millis(100);
 const MAX_WORKERS: usize = 16;
 /// Download threads used until the settings say otherwise.
 pub const DEFAULT_CONCURRENCY: usize = 4;
+/// Most download threads the settings dialog offers, below the
+/// downloader's own limit.
+pub const MAX_CONCURRENCY_SETTING: usize = 8;
 
 fn status_error(status: u16, retry_after: Option<Duration>, method: AuthMethod) -> FetchError {
 	match status {

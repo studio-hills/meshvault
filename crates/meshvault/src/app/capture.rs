@@ -4,7 +4,7 @@ use std::f32::consts::TAU;
 
 use eframe::egui;
 
-use super::App;
+use super::{App, DEFAULT_VIEW_SIZE};
 use crate::render::camera::Camera;
 use crate::render::maths::IDENTITY;
 use crate::render::viewport::{ScenePart, render_image};
@@ -147,7 +147,8 @@ impl App {
 			use image::codecs::gif::{GifEncoder, Repeat};
 			let file = std::fs::File::create(&path)
 				.map_err(|e| format!("Could not create {}: {e}", path.display()))?;
-			let mut encoder = GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
+			let mut encoder =
+				GifEncoder::new_with_speed(std::io::BufWriter::new(file), GIF_ENCODER_SPEED);
 			encoder
 				.set_repeat(Repeat::Infinite)
 				.map_err(|e| e.to_string())?;
@@ -169,6 +170,9 @@ const STILL_HEIGHT: f32 = 1080.0;
 const TURNTABLE_FRAMES: usize = 72;
 const TURNTABLE_FPS: f32 = 25.0;
 const TURNTABLE_HEIGHT: f32 = 480.0;
+/// The GIF encoder's trade of quality for speed: 1 is the slowest and
+/// best, 30 the fastest.
+const GIF_ENCODER_SPEED: i32 = 10;
 
 /// The viewport's shape, scaled to `height` pixels (even sides).
 fn frame_size(viewport: egui::Rect, height: f32) -> [u32; 2] {
@@ -176,7 +180,7 @@ fn frame_size(viewport: egui::Rect, height: f32) -> [u32; 2] {
 	let aspect = if aspect.is_finite() && aspect > 0.0 {
 		aspect
 	} else {
-		16.0 / 9.0
+		DEFAULT_VIEW_SIZE.x / DEFAULT_VIEW_SIZE.y
 	};
 	let even = |v: f32| ((v / 2.0).round() as u32).max(1) * 2;
 	[even(height * aspect), even(height)]

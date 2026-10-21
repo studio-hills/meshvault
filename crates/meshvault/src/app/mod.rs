@@ -34,6 +34,10 @@ pub use import::Parsing;
 use task::Task;
 pub use workspace::LoadingModel;
 
+/// The 3D view's size before it is first drawn. Its shape is also the
+/// fallback for saved images when the view has no usable size.
+const DEFAULT_VIEW_SIZE: egui::Vec2 = egui::vec2(16.0, 9.0);
+
 pub struct App {
 	pub ctx: egui::Context,
 	pub config: Config,
@@ -130,7 +134,7 @@ impl App {
 			studio_dialog: None,
 			studio_progress: None,
 			background: Vec::new(),
-			viewport: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(16.0, 9.0)),
+			viewport: egui::Rect::from_min_size(egui::Pos2::ZERO, DEFAULT_VIEW_SIZE),
 			last_save: Instant::now(),
 		};
 		if let link::Status::Unavailable(why) = &app.studio_link.status {

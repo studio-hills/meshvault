@@ -6,6 +6,9 @@ use super::App;
 use crate::ui::settings::{self, SettingsDialog};
 use crate::workspace::download::Event;
 
+/// How often the workspace is saved while downloads are running.
+const DOWNLOAD_SAVE_INTERVAL: Duration = Duration::from_secs(2);
+
 impl App {
 	pub fn open_settings(&mut self, notice: Option<String>) {
 		let test_id = self
@@ -75,7 +78,7 @@ impl App {
 		}
 		// save progress regularly, and once everything has finished
 		let finished = had_events && !self.downloader.is_running();
-		if finished || (had_events && self.last_save.elapsed() > Duration::from_secs(2)) {
+		if finished || (had_events && self.last_save.elapsed() > DOWNLOAD_SAVE_INTERVAL) {
 			self.save_workspace();
 		}
 		if finished {

@@ -51,6 +51,9 @@ fn file_name(path: &Path) -> String {
 		.unwrap_or_default()
 }
 
+/// Extensions the open dialog offers for Roblox meshes and union data.
+const MESH_EXTENSIONS: [&str; 5] = ["mesh", "meshdata", "meshdata5", "data", "bin"];
+
 impl App {
 	/// Reads the file at `path`, or reports why it could not be read.
 	pub(super) fn read_or_report(&mut self, path: &Path) -> Option<Vec<u8>> {
@@ -198,10 +201,7 @@ impl App {
 	pub fn pick_file(&mut self) {
 		if let Some(path) = rfd::FileDialog::new()
 			.set_title("Open Roblox mesh")
-			.add_filter(
-				"Roblox mesh / union data",
-				&["mesh", "meshdata", "meshdata5", "data", "bin"],
-			)
+			.add_filter("Roblox mesh / union data", &MESH_EXTENSIONS)
 			.add_filter("All files", &["*"])
 			.pick_file()
 		{

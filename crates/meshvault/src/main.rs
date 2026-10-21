@@ -27,16 +27,22 @@ use eframe::egui;
 use app::App;
 use render::gpu::GpuRenderer;
 
+/// The window title, and the app name given to eframe.
+const APP_NAME: &str = "Meshvault";
+/// The window's size when it first opens, and the smallest it can be.
+const WINDOW_SIZE: [f32; 2] = [1280.0, 800.0];
+const MIN_WINDOW_SIZE: [f32; 2] = [760.0, 480.0];
+
 fn main() -> eframe::Result {
 	// meshvault [workspace folder] [mesh, image or export .json ...]
 	let initial: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 	let options = eframe::NativeOptions {
 		viewport: egui::ViewportBuilder::default()
-			.with_title("Meshvault")
+			.with_title(APP_NAME)
 			// Meshvault draws its own title bar (see ui::window)
 			.with_decorations(false)
-			.with_inner_size([1280.0, 800.0])
-			.with_min_inner_size([760.0, 480.0])
+			.with_inner_size(WINDOW_SIZE)
+			.with_min_inner_size(MIN_WINDOW_SIZE)
 			.with_drag_and_drop(true),
 		// the 3D view needs a depth buffer; MSAA smooths its edges
 		depth_buffer: 32,
@@ -44,7 +50,7 @@ fn main() -> eframe::Result {
 		..Default::default()
 	};
 	eframe::run_native(
-		"Meshvault",
+		APP_NAME,
 		options,
 		Box::new(move |cc| {
 			ui::window::round_corners(cc);

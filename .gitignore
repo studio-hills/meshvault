@@ -3,3 +3,16 @@
 # local test data, never committed
 /examples/
 crates/rbx_mesh/meshes/personal/
+
+# tools
+node_modules/
+__pycache__/
+*.py[cod]
+
+# editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store

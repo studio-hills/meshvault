@@ -207,11 +207,11 @@ impl App {
 	}
 }
 
-/// One material slot: thumbnail, name, and show/replace/remove controls.
 /// Corner radius of a map's card; its thumbnail and buttons are rounded
 /// to this less its padding and border.
 const MAP_CARD_RADIUS: u8 = 8;
 
+/// One material slot: thumbnail, name, and show/replace/remove controls.
 fn map_row(
 	ui: &mut egui::Ui,
 	slot: Slot,

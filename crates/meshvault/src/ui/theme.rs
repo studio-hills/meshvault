@@ -233,11 +233,10 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	s.menu_margin = Margin::symmetric(8, 8);
 	// scroll bars stay out of the way: hidden until the pointer is over
 	// their column, then a faint 2px line that widens to a full bar on hover
-	// or while scrolling. The edge that hides content fades out, so more to
-	// scroll still shows without a bar. They
-	// float and take no space; panels put them in their right margin (see
-	// `widgets::scroll_in_margin`), so content never shifts or sits under
-	// them. The edge that hides content fades out.
+	// or while scrolling. They float and take no space; panels put them in
+	// their right margin (see `widgets::scroll_in_margin`), so content never
+	// shifts or sits under them. The edge that hides content fades out, so
+	// more to scroll still shows without a bar.
 	s.scroll = egui::style::ScrollStyle {
 		floating: true,
 		bar_width: 8.0,

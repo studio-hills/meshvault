@@ -467,7 +467,7 @@ pub fn truncated(
 	painter.layout_job(job)
 }
 
-/// A dashed rounded rectangle, used as a drop target.
+/// A dashed rectangle with square corners, used as a drop target.
 pub fn dashed_rect(ui: &Ui, rect: egui::Rect, colour: Color32) {
 	let r = rect.shrink(1.0);
 	let corners = [

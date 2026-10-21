@@ -1,5 +1,7 @@
 //! Everything drawn on screen, built from a small design system:
-//! [`theme`] (fonts, palette, spacing), [`widgets`] and [`icons`].
+//! [`theme`] (fonts, palette, spacing), [`widgets`] and [`icons`], with
+//! [`window`] (the window frame) and [`tree`] (folder open/closed state)
+//! shared by the screens too.
 
 mod code;
 mod dialogs;

@@ -84,7 +84,8 @@ impl App {
 				Frame::NONE
 					.fill(p.panel.gamma_multiply(0.94))
 					.stroke(Stroke::new(1.0, p.border))
-					// concentric with the controls: radius = control radius + padding
+					// the controls inside are nested to this radius less padding
+					// and border (see `TRANSPORT_RADIUS`)
 					.corner_radius(CornerRadius::same(TRANSPORT_RADIUS))
 					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)

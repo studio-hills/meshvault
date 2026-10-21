@@ -394,20 +394,23 @@ impl Workspace {
 		stem
 	}
 
-	/// Adds export entries; each entry's `maps` should already be filtered
-	/// to the maps selected for import. Entries already in the workspace
-	/// (same folder, name and mesh) gain any newly selected maps instead of
-	/// being duplicated, so re-importing an export is safe. Returns how
-	/// many new items were added.
+	/// Test helper: [`Self::add_entry`] for each entry, then one extra
+	/// generation bump even if nothing was added. Returns how many new items
+	/// were added.
 	#[cfg(test)]
-	pub fn add(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
+	pub(crate) fn add(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
 		let added = entries.into_iter().filter(|e| self.add_entry(e).1).count();
 		self.generation += 1;
 		added
 	}
 
-	/// Adds one entry (see [`Self::add`]). Returns the stem of its item and
-	/// whether the item is new.
+	/// Adds one export entry; its `maps` should already be filtered to the
+	/// maps selected for import. An entry matching an item already in the
+	/// workspace (same folder, name and mesh, and no map ID that differs
+	/// from the item's) gives that item any newly selected maps instead of
+	/// being duplicated, so re-importing an export is safe. An entry whose
+	/// maps conflict with the item's is a separate item. Returns the stem of
+	/// its item and whether the item is new.
 	pub fn add_entry(&mut self, entry: &Entry) -> (String, bool) {
 		let maps = entry.maps.iter().map(|(&kind, &id)| {
 			(

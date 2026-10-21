@@ -7,7 +7,7 @@ use super::{Action, Browser, Row, SCOPE, Status, status, status_dot};
 use crate::ui::theme::{CAPTION, CONTROL_RADIUS, LIST_TEXT, Palette, ROW, palette};
 use crate::ui::tree::{self, FolderTree};
 use crate::ui::{icons, widgets};
-use crate::workspace::{Item, ModelItem, Workspace};
+use crate::workspace::Workspace;
 
 /// Shown in place of the list or grid when the search and filters leave
 /// nothing.
@@ -72,13 +72,14 @@ impl Browser {
 				for &i in &visible {
 					let model = &ws.models()[i];
 					let key = Row::Model(i);
-					let response = model_row(
+					let response = library_row(
 						ui,
 						&p,
-						model,
 						self.model_status(ws, model),
+						&model.name,
 						open_model == Some(i),
 						self.is_selected(key),
+						Trailing::Clips(model.playable_clips),
 					);
 					self.drawn(key);
 					let response = response.on_hover_text(self.model_hover(ws, model));
@@ -205,7 +206,20 @@ impl Browser {
 			let p = palette(ui.ctx());
 			let is_open = open_stem == Some(item.stem.as_str());
 			let key = Row::Mesh(i);
-			let response = item_row(ui, &p, item, is_open, self.is_selected(key));
+			let trailing = if item.maps.is_empty() {
+				Trailing::None
+			} else {
+				Trailing::Map
+			};
+			let response = library_row(
+				ui,
+				&p,
+				status(item),
+				&item.name,
+				is_open,
+				self.is_selected(key),
+				trailing,
+			);
 			self.drawn(key);
 			if is_open && self.scroll_to_open.replace(false) {
 				response.scroll_to_me(Some(egui::Align::Center));
@@ -230,55 +244,27 @@ fn row_fill(p: &Palette, response: &egui::Response, selected: bool) -> Color32 {
 	}
 }
 
-/// A library row for an animated model: status dot, name, clip count.
-fn model_row(
-	ui: &mut egui::Ui,
-	p: &Palette,
-	model: &ModelItem,
-	s: Status,
-	open: bool,
-	selected: bool,
-) -> egui::Response {
-	let (rect, response) =
-		ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
-	let painter = ui.painter_at(rect);
-	painter.rect_filled(
-		rect,
-		CornerRadius::same(CONTROL_RADIUS),
-		row_fill(p, &response, selected),
-	);
-	status_dot(&painter, p, rect.left_center() + Vec2::new(11.0, 0.0), s);
-	let clips = format!("{}  {}", icons::FILM_STRIP, model.playable_clips);
-	let clips_galley = painter.layout_no_wrap(clips, FontId::proportional(CAPTION), p.text_weak);
-	let text_rect = egui::Rect::from_min_max(
-		rect.left_top() + Vec2::new(24.0, 0.0),
-		rect.right_bottom() - Vec2::new(clips_galley.size().x + 16.0, 0.0),
-	);
-	let name = widgets::truncated(
-		&painter,
-		&model.name,
-		FontId::proportional(LIST_TEXT),
-		if open { p.accent } else { p.text },
-		text_rect.width(),
-	);
-	painter.galley(
-		text_rect.left_center() - Vec2::new(0.0, name.size().y / 2.0),
-		name,
-		p.text,
-	);
-	let pos =
-		rect.right_center() - Vec2::new(10.0 + clips_galley.size().x, clips_galley.size().y / 2.0);
-	painter.galley(pos, clips_galley, p.text_weak);
-	response.on_hover_cursor(egui::CursorIcon::PointingHand)
+/// What a library row shows at its right end.
+#[derive(Clone, Copy)]
+enum Trailing {
+	/// An animated model's playable clips, counted beside a film strip.
+	Clips(usize),
+	/// An image icon: the mesh has maps.
+	Map,
+	/// Nothing: a mesh without maps.
+	None,
 }
 
-/// A full-width, hoverable row: status dot, name, and a map indicator.
-fn item_row(
+/// A full-width, hoverable library row: status dot, name, and what
+/// `trailing` puts at the right end.
+fn library_row(
 	ui: &mut egui::Ui,
 	p: &Palette,
-	item: &Item,
+	s: Status,
+	name: &str,
 	open: bool,
 	selected: bool,
+	trailing: Trailing,
 ) -> egui::Response {
 	let (rect, response) =
 		ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
@@ -288,27 +274,40 @@ fn item_row(
 		CornerRadius::same(CONTROL_RADIUS),
 		row_fill(p, &response, selected),
 	);
-	let s = status(item);
 	status_dot(&painter, p, rect.left_center() + Vec2::new(11.0, 0.0), s);
-	let text_colour = if open { p.accent } else { p.text };
-	let right_pad = if item.maps.is_empty() { 8.0 } else { 26.0 };
+	// the name stops short of what is at the right end
+	let (clips, right_pad) = match trailing {
+		Trailing::Clips(n) => {
+			let clips = format!("{}  {n}", icons::FILM_STRIP);
+			let galley = painter.layout_no_wrap(clips, FontId::proportional(CAPTION), p.text_weak);
+			let pad = galley.size().x + 16.0;
+			(Some(galley), pad)
+		}
+		Trailing::Map => (None, 26.0),
+		Trailing::None => (None, 8.0),
+	};
 	let text_rect = egui::Rect::from_min_max(
 		rect.left_top() + Vec2::new(24.0, 0.0),
 		rect.right_bottom() - Vec2::new(right_pad, 0.0),
 	);
+	let colour = if open { p.accent } else { p.text };
 	let name = widgets::truncated(
 		&painter,
-		&item.name,
+		name,
 		FontId::proportional(LIST_TEXT),
-		text_colour,
+		colour,
 		text_rect.width(),
 	);
 	painter.galley(
 		text_rect.left_center() - Vec2::new(0.0, name.size().y / 2.0),
 		name,
-		text_colour,
+		colour,
 	);
-	if !item.maps.is_empty() {
+	if let Some(clips) = clips {
+		let pos = rect.right_center() - Vec2::new(10.0 + clips.size().x, clips.size().y / 2.0);
+		painter.galley(pos, clips, p.text_weak);
+	}
+	if let Trailing::Map = trailing {
 		painter.text(
 			rect.right_center() - Vec2::new(10.0, 0.0),
 			Align2::RIGHT_CENTER,
@@ -317,5 +316,5 @@ fn item_row(
 			p.text_weak,
 		);
 	}
-	response.on_hover_cursor(egui::CursorIcon::PointingHand)
+	widgets::pointer(response)
 }

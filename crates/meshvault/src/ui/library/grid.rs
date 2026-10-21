@@ -206,7 +206,7 @@ impl Browser {
 			);
 			painter.galley(label.center() - galley.size() / 2.0, galley, p.text);
 		}
-		let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+		let response = widgets::pointer(response);
 		let response = match key {
 			Row::Model(i) => response.on_hover_text(self.model_hover(ws, &ws.models()[i])),
 			Row::Mesh(i) => response.on_hover_text(format!(

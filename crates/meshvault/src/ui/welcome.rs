@@ -126,8 +126,8 @@ impl App {
 			"View meshes, unions and physics data with their materials, or download a whole game's models into a workspace.",
 		);
 		ui.add_space(6.0);
-		if ui
-			.add(
+		if widgets::pointer(
+			ui.add(
 				egui::Label::new(
 					RichText::new(format!(
 						"{}  Export a game from Roblox Studio…",
@@ -136,9 +136,9 @@ impl App {
 					.color(p.accent),
 				)
 				.sense(Sense::click()),
-			)
-			.on_hover_cursor(egui::CursorIcon::PointingHand)
-			.clicked()
+			),
+		)
+		.clicked()
 		{
 			self.show_studio_dialog();
 		}

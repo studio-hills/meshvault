@@ -115,7 +115,7 @@ const LIGHT_SCALE: f32 = 3.0;
 // cosine of the steepest angle a surface may turn from a decal and still take it
 const DECAL_FACING: f32 = 0.55;
 
-// Cook-Torrance GGX specular + Lambert diffuse for one directional light.
+// Cook-Torrance GGX specular + Lambert diffuse for one light from direction `l`.
 fn shade_light(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>,
 		albedo: vec3<f32>, rough: f32, metal: f32, f0: vec3<f32>) -> vec3<f32> {
 	let h = normalize(v + l);
@@ -268,7 +268,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 		alpha = decal_s.a * (1.0 - u.decal.z);
 		let outside = any(decal_uv < vec2<f32>(0.0)) || any(decal_uv > vec2<f32>(1.0));
 		// Roblox decides per triangle (its own normal, not the smoothed one), and
-		// leaves surfaces turned more than about CUTOFF away from the decal bare
+		// leaves surfaces turned more than about DECAL_FACING away from the decal bare
 		let facing = dot(local_face, local_face) > 1e-12
 			&& dot(normalize(local_face), axes[2]) > DECAL_FACING;
 		cut = !facing || (u.decal.x < 1.5 && outside);

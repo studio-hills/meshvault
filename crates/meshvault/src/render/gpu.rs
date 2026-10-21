@@ -13,7 +13,8 @@ use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::texture::Material;
 
-/// Must match `NativeOptions` in main.
+/// The window's multisample count (main passes it to `NativeOptions`);
+/// every pipeline and the off-screen colour and depth targets use it.
 pub const MSAA_SAMPLES: u32 = 4;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -43,11 +44,13 @@ pub struct Uniforms {
 	/// 1 for Neon, Reflectance, 1 for metal materials.
 	pub surface: [f32; 4],
 	/// SurfaceAppearance: linear tint of the colour map, and the alpha mode
-	/// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque).
+	/// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque, 4 Blend: the map's
+	/// alpha blends the surface, for meshes shown on their own).
 	pub tint: [f32; 4],
 	/// Decal draws: mesh to part space (column-major), then mode (0 none,
-	/// 1 Decal, 2 Texture), face, transparency; the part's size; studs per
-	/// tile and offset (U, V, U, V); and the linear tint.
+	/// 1 Decal, 2 Texture, 3 MaterialVariant, 4 clothing), face,
+	/// transparency; the part's size; studs per tile and offset (U, V, U,
+	/// V); and the linear tint.
 	pub part_from_mesh: [[f32; 4]; 4],
 	pub decal: [f32; 4],
 	pub decal_size: [f32; 4],
@@ -139,7 +142,7 @@ impl GpuRenderer {
 		let device = render_state.device.clone();
 		let queue = render_state.queue.clone();
 		let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-			label: Some("rbx_mesh shader"),
+			label: Some("meshvault mesh shader"),
 			source: wgpu::ShaderSource::Wgsl(include_str!("mesh.wgsl").into()),
 		});
 		let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
@@ -153,7 +156,7 @@ impl GpuRenderer {
 			count: None,
 		};
 		let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("rbx_mesh bind group layout"),
+			label: Some("meshvault bind group layout"),
 			entries: &[
 				wgpu::BindGroupLayoutEntry {
 					binding: 0,
@@ -178,7 +181,7 @@ impl GpuRenderer {
 			],
 		});
 		let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-			label: Some("rbx_mesh pipeline layout"),
+			label: Some("meshvault pipeline layout"),
 			bind_group_layouts: &[Some(&layout)],
 			immediate_size: 0,
 		});
@@ -187,11 +190,10 @@ impl GpuRenderer {
 		// buffer alone, so they are drawn last, from the back to the front;
 		// decals blend over their part's own surface, at the same depth
 		let pipeline = |kind: Kind, cull_mode| {
-			// decals blend too, over the surface they lie on
 			let see_through = matches!(kind, Kind::SeeThrough | Kind::Decal);
 			let decal = kind == Kind::Decal;
 			device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-				label: Some("rbx_mesh pipeline"),
+				label: Some("meshvault pipeline"),
 				layout: Some(&pipeline_layout),
 				vertex: wgpu::VertexState {
 					module: &module,
@@ -255,7 +257,7 @@ impl GpuRenderer {
 			],
 		};
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-			label: Some("rbx_mesh sampler"),
+			label: Some("meshvault sampler"),
 			address_mode_u: wgpu::AddressMode::Repeat,
 			address_mode_v: wgpu::AddressMode::Repeat,
 			address_mode_w: wgpu::AddressMode::Repeat,
@@ -292,12 +294,12 @@ impl GpuRenderer {
 		let vertex_buffer = self
 			.device
 			.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-				label: Some("rbx_mesh vertices"),
+				label: Some("meshvault vertices"),
 				contents: bytemuck::cast_slice(&vertices),
 				usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			});
 		let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("rbx_mesh uniforms"),
+			label: Some("meshvault uniforms"),
 			size: std::mem::size_of::<Uniforms>() as u64,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
@@ -334,7 +336,7 @@ impl GpuRenderer {
 			})
 		};
 		self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("rbx_mesh bind group"),
+			label: Some("meshvault bind group"),
 			layout: &self.layout,
 			entries: &[
 				wgpu::BindGroupEntry {
@@ -465,7 +467,7 @@ impl GpuRenderer {
 		};
 		let texture = |samples, format, usage| {
 			self.device.create_texture(&wgpu::TextureDescriptor {
-				label: Some("rbx_mesh offscreen"),
+				label: Some("meshvault offscreen"),
 				size: extent,
 				mip_level_count: 1,
 				sample_count: samples,
@@ -494,7 +496,7 @@ impl GpuRenderer {
 			.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 		{
 			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-				label: Some("rbx_mesh offscreen"),
+				label: Some("meshvault offscreen"),
 				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
 					view: &msaa_view,
 					depth_slice: None,
@@ -522,7 +524,7 @@ impl GpuRenderer {
 		let row = (4 * width).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
 			* wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 		let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("rbx_mesh offscreen readback"),
+			label: Some("meshvault offscreen readback"),
 			size: (row * height) as u64,
 			usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
 			mapped_at_creation: false,
@@ -672,7 +674,7 @@ fn upload_texture(
 	let (w, h) = image.dimensions();
 	let levels = 32 - w.max(h).max(1).leading_zeros();
 	let texture = device.create_texture(&wgpu::TextureDescriptor {
-		label: Some("rbx_mesh map"),
+		label: Some("meshvault map"),
 		size: wgpu::Extent3d {
 			width: w,
 			height: h,

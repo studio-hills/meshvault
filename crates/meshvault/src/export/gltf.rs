@@ -839,6 +839,22 @@ mod tests {
 		assert!(!same(&a, &b));
 	}
 
+	/// The cutoff is strict: a difference of exactly 1e-5 counts as a change.
+	/// Starting from zero components keeps the difference exact.
+	#[test]
+	fn same_treats_exactly_1e5_as_different() {
+		let zero = CFrame::from_position([0.0; 3]);
+		for diff in [1e-5f32, 1e-5f32.next_down()] {
+			let at_cutoff = diff == 1e-5;
+			let mut b = zero;
+			b.pos[1] = diff;
+			assert_eq!(same(&zero, &b), !at_cutoff, "position {diff:e}");
+			let mut b = zero;
+			b.rot[0][2] = diff;
+			assert_eq!(same(&zero, &b), !at_cutoff, "rotation {diff:e}");
+		}
+	}
+
 	fn triangle(uvs: bool) -> Geometry {
 		Geometry {
 			positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, -1.0], [0.0, 3.0, 0.0]],

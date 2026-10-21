@@ -14,9 +14,9 @@
 //! must carry the custom headers above. A web page on another origin can
 //! only send those after a CORS preflight, which is never approved (OPTIONS
 //! gets a 404 without CORS headers). Every request must also say it is for
-//! `localhost` or `127.0.0.1` on the link's port (its `Host` header), so a
-//! page that reaches the port under its own name (DNS rebinding) is
-//! refused. There is no authentication: any program on this machine can
+//! `localhost` or `127.0.0.1` (its `Host` header, with the link's port or
+//! none), so a page that reaches the port under its own name (DNS
+//! rebinding) is refused. There is no authentication: any program on this machine can
 //! still send an export.
 //!
 //! Requests are served one at a time. Each has a capped head (request line
@@ -570,14 +570,17 @@ fn read_request(stream: impl Read, port: u16) -> Result<Request, Reply> {
 	})
 }
 
-/// Whether a `Host` header names the link: `localhost` or `127.0.0.1` with
-/// the link's port, exactly. A web page whose own name has been pointed at
-/// 127.0.0.1 sends that name instead, so it is refused.
+/// Whether a `Host` header names the link: `localhost` or `127.0.0.1`, with
+/// the link's port or with none. A web page whose own name has been pointed
+/// at 127.0.0.1 sends that name instead, so it is refused; it is the name
+/// that matters, so a client that leaves the port out is still let in.
 fn for_the_link(host: &str, port: u16) -> bool {
-	let Some((name, p)) = host.rsplit_once(':') else {
-		return false;
+	let (name, p) = match host.rsplit_once(':') {
+		Some((name, p)) => (name, Some(p)),
+		None => (host, None),
 	};
-	p == port.to_string() && (name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1")
+	p.is_none_or(|p| p == port.to_string())
+		&& (name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1")
 }
 
 fn route(request: Request, exports: &mut Exports, tx: &SyncSender<Event>) -> Reply {
@@ -1063,7 +1066,7 @@ mod tests {
 		for hosts in [
 			"",
 			"Host: evil.example:34875\r\n",
-			"Host: localhost\r\n",
+			"Host: evil.example\r\n",
 			"Host: localhost:80\r\n",
 			"Host: localhost:034875\r\n",
 			"Host: localhost.evil.example:34875\r\n",
@@ -1079,7 +1082,14 @@ mod tests {
 			let bytes = format!("POST /export HTTP/1.1\r\n{hosts}Content-Length: 9\r\n\r\n");
 			assert_eq!(refusal(read(bytes.as_bytes())), refused, "{hosts:?}");
 		}
-		for host in ["localhost:34875", "LocalHost:34875", "127.0.0.1:34875"] {
+		// the name is what keeps a rebound web page out, so no port is fine
+		for host in [
+			"localhost:34875",
+			"LocalHost:34875",
+			"127.0.0.1:34875",
+			"localhost",
+			"127.0.0.1",
+		] {
 			let r = parsed(format!("GET / HTTP/1.1\r\nhost: {host}\r\n\r\n").as_bytes());
 			assert_eq!(r.headers["host"], host);
 		}

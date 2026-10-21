@@ -33,6 +33,13 @@ struct FaceKey {
 }
 
 impl FaceTrack {
+	fn end_time(&self) -> f32 {
+		match &self.keys {
+			FaceKeys::Curve(keys) => keys.last().map_or(0.0, |k| k.time),
+			FaceKeys::Poses(keys) => keys.last().map_or(0.0, |k| k.time),
+		}
+	}
+
 	fn sample(&self, time: f32) -> f32 {
 		match &self.keys {
 			FaceKeys::Curve(keys) => sample_scalar(keys, time).unwrap_or(0.0),
@@ -170,9 +177,12 @@ impl Clip {
 		if clip.tracks.is_empty() && clip.face.is_empty() {
 			return Err("The clip has no motion data.".into());
 		}
-		// the exported duration is the last key time; recompute if missing
+		// the exported duration is the last key time; recompute if missing,
+		// face tracks included, so a face-only clip still has a length
 		if clip.duration <= 0.0 {
-			clip.duration = clip.tracks.iter().map(Track::end_time).fold(0.0, f32::max);
+			let tracks = clip.tracks.iter().map(Track::end_time);
+			let face = clip.face.iter().map(FaceTrack::end_time);
+			clip.duration = tracks.chain(face).fold(0.0, f32::max);
 		}
 		Ok(clip)
 	}
@@ -957,6 +967,20 @@ mod tests {
 		let clip = Clip::from_record(&curves).unwrap();
 		assert_eq!(clip.skipped_curves, 0);
 		assert_eq!(clip.face_weights(0.25)[0], ("LeftEyeClosed", 0.25));
+
+		// with no exported Duration, a face-only clip lasts to its last key
+		let clip = Clip::from_record(&AnimationClip {
+			duration: 0.0,
+			..record
+		})
+		.unwrap();
+		assert_eq!(clip.duration, 1.0);
+		let clip = Clip::from_record(&AnimationClip {
+			duration: 0.0,
+			..curves
+		})
+		.unwrap();
+		assert_eq!(clip.duration, 1.0);
 	}
 
 	#[test]

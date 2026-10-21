@@ -1,13 +1,13 @@
 //! Small styled building blocks shared by the panels.
 
 use eframe::egui::{
-	self, Align2, Color32, CornerRadius, CursorIcon, FontId, Frame, Margin, Response, RichText,
-	Sense, Stroke, Ui, Vec2, WidgetText,
+	self, Align2, Color32, CornerRadius, CursorIcon, FontId, Frame, InnerResponse, Margin,
+	Response, RichText, Sense, Stroke, Ui, Vec2, WidgetText,
 };
 
 use super::theme::{
-	CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, LIST_TEXT, MODAL_BACKDROP, PILL_RADIUS,
-	Palette, TITLE, dialog_frame, display, medium, palette, semibold,
+	CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, CONTROL_XS, LIST_TEXT, MODAL_BACKDROP,
+	PILL_RADIUS, Palette, TITLE, dialog_frame, display, medium, palette, semibold,
 };
 
 /// Shows a pointing hand while hovering something clickable. egui does this
@@ -246,6 +246,32 @@ pub(crate) fn option_colours(p: &Palette, selected: bool, hovered: bool) -> (Col
 	} else {
 		(Color32::TRANSPARENT, p.text_weak)
 	}
+}
+
+/// Margin between a floating bar's border and its controls.
+const FLOATING_PAD: i8 = 4;
+
+/// The frame of a bar floating over the viewport (the transport bar, the
+/// viewport toolbar): the panel colour a touch see-through, a border, the
+/// popup shadow and corner `radius`. Its controls are `CONTROL_XS` tall,
+/// with corners concentric with the bar's (see [`nest`]).
+pub fn floating_bar<R>(
+	ui: &mut Ui,
+	radius: u8,
+	add: impl FnOnce(&mut Ui) -> R,
+) -> InnerResponse<R> {
+	let p = palette(ui.ctx());
+	Frame::NONE
+		.fill(p.panel.gamma_multiply(0.94))
+		.stroke(Stroke::new(1.0, p.border))
+		.corner_radius(CornerRadius::same(radius))
+		.inner_margin(Margin::same(FLOATING_PAD))
+		.shadow(ui.ctx().global_style().visuals.popup_shadow)
+		.show(ui, |ui| {
+			ui.spacing_mut().interact_size.y = CONTROL_XS;
+			nest(ui, radius, FLOATING_PAD as f32 + 1.0);
+			add(ui)
+		})
 }
 
 /// Padding between a segmented track's border and its options.

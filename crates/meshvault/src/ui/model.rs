@@ -1,11 +1,9 @@
 //! The animated model view: the posed model, a transport bar to play its
 //! clips, and its inspector (clips, parts and warnings).
 
-use eframe::egui::{
-	self, Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Order, RichText, Stroke, Vec2,
-};
+use eframe::egui::{self, Align, Color32, CornerRadius, Id, Layout, Order, RichText, Stroke, Vec2};
 
-use super::theme::{BODY_LINE_HEIGHT, CAPTION, CONTROL_RADIUS, CONTROL_XS, ROW, palette, semibold};
+use super::theme::{BODY_LINE_HEIGHT, CAPTION, CONTROL_RADIUS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
@@ -88,22 +86,13 @@ impl App {
 			))
 			.order(Order::Middle)
 			.show(ctx, |ui| {
-				Frame::NONE
-					.fill(p.panel.gamma_multiply(0.94))
-					.stroke(Stroke::new(1.0, p.border))
-					// the controls inside are nested to this radius less padding
-					// and border (see `TRANSPORT_RADIUS`)
-					.corner_radius(CornerRadius::same(TRANSPORT_RADIUS))
-					.inner_margin(Margin::same(4))
-					.shadow(ctx.global_style().visuals.popup_shadow)
-					.show(ui, |ui| {
-						// the content, inside the 4px margin on either side
-						ui.set_width(width - 8.0);
-						ui.spacing_mut().interact_size.y = CONTROL_XS;
-						// the controls' corners are concentric with the bar's
-						widgets::nest(ui, TRANSPORT_RADIUS, 4.0 + 1.0);
-						ui.horizontal(|ui| transport(ui, &p, model));
-					});
+				// the controls inside are nested to this radius less padding and
+				// border (see `TRANSPORT_RADIUS`)
+				widgets::floating_bar(ui, TRANSPORT_RADIUS, |ui| {
+					// the content, inside the bar's 4px margin on either side
+					ui.set_width(width - 8.0);
+					ui.horizontal(|ui| transport(ui, &p, model));
+				});
 			});
 	}
 

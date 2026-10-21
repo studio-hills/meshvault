@@ -1269,7 +1269,7 @@ mod tests {
 			1,
 		);
 		gate.wait_for_request();
-		ws.remove(&[0]);
+		ws.remove(&[0]).unwrap();
 		ws.add([top_entry("Body", 2)]);
 		assert_eq!(ws.items()[0].stem, "Models/Body");
 		gate.release();

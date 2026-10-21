@@ -577,16 +577,13 @@ local function sendToMeshvault(text)
                 return HttpService:RequestAsync({
                     Url = MESHVAULT_URL,
                     Method = "POST",
-                    -- Meshvault only takes JSON: a web page cannot send that to
-                    -- it without a CORS preflight, which it never answers
-                    Headers = { ["Content-Type"] = "application/json" },
-                    -- a line saying which piece this is, then the piece itself
-                    Body = HttpService:JSONEncode({
-                        export = id,
-                        chunk = i,
-                        count = count,
-                        name = game.Name,
-                    }) .. "\n" .. text:sub((i - 1) * SEND_CHUNK + 1, math.min(i * SEND_CHUNK, #text)),
+                    Headers = {
+                        ["Content-Type"] = "application/json",
+                        ["X-Meshvault-Export"] = id,
+                        ["X-Meshvault-Chunk"] = i .. "/" .. count,
+                        ["X-Meshvault-Name"] = game.Name,
+                    },
+                    Body = text:sub((i - 1) * SEND_CHUNK + 1, math.min(i * SEND_CHUNK, #text)),
                 })
             end)
             if not sentOk then

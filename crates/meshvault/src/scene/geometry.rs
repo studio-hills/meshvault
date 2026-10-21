@@ -1427,15 +1427,18 @@ mod uv_tests {
 	#[test]
 	fn sample_skins_line_up_with_vertices() {
 		let dir = crate::test_support::SAMPLE_MESHES;
-		let mut skinned = 0;
+		let mut skinned = Vec::new();
 		for entry in std::fs::read_dir(dir).unwrap() {
 			let path = entry.unwrap().path();
+			if !path.is_file() {
+				continue;
+			}
 			let bytes = std::fs::read(&path).unwrap();
 			let Ok(loaded) = load(&bytes) else { continue };
 			let n = loaded.geometry.positions.len();
 			match skin(&bytes, n) {
 				Ok(Some(s)) => {
-					skinned += 1;
+					skinned.push(path.file_name().unwrap().to_string_lossy().into_owned());
 					assert_eq!(s.influences.len(), n);
 					for inf in &s.influences {
 						let total: f32 = inf.iter().map(|i| i.1).sum();
@@ -1453,7 +1456,55 @@ mod uv_tests {
 				Err(e) => println!("{}: skin unavailable: {e}", path.display()),
 			}
 		}
-		println!("{skinned} skinned samples");
+		println!("{} skinned samples", skinned.len());
+		// skin errors are printed, not counted: a known skinned sample must
+		// really skin
+		assert!(!skinned.is_empty());
+		assert!(
+			skinned.iter().any(|n| n == "13674780763"),
+			"the skinned head should skin: {skinned:?}"
+		);
+	}
+
+	/// A FACS block is dropped when its pose matrices do not hold one value
+	/// per bone and pose, or a corrective names a control that is not there.
+	#[test]
+	fn facs_rejects_mismatched_poses_and_correctives() {
+		use rbx_mesh::mesh::{
+			ControlId5, Facs5, QuantizedMatrix5, QuantizedTransforms5, TwoPoseCorrective5,
+		};
+		let matrix = |n: usize| QuantizedMatrix5::Raw {
+			x: n as u32,
+			y: 1,
+			matrix: vec![0.5; n],
+		};
+		// one bone and two controls; `poses` is how many values each of the
+		// six pose matrices holds (one bone times three poses is right)
+		let facs = |poses: [usize; 6], correctives: Vec<[u16; 2]>| Facs5 {
+			face_bone_names: b"jaw\0".to_vec(),
+			face_control_names: b"c_JD\0c_PK\0".to_vec(),
+			quantized_transforms: QuantizedTransforms5 {
+				px: matrix(poses[0]),
+				py: matrix(poses[1]),
+				pz: matrix(poses[2]),
+				rx: matrix(poses[3]),
+				ry: matrix(poses[4]),
+				rz: matrix(poses[5]),
+			},
+			two_pose_correctives: correctives
+				.into_iter()
+				.map(|[a, b]| TwoPoseCorrective5([ControlId5(a), ControlId5(b)]))
+				.collect(),
+			three_pose_correctives: Vec::new(),
+		};
+		let ok = facs_of(&facs([3; 6], vec![[0, 1]])).expect("a valid block");
+		assert_eq!(ok.controls, ["JawDrop", "Pucker"]);
+		assert_eq!(ok.columns, [vec![0], vec![1], vec![0, 1]]);
+		assert_eq!(ok.poses.len(), 3);
+		// one matrix a value short
+		assert!(facs_of(&facs([3, 3, 3, 3, 2, 3], vec![[0, 1]])).is_none());
+		// a corrective of control 2, of two
+		assert!(facs_of(&facs([3; 6], vec![[0, 2]])).is_none());
 	}
 
 	/// A truss fills its unit box with beams: every box faces outwards (its

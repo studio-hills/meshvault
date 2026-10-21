@@ -2134,7 +2134,15 @@ mod tests {
 							view.clips[c].name
 						);
 					}
-					assert!(n <= view.parts.len());
+					// a visible part draws once, plus once for each decal,
+					// clothing layer and MaterialVariant over it
+					let most: usize = view
+						.parts
+						.iter()
+						.filter(|p| p.visible)
+						.map(|p| 1 + p.decals.len())
+						.sum();
+					assert!(n <= most, "{n} draws for at most {most}");
 				}
 			}
 			println!(
@@ -2274,5 +2282,364 @@ mod tests {
 		};
 		assert_eq!(at([1.0, 1.0, 1.0]), [10.0, 0.0, 0.0]);
 		assert_eq!(at([2.0, 1.0, 1.0]), [12.0, 0.0, 0.0]);
+	}
+
+	// ---------------------------------------------- characterisation (SCN-11a)
+	//
+	// These pin what `load` and the export do today, before the scene code
+	// is split up. Where today's behaviour looks wrong it is pinned anyway
+	// and said so: fixing it is separate work.
+
+	/// A unit part of the model at `Workspace/Dummy`, placed at `at`.
+	fn placed_part(class: Option<&str>, shape: Option<&str>, name: &str, at: V3) -> ModelPart {
+		ModelPart {
+			name: name.into(),
+			path: format!("Workspace/Dummy/{name}"),
+			cframe: cf(at),
+			..part_with(class, shape, [1.0; 3])
+		}
+	}
+
+	/// Writes a small PNG, so loading it gives a real texture.
+	fn png(dir: &std::path::Path, name: &str) -> PathBuf {
+		let path = dir.join(name);
+		image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 255]))
+			.save(&path)
+			.unwrap();
+		path
+	}
+
+	fn decal(class: &str, id: &str, face: &str, z_index: i32) -> crate::anim::schema::DecalInfo {
+		crate::anim::schema::DecalInfo {
+			class_name: class.into(),
+			texture: id.into(),
+			face: face.into(),
+			color: [1.0; 3],
+			z_index,
+			studs_per_tile_u: Some(2.0),
+			..Default::default()
+		}
+	}
+
+	fn file_name(t: &texture::Texture) -> String {
+		t.path.file_name().unwrap().to_string_lossy().into_owned()
+	}
+
+	/// Each layer over a part, bottom first, as text.
+	fn layers(part: &PartView) -> Vec<String> {
+		part.decals
+			.iter()
+			.map(|d| {
+				let maps: Vec<String> = d.material.maps.values().map(file_name).collect();
+				let maps = maps.join("+");
+				if d.variant {
+					format!("variant {maps}")
+				} else if d.clothing.is_some() {
+					format!("clothing {maps}")
+				} else {
+					format!("decal face {} {maps}", d.face)
+				}
+			})
+			.collect()
+	}
+
+	/// A MaterialVariant goes under the clothing, the clothing (pants, shirt,
+	/// then T-shirt) under the decals, and the decals by ZIndex with ties in
+	/// the order they were exported. The warnings come in a fixed order.
+	#[test]
+	fn layers_and_warnings_keep_their_order() {
+		use crate::anim::schema::{ClothingInfo, MaterialVariantInfo};
+		let dir = crate::test_support::TempDir::new("layers");
+		let mut images = HashMap::new();
+		for (id, name) in [
+			(11, "front.png"),
+			(12, "top.png"),
+			(13, "back.png"),
+			(20, "variant.png"),
+			(30, "shirt.png"),
+			(31, "pants.png"),
+			(32, "tshirt.png"),
+		] {
+			images.insert(id, png(&dir, name));
+		}
+		// downloaded but not an image: still counted as not downloaded
+		let bad = dir.join("bad.png");
+		std::fs::write(&bad, b"not an image").unwrap();
+		images.insert(99, bad);
+
+		let mut torso = placed_part(Some("MeshPart"), None, "Torso", [0.0; 3]);
+		torso.size = [2.0, 2.0, 1.0];
+		torso.mesh_ref = 1;
+		torso.decals = vec![
+			decal("Decal", "rbxassetid://11", "Front", 2),
+			decal("Texture", "12", "Top", -1),
+			decal("Decal", "rbxassetid://13", "Back", 2),
+			// not in the images at all
+			decal("Decal", "rbxassetid://14", "Front", 0),
+			decal("Decal", "rbxassetid://99", "Front", 0),
+		];
+		torso.material_variant = Some(MaterialVariantInfo {
+			name: "Fabric".into(),
+			studs_per_tile: 4.0,
+			color_map: "rbxassetid://20".into(),
+			// not downloaded
+			normal_map: "rbxassetid://21".into(),
+			..Default::default()
+		});
+		let leg = placed_part(Some("Part"), Some("Block"), "Left Leg", [0.0, -2.0, 0.0]);
+		let union = placed_part(Some("UnionOperation"), None, "Union", [3.0, 0.0, 0.0]);
+		let mut gone = placed_part(Some("MeshPart"), None, "Gone", [-3.0, 0.0, 0.0]);
+		gone.mesh_ref = 2;
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![torso, leg, union, gone],
+			clothing: Some(ClothingInfo {
+				shirt_template: Some("rbxassetid://30".into()),
+				shirt_color: Some([1.0, 0.0, 0.0]),
+				pants_template: Some("rbxassetid://31".into()),
+				pants_color: Some([0.0, 1.0, 0.0]),
+				graphic: Some("rbxassetid://32".into()),
+				graphic_color: None,
+			}),
+			..Default::default()
+		};
+		let sources = HashMap::from([(
+			1,
+			MeshSource {
+				name: "torso".into(),
+				mesh: Ok(
+					std::path::Path::new(crate::test_support::SAMPLE_MESHES).join("torso.mesh")
+				),
+				maps: Vec::new(),
+			},
+		)]);
+		let ctx = egui::Context::default();
+		let view = ModelView::load(&ctx, 0, &model, &sources, &images);
+
+		assert!(matches!(view.parts[0].shape, PartShape::Mesh(_)));
+		assert_eq!(
+			layers(&view.parts[0]),
+			[
+				"variant variant.png",
+				"clothing pants.png",
+				"clothing shirt.png",
+				"clothing tshirt.png",
+				"decal face 1 top.png",
+				"decal face 5 front.png",
+				"decal face 2 back.png",
+			]
+		);
+		let torso = &view.parts[0].decals;
+		// the clothing takes its colours; a T-shirt covers only the front
+		assert_eq!(torso[1].colour, [0.0, 1.0, 0.0]);
+		assert_eq!(torso[2].colour, [1.0, 0.0, 0.0]);
+		assert_eq!(torso[3].colour, [1.0; 3]);
+		let regions = |d: &PartDecal| d.clothing.as_ref().unwrap().0.regions;
+		assert_eq!(regions(&torso[1]), Section::Torso.regions());
+		assert_eq!(regions(&torso[3])[5], [0.0, 0.0, 1.0, 1.0]);
+		assert!(regions(&torso[3])[..5].iter().all(|r| *r == [0.0; 4]));
+		// only a Texture tiles; a variant tiles by its StudsPerTile
+		assert_eq!(torso[4].tiles, Some([2.0, 2.0, 0.0, 0.0]));
+		assert_eq!(torso[5].tiles, None);
+		assert_eq!(torso[0].tiles, Some([4.0, 4.0, 0.0, 0.0]));
+		// a leg wears the pants only
+		assert_eq!(layers(&view.parts[1]), ["clothing pants.png"]);
+		assert!(view.parts[2].decals.is_empty());
+
+		assert_eq!(
+			view.warnings,
+			[
+				"1 mesh parts have a MaterialVariant, drawn tiled over the part's box faces as on ordinary parts; Studio lays it out differently on meshes.",
+				"1 parts show their MaterialVariant without some of its maps: they are not downloaded yet.",
+				// one of these two is downloaded but cannot be decoded: the
+				// message is misleading for it (a known bug, kept for now)
+				"2 decals are not drawn: their images are not downloaded yet.",
+				"1 parts are drawn approximately because Meshvault has no geometry for their shape: a UnionOperation (drawn as a box).",
+				"1 parts are not shown because their meshes are not downloaded or could not be read. Hover them in the part list for details.",
+			]
+		);
+	}
+
+	/// Clothing, decals and MaterialVariants share one image cache: an image
+	/// is loaded once for all of them, and an image that fails fails for
+	/// all of them.
+	#[test]
+	fn clothing_decals_and_variants_share_their_images() {
+		use crate::anim::schema::{ClothingInfo, MaterialVariantInfo};
+		let dir = crate::test_support::TempDir::new("image_cache");
+		let bad = dir.join("bad.png");
+		std::fs::write(&bad, b"not an image").unwrap();
+		let images = HashMap::from([(41, png(&dir, "good.png")), (40, bad)]);
+		let model = |id: &str| {
+			let mut torso = placed_part(Some("Part"), Some("Block"), "Torso", [0.0; 3]);
+			torso.decals = vec![decal("Decal", id, "Front", 0)];
+			torso.material_variant = Some(MaterialVariantInfo {
+				studs_per_tile: 4.0,
+				color_map: id.into(),
+				// not an asset id: skipped, so not counted as missing
+				normal_map: "not an id".into(),
+				..Default::default()
+			});
+			AnimatedModel {
+				name: "Dummy".into(),
+				path: "Workspace/Dummy".into(),
+				parts: vec![torso],
+				clothing: Some(ClothingInfo {
+					shirt_template: Some(id.into()),
+					..Default::default()
+				}),
+				..Default::default()
+			}
+		};
+		let ctx = egui::Context::default();
+
+		let view = ModelView::load(&ctx, 0, &model("rbxassetid://41"), &HashMap::new(), &images);
+		assert!(view.warnings.is_empty(), "{:?}", view.warnings);
+		let decals = &view.parts[0].decals;
+		assert_eq!(
+			layers(&view.parts[0]),
+			[
+				"variant good.png",
+				"clothing good.png",
+				"decal face 5 good.png"
+			]
+		);
+		// one texture, uploaded once
+		let ids: Vec<_> = decals
+			.iter()
+			.map(|d| d.material.maps[&Slot::Base].handle.id())
+			.collect();
+		assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+
+		let view = ModelView::load(&ctx, 0, &model("rbxassetid://40"), &HashMap::new(), &images);
+		assert!(view.parts[0].decals.is_empty());
+		assert_eq!(
+			view.warnings,
+			[
+				"Some of the model's clothing is not drawn: its images are not downloaded yet.",
+				"1 parts show their MaterialVariant without some of its maps: they are not downloaded yet.",
+				"1 decals are not drawn: their images are not downloaded yet.",
+			]
+		);
+	}
+
+	/// Skinned parts add their mesh-only bones to the export in part order,
+	/// hidden parts included, so a visible part's joints count past them.
+	#[test]
+	fn hidden_skins_still_number_export_nodes() {
+		let mut hidden = placed_part(None, None, "A", [0.0; 3]);
+		hidden.transparency = 1.0;
+		let shown = placed_part(None, None, "B", [3.0, 0.0, 0.0]);
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![hidden, shown],
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		let one = [(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)];
+		let skins = [
+			Skin {
+				bones: vec!["Jaw".into()],
+				parents: vec![None],
+				binds: vec![cf([0.0; 3])],
+				influences: vec![one; 3],
+				facs: None,
+			},
+			Skin {
+				bones: vec!["Root".into(), "Tip".into()],
+				parents: vec![None, Some(0)],
+				binds: vec![cf([0.0; 3]), cf([0.0, 1.0, 0.0])],
+				influences: vec![one; 3],
+				facs: None,
+			},
+		];
+		for (i, skin) in skins.into_iter().enumerate() {
+			let a = asset(vec![[0.0; 3]; 3], skin.clone());
+			let ps = PartSkin::build(&skin, &a, &view.rig, &view.rest, i, [0.0; 3], [1.0; 3]);
+			view.parts[i].shape = PartShape::Mesh(Arc::new(a));
+			view.parts[i].skin = Some(ps);
+		}
+		assert!(!view.parts[0].visible && view.parts[1].visible);
+
+		let nodes: Vec<(String, Option<usize>)> = view
+			.export_nodes()
+			.into_iter()
+			.map(|n| (n.name, n.parent))
+			.collect();
+		let node = |name: &str, parent| (name.to_string(), parent);
+		assert_eq!(
+			nodes,
+			[
+				node("A", None),
+				node("B", None),
+				// the hidden part's bone is exported too
+				node("Jaw", Some(0)),
+				node("Root", Some(1)),
+				node("Tip", Some(3)),
+			]
+		);
+		assert_eq!(view.export_frame(None, 0.0).len(), nodes.len());
+		let meshes = view.export_meshes();
+		assert_eq!(meshes.len(), 1);
+		assert_eq!(meshes[0].name, "B");
+		// B's bones, then B itself for the vertices no bone moves
+		assert_eq!(meshes[0].joints, [3, 4, 1]);
+	}
+
+	/// An unknown or differently cased face name is the Front face, for
+	/// decals and lights alike.
+	#[test]
+	fn unknown_faces_are_the_front() {
+		assert_eq!(face_index("Right"), 0);
+		assert_eq!(face_index("Bottom"), 4);
+		assert_eq!(face_index("Front"), 5);
+		assert_eq!(face_index("front"), 5);
+		assert_eq!(face_index("Sideways"), 5);
+		assert_eq!(face_index(""), 5);
+
+		use crate::anim::schema::LightInfo;
+		let mut lamp = placed_part(Some("Part"), Some("Block"), "Lamp", [0.0; 3]);
+		lamp.lights = ["Sideways", "top", "Top"]
+			.map(|face| LightInfo {
+				class_name: "SpotLight".into(),
+				enabled: true,
+				face: Some(face.into()),
+				..Default::default()
+			})
+			.into();
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![lamp],
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		let directions: Vec<V3> = view.scene_lights().iter().map(|l| l.direction).collect();
+		assert_eq!(
+			directions,
+			[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
+		);
+	}
+
+	/// Skinning's normalise leaves vectors of length 1e-12 or less (and
+	/// NaN) as they are. The viewport's own normalise uses `> 0.0` instead;
+	/// the two differ only below this threshold.
+	#[test]
+	fn normalize_keeps_tiny_vectors() {
+		assert_eq!(normalize([3.0, 0.0, 4.0]), [0.6, 0.0, 0.8]);
+		assert_eq!(normalize([0.0; 3]), [0.0; 3]);
+		assert_eq!(normalize([1e-13, 0.0, 0.0]), [1e-13, 0.0, 0.0]);
+		// just over the threshold it normalises
+		let n = normalize([1e-11, 0.0, 0.0]);
+		assert!(
+			(n[0] - 1.0).abs() < 1e-6 && n[1] == 0.0 && n[2] == 0.0,
+			"{n:?}"
+		);
+		let nan = normalize([f32::NAN, 1.0, 0.0]);
+		assert!(nan[0].is_nan() && nan[1] == 1.0 && nan[2] == 0.0);
 	}
 }

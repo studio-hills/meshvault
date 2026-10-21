@@ -1118,18 +1118,6 @@ impl App {
 		Some(out)
 	}
 
-	/// The viewport's shape, scaled to `height` pixels (even sides).
-	fn frame_size(&self, height: f32) -> [u32; 2] {
-		let aspect = self.viewport.width() / self.viewport.height().max(1.0);
-		let aspect = if aspect.is_finite() && aspect > 0.0 {
-			aspect
-		} else {
-			16.0 / 9.0
-		};
-		let even = |v: f32| ((v / 2.0).round() as u32).max(1) * 2;
-		[even(height * aspect), even(height)]
-	}
-
 	pub fn set_lighting(&mut self, lighting: crate::render::viewport::Lighting) {
 		self.config.lighting = lighting;
 		self.config.save();
@@ -1137,7 +1125,7 @@ impl App {
 
 	/// Copies the view as it is now, over the viewport's background.
 	pub fn copy_image(&mut self) {
-		let size = self.frame_size(STILL_HEIGHT);
+		let size = frame_size(self.viewport, STILL_HEIGHT);
 		let Some(image) = self.render_view(size, 1, 0.0).and_then(|mut f| f.pop()) else {
 			self.toasts.error("Copying images needs the GPU renderer.");
 			return;
@@ -1161,7 +1149,7 @@ impl App {
 		let Some(path) = self.save_dialog("Save image", "png", "PNG image") else {
 			return;
 		};
-		let size = self.frame_size(STILL_HEIGHT);
+		let size = frame_size(self.viewport, STILL_HEIGHT);
 		let Some(image) = self.render_view(size, 1, 0.0).and_then(|mut f| f.pop()) else {
 			return;
 		};
@@ -1184,7 +1172,7 @@ impl App {
 		let Some(path) = self.save_dialog("Save turntable", "gif", "GIF animation") else {
 			return;
 		};
-		let size = self.frame_size(TURNTABLE_HEIGHT);
+		let size = frame_size(self.viewport, TURNTABLE_HEIGHT);
 		let delay = 1.0 / TURNTABLE_FPS;
 		let Some(frames) = self.render_view(size, TURNTABLE_FRAMES, delay) else {
 			return;
@@ -1217,6 +1205,18 @@ const STILL_HEIGHT: f32 = 1080.0;
 const TURNTABLE_FRAMES: usize = 72;
 const TURNTABLE_FPS: f32 = 25.0;
 const TURNTABLE_HEIGHT: f32 = 480.0;
+
+/// The viewport's shape, scaled to `height` pixels (even sides).
+fn frame_size(viewport: egui::Rect, height: f32) -> [u32; 2] {
+	let aspect = viewport.width() / viewport.height().max(1.0);
+	let aspect = if aspect.is_finite() && aspect > 0.0 {
+		aspect
+	} else {
+		16.0 / 9.0
+	};
+	let even = |v: f32| ((v / 2.0).round() as u32).max(1) * 2;
+	[even(height * aspect), even(height)]
+}
 
 /// `image` laid over a vertical gradient from `top` to `bottom`.
 fn over_gradient(
@@ -1343,5 +1343,106 @@ pub fn format_bytes(n: usize) -> String {
 		0..1024 => format!("{n} B"),
 		1024..1_048_576 => format!("{:.1} KiB", n as f64 / 1024.0),
 		_ => format!("{:.2} MiB", n as f64 / 1_048_576.0),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn dropped_images_pick_their_slot_from_the_name() {
+		let slot = |name: &str| slot_for_image(Path::new(name));
+		assert_eq!(slot("Models/Rock.normal.png"), Slot::Normal);
+		assert_eq!(slot("Rock.roughness.png"), Slot::Roughness);
+		assert_eq!(slot("Rock.metalness.jpg"), Slot::Metalness);
+		assert_eq!(slot("Rock.NORMAL.PNG"), Slot::Normal);
+		assert_eq!(slot("Rock.png"), Slot::Base);
+		assert_eq!(slot("Rock.color.png"), Slot::Base);
+		// the suffix needs its dot
+		assert_eq!(slot("normal.png"), Slot::Base);
+		assert_eq!(slot(""), Slot::Base);
+	}
+
+	#[test]
+	fn sizes_switch_unit_at_1024() {
+		assert_eq!(format_bytes(0), "0 B");
+		assert_eq!(format_bytes(1023), "1023 B");
+		assert_eq!(format_bytes(1024), "1.0 KiB");
+		assert_eq!(format_bytes(1536), "1.5 KiB");
+		assert_eq!(format_bytes(1_048_575), "1024.0 KiB");
+		assert_eq!(format_bytes(1_048_576), "1.00 MiB");
+		assert_eq!(format_bytes(5 * 1_048_576 + 1_048_576 / 4), "5.25 MiB");
+	}
+
+	fn rect(w: f32, h: f32) -> egui::Rect {
+		egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(w, h))
+	}
+
+	#[test]
+	fn frames_keep_the_viewport_shape_with_even_sides() {
+		assert_eq!(frame_size(rect(1600.0, 900.0), 1080.0), [1920, 1080]);
+		assert_eq!(frame_size(rect(900.0, 900.0), 480.0), [480, 480]);
+		// 721.5 x 481 rounds to the nearest even sides
+		assert_eq!(frame_size(rect(300.0, 200.0), 481.0), [722, 482]);
+		// never below 2 pixels
+		assert_eq!(frame_size(rect(300.0, 200.0), 0.0), [2, 2]);
+	}
+
+	#[test]
+	fn frames_of_a_degenerate_viewport() {
+		// no width, or not a number: 16:9
+		assert_eq!(frame_size(egui::Rect::ZERO, 1080.0), [1920, 1080]);
+		assert_eq!(frame_size(rect(0.0, 500.0), 1080.0), [1920, 1080]);
+		assert_eq!(frame_size(egui::Rect::NAN, 1080.0), [1920, 1080]);
+		// no height counts as 1 pixel high
+		assert_eq!(frame_size(rect(100.0, 0.0), 10.0), [1000, 10]);
+	}
+
+	#[test]
+	fn images_are_laid_over_the_gradient() {
+		let image = image::RgbaImage::from_raw(
+			2,
+			3,
+			[
+				[9, 9, 9, 0],
+				[10, 20, 30, 255],
+				[255, 255, 255, 64],
+				[9, 9, 9, 0],
+				[255, 255, 255, 128],
+				[40, 50, 60, 255],
+			]
+			.concat(),
+		)
+		.unwrap();
+		let top = egui::Color32::from_rgb(0, 0, 0);
+		let bottom = egui::Color32::from_rgb(200, 100, 50);
+		let out = over_gradient(&image, top, bottom);
+		let pixels: Vec<[u8; 4]> = out.pixels().map(|p| p.0).collect();
+		assert_eq!(
+			pixels,
+			[
+				// top row: the top colour where transparent
+				[0, 0, 0, 255],
+				[10, 20, 30, 255],
+				// half way down, a quarter opaque white and the bare gradient
+				[139, 101, 83, 255],
+				[100, 50, 25, 255],
+				// bottom row: half opaque white
+				[228, 178, 153, 255],
+				[40, 50, 60, 255],
+			]
+		);
+	}
+
+	#[test]
+	fn a_single_row_takes_the_top_colour() {
+		let image = image::RgbaImage::from_raw(1, 1, vec![0, 0, 0, 0]).unwrap();
+		let top = egui::Color32::from_rgb(12, 34, 56);
+		let bottom = egui::Color32::from_rgb(200, 100, 50);
+		assert_eq!(
+			over_gradient(&image, top, bottom).get_pixel(0, 0).0,
+			[12, 34, 56, 255]
+		);
 	}
 }

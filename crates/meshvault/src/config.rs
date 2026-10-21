@@ -3,7 +3,7 @@
 //! (Windows Credential Manager; macOS Keychain; on Linux the kernel keyring,
 //! which keeps them only until reboot).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -57,13 +57,20 @@ fn read_config(path: Option<PathBuf>) -> Option<Config> {
 
 impl Config {
 	pub fn load() -> Self {
-		if let Some(config) = read_config(config_path()) {
+		Self::load_from(config_path(), config_path_for(LEGACY_APP_ID))
+	}
+
+	/// Reads the settings at `primary`, or on the first run after the
+	/// rename carries those at `legacy` over, saving them to `primary`.
+	fn load_from(primary: Option<PathBuf>, legacy: Option<PathBuf>) -> Self {
+		if let Some(config) = read_config(primary.clone()) {
 			return config;
 		}
-		// first run after the rename: carry the old settings over
-		match read_config(config_path_for(LEGACY_APP_ID)) {
+		match read_config(legacy) {
 			Some(config) => {
-				config.save();
+				if let Some(path) = &primary {
+					config.save_to(path);
+				}
 				config
 			}
 			None => Self::default(),
@@ -72,6 +79,10 @@ impl Config {
 
 	pub fn save(&self) {
 		let Some(path) = config_path() else { return };
+		self.save_to(&path);
+	}
+
+	fn save_to(&self, path: &Path) {
 		if let Some(dir) = path.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
@@ -81,16 +92,22 @@ impl Config {
 	}
 
 	/// Takes a workspace off the recent list. Its folder is not touched.
-	pub fn remove_recent(&mut self, root: &std::path::Path) {
+	pub fn remove_recent(&mut self, root: &Path) {
 		self.recent_workspaces.retain(|p| p != root);
 		self.save();
 	}
 
 	pub fn add_recent(&mut self, root: PathBuf) {
+		self.push_recent(root);
+		self.save();
+	}
+
+	/// Puts a workspace first on the recent list, once, keeping the newest
+	/// `MAX_RECENT`.
+	fn push_recent(&mut self, root: PathBuf) {
 		self.recent_workspaces.retain(|p| p != &root);
 		self.recent_workspaces.insert(0, root);
 		self.recent_workspaces.truncate(MAX_RECENT);
-		self.save();
 	}
 
 	/// The workspaces folder suggested for new workspaces.
@@ -139,5 +156,151 @@ pub fn delete_secret(method: AuthMethod) {
 		if let Ok(entry) = keyring::Entry::new(service, keyring_user(method)) {
 			let _ = entry.delete_credential();
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::test_support::TempDir;
+
+	fn json(config: &Config) -> serde_json::Value {
+		serde_json::to_value(config).unwrap()
+	}
+
+	#[test]
+	fn recent_workspaces_come_newest_first_once_each() {
+		let mut config = Config::default();
+		config.push_recent("a".into());
+		config.push_recent("b".into());
+		config.push_recent("a".into());
+		assert_eq!(config.recent_workspaces, [PathBuf::from("a"), "b".into()]);
+		for i in 0..MAX_RECENT + 2 {
+			config.push_recent(format!("w{i}").into());
+		}
+		assert_eq!(config.recent_workspaces.len(), MAX_RECENT);
+		assert_eq!(
+			config.recent_workspaces[0],
+			PathBuf::from(format!("w{}", MAX_RECENT + 1))
+		);
+		assert_eq!(
+			config.recent_workspaces[MAX_RECENT - 1],
+			PathBuf::from("w2")
+		);
+	}
+
+	#[test]
+	fn saved_settings_load_back() {
+		let dir = TempDir::new("config");
+		let path = dir.join("meshvault").join("config.json");
+		let mut config = Config {
+			place_id: Some(42),
+			concurrency: 7,
+			theme: ThemeMode::Light,
+			..Default::default()
+		};
+		config.push_recent("ws".into());
+		// the folder is made
+		config.save_to(&path);
+		let loaded = Config::load_from(Some(path), None);
+		assert_eq!(json(&loaded), json(&config));
+	}
+
+	#[test]
+	fn old_settings_are_carried_over_to_the_new_path() {
+		let dir = TempDir::new("config");
+		let primary = dir.join("meshvault").join("config.json");
+		let legacy = dir.join("rbx_mesh_gui").join("config.json");
+		std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+		let old = r#"{"place_id": 9, "concurrency": 2}"#;
+		std::fs::write(&legacy, old).unwrap();
+
+		let config = Config::load_from(Some(primary.clone()), Some(legacy.clone()));
+		assert_eq!(config.place_id, Some(9));
+		assert_eq!(config.concurrency, 2);
+		// saved to the new path; the old file is left as it was
+		let saved: serde_json::Value =
+			serde_json::from_str(&std::fs::read_to_string(&primary).unwrap()).unwrap();
+		assert_eq!(saved, json(&config));
+		assert_eq!(std::fs::read_to_string(&legacy).unwrap(), old);
+
+		// from then on the new file is the one read
+		std::fs::write(&legacy, r#"{"place_id": 1}"#).unwrap();
+		let config = Config::load_from(Some(primary), Some(legacy));
+		assert_eq!(config.place_id, Some(9));
+	}
+
+	#[test]
+	fn without_a_new_path_old_settings_load_but_are_not_saved() {
+		let dir = TempDir::new("config");
+		let legacy = dir.join("config.json");
+		std::fs::write(&legacy, r#"{"place_id": 9}"#).unwrap();
+		let config = Config::load_from(None, Some(legacy));
+		assert_eq!(config.place_id, Some(9));
+		let files: Vec<_> = std::fs::read_dir(&*dir).unwrap().collect();
+		assert_eq!(files.len(), 1);
+	}
+
+	#[test]
+	fn no_settings_anywhere_gives_the_defaults() {
+		let dir = TempDir::new("config");
+		let primary = dir.join("config.json");
+		let config = Config::load_from(Some(primary.clone()), Some(dir.join("old.json")));
+		assert_eq!(json(&config), json(&Config::default()));
+		// nothing is written until something changes
+		assert!(!primary.exists());
+		let config = Config::load_from(None, None);
+		assert_eq!(json(&config), json(&Config::default()));
+	}
+
+	#[test]
+	fn unknown_keys_are_ignored_and_missing_fields_take_defaults() {
+		let dir = TempDir::new("config");
+		let path = dir.join("config.json");
+		std::fs::write(
+			&path,
+			r#"{"place_id": 5, "theme": "Light", "from_the_future": [1, 2]}"#,
+		)
+		.unwrap();
+		let config = Config::load_from(Some(path), None);
+		let expected = Config {
+			place_id: Some(5),
+			theme: ThemeMode::Light,
+			..Default::default()
+		};
+		assert_eq!(json(&config), json(&expected));
+	}
+
+	#[test]
+	fn a_file_that_does_not_parse_is_dropped_whole() {
+		let dir = TempDir::new("config");
+		let path = dir.join("config.json");
+		// a valid field next to an unknown variant, a wrong type, or bad JSON
+		for text in [
+			r#"{"place_id": 5, "theme": "Purple"}"#,
+			r#"{"place_id": 5, "concurrency": "four"}"#,
+			r#"{"place_id": 5,"#,
+		] {
+			std::fs::write(&path, text).unwrap();
+			let config = Config::load_from(Some(path.clone()), None);
+			assert_eq!(json(&config), json(&Config::default()), "{text}");
+			// the file itself is left alone
+			assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+		}
+	}
+
+	#[test]
+	fn a_new_file_that_does_not_parse_is_replaced_by_the_old_one() {
+		// today's behaviour (bug B08): the unreadable file is overwritten
+		let dir = TempDir::new("config");
+		let primary = dir.join("config.json");
+		let legacy = dir.join("old.json");
+		std::fs::write(&primary, "not json").unwrap();
+		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
+		let config = Config::load_from(Some(primary.clone()), Some(legacy));
+		assert_eq!(config.place_id, Some(3));
+		let saved: serde_json::Value =
+			serde_json::from_str(&std::fs::read_to_string(&primary).unwrap()).unwrap();
+		assert_eq!(saved, json(&config));
 	}
 }

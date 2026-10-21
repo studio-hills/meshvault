@@ -7,8 +7,8 @@ use eframe::egui::{
 	ViewportCommand, pos2, vec2,
 };
 
-use super::theme::{CONTROL_RADIUS, palette};
-use super::widgets::pointer;
+use super::theme::palette;
+use super::widgets::{control_radius, pointer};
 
 fn maximized(ctx: &egui::Context) -> bool {
 	ctx.input(|i| i.viewport().maximized.unwrap_or(false))
@@ -72,7 +72,7 @@ fn caption_button(ui: &mut Ui, kind: Caption, tooltip: &str) -> Response {
 		_ => (Color32::TRANSPARENT, p.text_weak),
 	};
 	let painter = ui.painter();
-	painter.rect_filled(rect, CONTROL_RADIUS, fill);
+	painter.rect_filled(rect, control_radius(ui), fill);
 	// thin line glyphs, 10 points across, like the system's
 	let stroke = Stroke::new(1.0, colour);
 	let c = rect.center();

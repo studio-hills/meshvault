@@ -580,7 +580,7 @@ impl App {
 				widgets::floating_bar(ui, TOOLBAR_RADIUS, |ui| {
 					ui.horizontal(|ui| {
 						ui.spacing_mut().item_spacing.x = 4.0;
-						widgets::segmented(
+						widgets::icon_segmented(
 							ui,
 							&mut self.shading,
 							&[

@@ -73,28 +73,50 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
 
 /// An icon button that shows an "on" state with the accent colour.
 pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
-	icon_widget(ui, icon, tooltip, on, false, false)
+	let look = IconLook {
+		on,
+		..IconLook::default()
+	};
+	icon_widget(ui, icon, tooltip, look)
 }
 
 /// [`icon_toggle`] with the icon turned half a turn, e.g. to point a
 /// left-sidebar icon at a panel on the right.
 pub fn icon_toggle_flipped(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
-	icon_widget(ui, icon, tooltip, on, false, true)
+	let look = IconLook {
+		on,
+		flipped: true,
+		..IconLook::default()
+	};
+	icon_widget(ui, icon, tooltip, look)
 }
 
 /// An icon button for a destructive action: it turns red on hover.
 pub fn danger_icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
-	icon_widget(ui, icon, tooltip, false, true, false)
+	let look = IconLook {
+		danger: true,
+		..IconLook::default()
+	};
+	icon_widget(ui, icon, tooltip, look)
 }
 
-fn icon_widget(
-	ui: &mut Ui,
-	icon: &str,
-	tooltip: &str,
+/// How an icon button looks.
+#[derive(Clone, Copy, Default)]
+struct IconLook {
+	/// Shows the "on" state with the accent colour.
 	on: bool,
+	/// Turns red on hover (unless on).
 	danger: bool,
+	/// Turns the icon half a turn.
 	flipped: bool,
-) -> Response {
+}
+
+fn icon_widget(ui: &mut Ui, icon: &str, tooltip: &str, look: IconLook) -> Response {
+	let IconLook {
+		on,
+		danger,
+		flipped,
+	} = look;
 	let p = palette(ui.ctx());
 	let size = Vec2::splat(ui.spacing().interact_size.y);
 	let (rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -161,7 +183,8 @@ pub fn danger_item(ui: &mut Ui, text: impl Into<String>) -> Response {
 }
 
 /// A bordered button with an icon in front of the label (shadcn's outline variant).
-pub fn button(ui: &mut Ui, icon: &str, text: &str) -> Response {
+pub fn button(ui: &mut Ui, icon: &str, text: impl Into<String>) -> Response {
+	let text = text.into();
 	text_button(ui, format!("{icon}  {text}"))
 }
 
@@ -219,7 +242,7 @@ pub fn input(text: &mut String) -> egui::TextEdit<'_> {
 /// icon buttons with the chosen one highlighted. No track of its own, so in
 /// a toolbar it sits level with the buttons around it rather than as a
 /// panel inside the panel.
-pub fn segmented<T: PartialEq + Copy>(
+pub fn icon_segmented<T: PartialEq + Copy>(
 	ui: &mut Ui,
 	value: &mut T,
 	options: &[(T, &str, &str)],
@@ -352,13 +375,7 @@ pub fn overline(text: &str) -> RichText {
 }
 
 /// A collapsible panel section with a small uppercase title.
-pub fn section<R>(
-	ui: &mut Ui,
-	id: &str,
-	title: &str,
-	default_open: bool,
-	body: impl FnOnce(&mut Ui) -> R,
-) {
+pub fn section(ui: &mut Ui, id: &str, title: &str, default_open: bool, body: impl FnOnce(&mut Ui)) {
 	let p = palette(ui.ctx());
 	let id = ui.make_persistent_id(id);
 	let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -569,7 +586,7 @@ pub fn dashed_rect(ui: &Ui, rect: egui::Rect, colour: Color32) {
 }
 
 /// How far a panel's scroll bar sits into the panel's own right margin.
-pub const SCROLL_GUTTER: f32 = 12.0;
+const SCROLL_GUTTER: f32 = 12.0;
 
 /// Shows a scroll area whose thin floating bar sits in the margin to the
 /// right of the column instead of inside it: the area reaches

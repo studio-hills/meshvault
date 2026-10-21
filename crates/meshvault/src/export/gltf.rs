@@ -30,6 +30,56 @@ const ELEMENT_ARRAY_BUFFER: u32 = 34963;
 const FLOAT: u32 = 5126;
 const UNSIGNED_SHORT: u32 = 5123;
 const UNSIGNED_INT: u32 = 5125;
+/// Sampler wrap and filter modes.
+const REPEAT: u32 = 10497;
+const LINEAR: u32 = 9729;
+const LINEAR_MIPMAP_LINEAR: u32 = 9987;
+/// A GLB file starts with a 12-byte header (magic, version, length), and
+/// each chunk with an 8-byte one (length, type).
+const GLB_HEADER_LEN: usize = 12;
+const CHUNK_HEADER_LEN: usize = 8;
+
+/// What each element of an accessor is.
+#[derive(Clone, Copy)]
+enum Accessor {
+	Scalar,
+	Vec2,
+	Vec3,
+	Vec4,
+	Mat4,
+}
+
+impl Accessor {
+	/// The accessor's `type` in the document.
+	fn name(self) -> &'static str {
+		match self {
+			Accessor::Scalar => "SCALAR",
+			Accessor::Vec2 => "VEC2",
+			Accessor::Vec3 => "VEC3",
+			Accessor::Vec4 => "VEC4",
+			Accessor::Mat4 => "MAT4",
+		}
+	}
+
+	/// Components per element.
+	fn width(self) -> usize {
+		match self {
+			Accessor::Scalar => 1,
+			Accessor::Vec2 => 2,
+			Accessor::Vec3 => 3,
+			Accessor::Vec4 => 4,
+			Accessor::Mat4 => 16,
+		}
+	}
+}
+
+/// Pads `buf` with `byte` to a multiple of 4 bytes, as GLB chunks and
+/// buffer views must be aligned.
+fn pad_to_4(buf: &mut Vec<u8>, byte: u8) {
+	while !buf.len().is_multiple_of(4) {
+		buf.push(byte);
+	}
+}
 
 /// Writes an animated model, with its clips, to `path`.
 pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
@@ -69,7 +119,7 @@ pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 		inverse_binds.extend(column_major(&world.inverse()));
 	}
 	inverse_binds.extend(column_major(&CFrame::IDENTITY));
-	let ibm = g.floats(&inverse_binds, "MAT4", None, None);
+	let ibm = g.floats(&inverse_binds, Accessor::Mat4, None, None);
 	g.skins.push(json!({
 		"name": model.name,
 		"joints": joints,
@@ -99,12 +149,12 @@ pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 				(0..nodes.len()).map(|n| local(&worlds, n)).collect()
 			})
 			.collect();
-		let input = g.floats(&times, "SCALAR", None, Some(min_max(&times, 1)));
+		let input = g.floats(&times, Accessor::Scalar, None, Some(min_max(&times, 1)));
 		// every node is keyed, so Blender does not leave a bone this clip
 		// does not move where another action put it; one that holds still
 		// gets two keys
 		let ends = [times[0], times[frames - 1]];
-		let hold = g.floats(&ends, "SCALAR", None, Some(min_max(&ends, 1)));
+		let hold = g.floats(&ends, Accessor::Scalar, None, Some(min_max(&ends, 1)));
 		let mut samplers = Vec::new();
 		let mut channels = Vec::new();
 		for n in 0..nodes.len() {
@@ -130,8 +180,8 @@ pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 				last = Some(q);
 			}
 			for (values, ty, path) in [
-				(translations, "VEC3", "translation"),
-				(rotations, "VEC4", "rotation"),
+				(translations, Accessor::Vec3, "translation"),
+				(rotations, Accessor::Vec4, "rotation"),
 			] {
 				let output = g.floats(&values, ty, None, None);
 				channels.push(json!({
@@ -159,18 +209,17 @@ pub fn export_mesh(
 	path: &Path,
 ) -> Result<(), String> {
 	let mut g = Gltf::default();
-	let positions = geometry.positions.clone();
-	let index = g.mesh(
+	let index = g.mesh(MeshInput {
 		name,
 		geometry,
 		groups,
-		&positions,
-		geometry.normals.as_deref(),
-		None,
+		positions: &geometry.positions,
+		normals: geometry.normals.as_deref(),
+		skin: None,
 		material,
 		colour,
-		&Surface::OPAQUE,
-	);
+		surface: &Surface::OPAQUE,
+	});
 	let Some(index) = index else {
 		return Err("the mesh has no triangles".into());
 	};
@@ -192,9 +241,8 @@ fn bake(
 	let white = tint.iter().all(|&t| (t - 1.0).abs() < 1e-4);
 	let see_through = map.pixels().any(|p| p[3] < 255);
 	let changes = match mode {
-		AlphaMode::Overlay | AlphaMode::TintMask => see_through || !white,
+		AlphaMode::Overlay | AlphaMode::TintMask | AlphaMode::Opaque => see_through || !white,
 		AlphaMode::Transparency | AlphaMode::Blend => !white,
-		AlphaMode::Opaque => see_through || !white,
 	};
 	if !changes {
 		return None;
@@ -266,6 +314,22 @@ fn min_max(values: &[f32], width: usize) -> (Vec<f32>, Vec<f32>) {
 	(lo, hi)
 }
 
+/// One mesh for [`Gltf::mesh`]: `groups` of `geometry`, at `positions`
+/// (which need not be the geometry's own) with `normals`, weighted to
+/// joints by `skin`, and drawn with `material` over `colour` as `surface`.
+struct MeshInput<'a> {
+	name: &'a str,
+	geometry: &'a Geometry,
+	groups: &'a [usize],
+	positions: &'a [[f32; 3]],
+	normals: Option<&'a [[f32; 3]]>,
+	/// Each vertex's four joints and weights.
+	skin: Option<&'a [([u16; 4], [f32; 4])]>,
+	material: &'a Material,
+	colour: Color32,
+	surface: &'a Surface,
+}
+
 /// A glTF document being built, with its one binary buffer.
 #[derive(Default)]
 struct Gltf {
@@ -282,6 +346,9 @@ struct Gltf {
 	scene: Vec<usize>,
 	/// Texture index by the image file it shows.
 	by_file: HashMap<PathBuf, usize>,
+	/// Texture index of a colour map baked by [`bake`], by its file, alpha
+	/// mode, tint and part colour.
+	by_bake: HashMap<String, usize>,
 	/// Material index by what it shows.
 	by_look: HashMap<String, usize>,
 }
@@ -289,9 +356,7 @@ struct Gltf {
 impl Gltf {
 	/// Appends `bytes` as a buffer view, 4-byte aligned.
 	fn view(&mut self, bytes: &[u8], target: Option<u32>) -> usize {
-		while !self.bin.len().is_multiple_of(4) {
-			self.bin.push(0);
-		}
+		pad_to_4(&mut self.bin, 0);
 		let mut view =
 			json!({ "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len() });
 		if let Some(t) = target {
@@ -305,23 +370,16 @@ impl Gltf {
 	fn floats(
 		&mut self,
 		values: &[f32],
-		ty: &str,
+		ty: Accessor,
 		target: Option<u32>,
 		bounds: Option<(Vec<f32>, Vec<f32>)>,
 	) -> usize {
-		let width = match ty {
-			"SCALAR" => 1,
-			"VEC2" => 2,
-			"VEC3" => 3,
-			"VEC4" => 4,
-			_ => 16,
-		};
 		let view = self.view(bytemuck::cast_slice(values), target);
 		let mut accessor = json!({
 			"bufferView": view,
 			"componentType": FLOAT,
-			"count": values.len() / width,
-			"type": ty,
+			"count": values.len() / ty.width(),
+			"type": ty.name(),
 		});
 		if let Some((lo, hi)) = bounds {
 			accessor["min"] = json!(lo);
@@ -335,7 +393,7 @@ impl Gltf {
 		&mut self,
 		values: &[T],
 		component: u32,
-		ty: &str,
+		ty: Accessor,
 		count: usize,
 		target: u32,
 	) -> usize {
@@ -344,7 +402,7 @@ impl Gltf {
 			"bufferView": view,
 			"componentType": component,
 			"count": count,
-			"type": ty,
+			"type": ty.name(),
 		}));
 		self.accessors.len() - 1
 	}
@@ -366,32 +424,32 @@ impl Gltf {
 				(joints, weights)
 			})
 			.collect();
-		self.mesh(
-			&m.name,
-			m.geometry,
-			&m.groups,
-			&m.positions,
-			m.normals.as_deref(),
-			Some(&skin),
-			m.material,
-			m.colour,
-			&m.surface,
-		)
+		self.mesh(MeshInput {
+			name: &m.name,
+			geometry: m.geometry,
+			groups: &m.groups,
+			positions: &m.positions,
+			normals: m.normals.as_deref(),
+			skin: Some(&skin),
+			material: m.material,
+			colour: m.colour,
+			surface: &m.surface,
+		})
 	}
 
-	#[allow(clippy::too_many_arguments)]
-	fn mesh(
-		&mut self,
-		name: &str,
-		geometry: &Geometry,
-		groups: &[usize],
-		positions: &[[f32; 3]],
-		normals: Option<&[[f32; 3]]>,
-		skin: Option<&[([u16; 4], [f32; 4])]>,
-		material: &Material,
-		colour: Color32,
-		surface: &Surface,
-	) -> Option<usize> {
+	/// Adds `input` as a mesh, or nothing when its groups have no triangles.
+	fn mesh(&mut self, input: MeshInput) -> Option<usize> {
+		let MeshInput {
+			name,
+			geometry,
+			groups,
+			positions,
+			normals,
+			skin,
+			material,
+			colour,
+			surface,
+		} = input;
 		let indices: Vec<u32> = groups
 			.iter()
 			.filter_map(|&g| geometry.groups.get(g))
@@ -402,8 +460,7 @@ impl Gltf {
 		}
 		let flat: Vec<f32> = positions.iter().flatten().copied().collect();
 		let bounds = min_max(&flat, 3);
-		let mut attributes =
-			json!({ "POSITION": self.floats(&flat, "VEC3", Some(ARRAY_BUFFER), Some(bounds)) });
+		let mut attributes = json!({ "POSITION": self.floats(&flat, Accessor::Vec3, Some(ARRAY_BUFFER), Some(bounds)) });
 		if let Some(normals) = normals.filter(|n| n.len() == positions.len()) {
 			let flat: Vec<f32> = normals
 				.iter()
@@ -416,25 +473,32 @@ impl Gltf {
 					}
 				})
 				.collect();
-			attributes["NORMAL"] = json!(self.floats(&flat, "VEC3", Some(ARRAY_BUFFER), None));
+			attributes["NORMAL"] =
+				json!(self.floats(&flat, Accessor::Vec3, Some(ARRAY_BUFFER), None));
 		}
 		// Roblox and glTF both put the texture origin at the top left
 		if let Some(uvs) = geometry.uvs.as_ref().filter(|u| u.len() == positions.len()) {
 			let flat: Vec<f32> = uvs.iter().flatten().copied().collect();
-			attributes["TEXCOORD_0"] = json!(self.floats(&flat, "VEC2", Some(ARRAY_BUFFER), None));
+			attributes["TEXCOORD_0"] =
+				json!(self.floats(&flat, Accessor::Vec2, Some(ARRAY_BUFFER), None));
 		}
 		if let Some(skin) = skin {
 			let joints: Vec<u16> = skin.iter().flat_map(|s| s.0).collect();
 			let weights: Vec<f32> = skin.iter().flat_map(|s| s.1).collect();
-			attributes["JOINTS_0"] =
-				json!(self.integers(&joints, UNSIGNED_SHORT, "VEC4", skin.len(), ARRAY_BUFFER));
+			attributes["JOINTS_0"] = json!(self.integers(
+				&joints,
+				UNSIGNED_SHORT,
+				Accessor::Vec4,
+				skin.len(),
+				ARRAY_BUFFER
+			));
 			attributes["WEIGHTS_0"] =
-				json!(self.floats(&weights, "VEC4", Some(ARRAY_BUFFER), None));
+				json!(self.floats(&weights, Accessor::Vec4, Some(ARRAY_BUFFER), None));
 		}
 		let index_accessor = self.integers(
 			&indices,
 			UNSIGNED_INT,
-			"SCALAR",
+			Accessor::Scalar,
 			indices.len(),
 			ELEMENT_ARRAY_BUFFER,
 		);
@@ -484,16 +548,16 @@ impl Gltf {
 		});
 		let base_texture = base.and_then(|t| match bake(&t.rgba, surface.alpha_mode, tint, part) {
 			Some(baked) => {
-				let key = PathBuf::from(format!(
+				let key = format!(
 					"{}|{:?}|{tint:?}|{part:?}",
 					t.path.display(),
 					surface.alpha_mode
-				));
-				if let Some(&i) = self.by_file.get(&key) {
+				);
+				if let Some(&i) = self.by_bake.get(&key) {
 					return Some(i);
 				}
 				let i = self.texture_image(&baked)?;
-				self.by_file.insert(key, i);
+				self.by_bake.insert(key, i);
 				Some(i)
 			}
 			None => self.texture_file(&t.path, &t.rgba),
@@ -583,9 +647,7 @@ impl Gltf {
 	}
 
 	fn write(mut self, path: &Path) -> Result<(), String> {
-		while !self.bin.len().is_multiple_of(4) {
-			self.bin.push(0);
-		}
+		pad_to_4(&mut self.bin, 0);
 		let mut doc = json!({
 			"asset": { "version": "2.0", "generator": "Meshvault" },
 			"scene": 0,
@@ -608,15 +670,18 @@ impl Gltf {
 			}
 		}
 		if doc.get("textures").is_some() {
-			// 10497 repeat, 9729 linear, 9987 linear mipmap linear
-			doc["samplers"] =
-				json!([{ "wrapS": 10497, "wrapT": 10497, "magFilter": 9729, "minFilter": 9987 }]);
+			doc["samplers"] = json!([{
+				"wrapS": REPEAT,
+				"wrapT": REPEAT,
+				"magFilter": LINEAR,
+				"minFilter": LINEAR_MIPMAP_LINEAR,
+			}]);
 		}
 		let mut text = serde_json::to_vec(&doc).map_err(|e| e.to_string())?;
-		while !text.len().is_multiple_of(4) {
-			text.push(b' ');
-		}
-		let total = 12 + 8 + text.len() + 8 + self.bin.len();
+		// the JSON chunk is padded with spaces, the binary one with zeros
+		pad_to_4(&mut text, b' ');
+		let total =
+			GLB_HEADER_LEN + CHUNK_HEADER_LEN + text.len() + CHUNK_HEADER_LEN + self.bin.len();
 		let mut out = Vec::with_capacity(total);
 		out.extend_from_slice(b"glTF");
 		out.extend_from_slice(&2u32.to_le_bytes());

@@ -24,6 +24,8 @@ pub struct Config {
 	pub place_id: Option<u64>,
 	pub concurrency: usize,
 	pub theme: ThemeMode,
+	/// How the 3D view is lit.
+	pub lighting: crate::viewport::Lighting,
 }
 
 impl Default for Config {
@@ -34,6 +36,7 @@ impl Default for Config {
 			place_id: None,
 			concurrency: 4,
 			theme: ThemeMode::Dark,
+			lighting: Default::default(),
 		}
 	}
 }

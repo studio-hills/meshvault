@@ -47,6 +47,18 @@ impl App {
 				home.clone()
 			})
 		};
+		if self.show_skeleton || self.show_joints {
+			let skeleton = model.skeleton();
+			draw_skeleton(
+				ui,
+				&p,
+				rect,
+				&camera,
+				&skeleton,
+				self.show_skeleton,
+				self.show_joints,
+			);
+		}
 		model.camera = camera;
 		self.viewport = rect;
 		self.viewport_toolbar(ui.ctx(), rect);
@@ -445,6 +457,75 @@ fn clip_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 	}
 }
 
+/// The skeleton overlay: lines between joints and bones, and a mark at each
+/// joint (accent for joints clips drive, grey for welds), drawn over the
+/// model. Hovering a mark names it.
+fn draw_skeleton(
+	ui: &egui::Ui,
+	p: &super::theme::Palette,
+	rect: egui::Rect,
+	camera: &viewport::Camera,
+	skeleton: &crate::model_view::Skeleton,
+	bones: bool,
+	joints: bool,
+) {
+	let painter = ui.painter_at(rect);
+	let project = |at| viewport::project(camera, rect, at);
+	let shadow = Color32::from_black_alpha(140);
+	if bones {
+		for &(a, b) in &skeleton.bones {
+			if let (Some(a), Some(b)) = (project(a), project(b)) {
+				painter.line_segment([a, b], Stroke::new(4.0, shadow));
+				painter.line_segment([a, b], Stroke::new(2.0, p.warning));
+			}
+		}
+	}
+	let pointer = ui
+		.input(|i| i.pointer.hover_pos())
+		.filter(|at| rect.contains(*at));
+	let mut nearest: Option<(f32, egui::Pos2, &crate::model_view::Joint)> = None;
+	for joint in &skeleton.joints {
+		let Some(at) = project(joint.at) else {
+			continue;
+		};
+		let radius = if joints { 4.5 } else { 2.5 };
+		let fill = if !joints {
+			p.warning
+		} else if joint.animated {
+			p.accent
+		} else {
+			p.text_weak
+		};
+		painter.circle(at, radius, fill, Stroke::new(1.5, shadow));
+		if let Some(pointer) = pointer {
+			let d = at.distance(pointer);
+			if d < 9.0 && nearest.is_none_or(|(best, _, _)| d < best) {
+				nearest = Some((d, at, joint));
+			}
+		}
+	}
+	if let Some((_, at, joint)) = nearest {
+		let text = if joint.animated {
+			joint.name.clone()
+		} else {
+			format!("{} (weld)", joint.name)
+		};
+		let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.0), p.text);
+		let label = egui::Rect::from_min_size(
+			at + Vec2::new(10.0, -10.0 - galley.size().y),
+			galley.size() + Vec2::new(12.0, 6.0),
+		);
+		painter.rect_filled(label, CornerRadius::same(5), p.panel);
+		painter.rect_stroke(
+			label,
+			CornerRadius::same(5),
+			Stroke::new(1.0, p.border),
+			egui::StrokeKind::Inside,
+		);
+		painter.galley(label.min + Vec2::new(6.0, 3.0), galley, p.text);
+	}
+}
+
 fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView) {
 	ui.horizontal(|ui| {
 		widgets::compact(ui);
@@ -462,7 +543,14 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 			.max_height(320.0),
 		|ui| {
 			ui.spacing_mut().interact_size.y = ROW;
-			let ModelView { parts, rig, .. } = model;
+			let ModelView {
+				parts,
+				rig,
+				highlight,
+				..
+			} = model;
+			// the part under the pointer stands out in the view
+			*highlight = None;
 			for part in parts.iter_mut() {
 				let rp = &rig.parts[part.index];
 				let (tag, colour, hover) = match &part.shape {
@@ -506,7 +594,7 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 					.appearance
 					.as_ref()
 					.map_or(String::new(), |a| format!("\n{a}"));
-				ui.horizontal(|ui| {
+				let row = ui.horizontal(|ui| {
 					let response = widgets::pointer(ui.checkbox(&mut part.visible, &rp.name));
 					response.on_hover_text(format!(
 						"{}\n{hover}{joint}{appearance}\nTransparency {:.2}",
@@ -516,6 +604,9 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 						ui.label(RichText::new(tag).size(11.0).color(colour));
 					});
 				});
+				if ui.rect_contains_pointer(row.response.rect) {
+					*highlight = Some(part.index);
+				}
 			}
 		},
 	);

@@ -23,7 +23,8 @@ struct Uniforms {
 	// w: 1 for metal materials, whose reflections take the part's colour
 	surface: vec4<f32>,
 	// SurfaceAppearance: rgb tints the colour map; w is the alpha mode
-	// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque)
+	// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque, 4 Blend: the map's
+	// alpha blends the surface, for meshes shown on their own)
 	tint: vec4<f32>,
 	// decal draws: mesh to part space
 	part_from_mesh: mat4x4<f32>,
@@ -45,6 +46,10 @@ struct Uniforms {
 	// clothing: each box face's template region (x, y, w, h), then the
 	// box's centre and half size
 	clothing: array<vec4<f32>, 8>,
+	// lighting: key light colour (rgb) and fill strength (w); sky colour and
+	// exposure (below zero: unlit, the colour as it is); ground colour and
+	// how strongly this draw is highlighted; the highlight colour
+	env: array<vec4<f32>, 4>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -201,6 +206,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	let duv1 = dpdx(map_uv);
 	let duv2 = -dpdy(map_uv);
 	let bary_width = fwidth(in.bary);
+	let alpha_width = fwidth(base_s.a);
 
 	var n: vec3<f32>;
 	if (dot(in.normal, in.normal) < 1e-8) {
@@ -225,14 +231,23 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 			// Overlay: the map over the part colour by its alpha
 			albedo = mix(in.color, tinted, base_s.a);
 		} else if (mode < 1.5) {
-			// Transparency: cut away below half alpha
+			// Transparency: cut away below half alpha. The edge is sharpened
+			// to about a pixel and drawn with alpha to coverage, so it is
+			// smooth rather than stair-stepped
 			albedo = tinted;
-			cut = base_s.a < 0.5;
+			let coverage = clamp((base_s.a - 0.5) / max(alpha_width, 1e-4) + 0.5, 0.0, 1.0);
+			alpha *= coverage;
+			cut = coverage <= 0.0;
 		} else if (mode < 2.5) {
 			// TintMask: alpha says where the tint applies
 			albedo = base_s.rgb * mix(vec3<f32>(1.0), u.tint.rgb, base_s.a);
-		} else {
+		} else if (mode < 3.5) {
 			albedo = tinted;
+		} else {
+			// Blend: the map's alpha makes the surface see-through
+			albedo = tinted;
+			alpha *= base_s.a;
+			cut = alpha <= 0.002;
 		}
 	}
 
@@ -279,8 +294,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 
 	let key = normalize(u.light_dir.xyz);
 	let fill = normalize(vec3<f32>(-key.x, 0.35, -key.z));
-	var color = shade_light(n, v, key, vec3<f32>(2.8), albedo, rough, metal, f0);
-	color += shade_light(n, v, fill, vec3<f32>(0.7), albedo, rough, metal, f0);
+	var color = shade_light(n, v, key, u.env[0].rgb, albedo, rough, metal, f0);
+	color += shade_light(n, v, fill, vec3<f32>(u.env[0].w), albedo, rough, metal, f0);
 
 	// the model's own lights: fading out to their range, cones softening at
 	// their edge
@@ -302,8 +317,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 	}
 
 	// hemisphere ambient, with a rough environment reflection for metals
-	let sky = vec3<f32>(0.45, 0.48, 0.55);
-	let ground = vec3<f32>(0.2, 0.18, 0.16);
+	let sky = u.env[1].rgb;
+	let ground = u.env[2].rgb;
 	let ambient = mix(ground, sky, n.y * 0.5 + 0.5);
 	let nv = max(dot(n, v), 0.0);
 	let fresnel = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
@@ -315,7 +330,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 		let tint = mix(vec3<f32>(1.0), albedo * 1.6, u.surface.w);
 		color = mix(color, env * tint, u.surface.z);
 	}
-	color = aces(color);
+	let exposure = u.env[1].w;
+	if (exposure < 0.0) {
+		// unlit: the surface's own colour
+		color = albedo;
+	} else {
+		color = aces(color * exposure);
+	}
 	// Neon glows in its own colour whatever the light, untouched by tone mapping
 	if (u.surface.y > 0.5) {
 		color = min(albedo * 1.25, vec3<f32>(1.0));
@@ -323,6 +344,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 
 	if (cut) {
 		discard;
+	}
+
+	// a highlighted part (hovered in the parts list): tinted, brighter at its rim
+	let highlight = u.env[2].w;
+	if (highlight > 0.0) {
+		let rim = pow(1.0 - nv, 2.0);
+		color = mix(color, u.env[3].rgb, highlight * (0.35 + 0.5 * rim));
 	}
 
 	// wireframe from barycentric coordinates, about one pixel wide

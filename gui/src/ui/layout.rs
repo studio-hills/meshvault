@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::geometry::GroupKind;
 use crate::maps::Slot;
 use crate::ui::ConfirmAction;
-use crate::viewport::{self, Camera, ScenePart, Shading, ViewSettings};
+use crate::viewport::{self, Camera, Lighting, ScenePart, Shading, ViewSettings};
 
 impl eframe::App for App {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -450,8 +450,12 @@ impl App {
 			colour: viewport::PART_COLOUR,
 			scene: &mut doc.gpu,
 			moved: false,
-			surface: viewport::Surface::OPAQUE,
+			surface: viewport::Surface {
+				alpha_mode: doc.alpha,
+				..viewport::Surface::OPAQUE
+			},
 			decal: None,
+			highlight: false,
 		}];
 		let home = || Camera::framing(geometry);
 		let rect = viewport::show(
@@ -475,6 +479,8 @@ impl App {
 			background: [p.viewport_top, p.viewport_bottom],
 			grid_colour: p.grid,
 			lights: Vec::new(),
+			lighting: self.config.lighting,
+			highlight: p.accent,
 		}
 	}
 
@@ -512,6 +518,17 @@ impl App {
 		{
 			ui.close();
 			self.save_image();
+		}
+		if ui
+			.add_enabled(
+				gpu,
+				egui::Button::new(format!("{}  Copy image", icons::COPY)),
+			)
+			.on_hover_text("The view as it is now, to paste elsewhere")
+			.clicked()
+		{
+			ui.close();
+			self.copy_image();
 		}
 		if ui
 			.add_enabled(
@@ -575,11 +592,37 @@ impl App {
 									*value = !*value;
 								}
 							}
+							if self.model.is_some() {
+								for (value, icon, tip) in [
+									(&mut self.show_skeleton, icons::BONE, "Skeleton  (K)"),
+									(&mut self.show_joints, icons::SHARE_NETWORK, "Joints  (J)"),
+								] {
+									if widgets::icon_toggle(ui, icon, tip, *value).clicked() {
+										*value = !*value;
+									}
+								}
+							}
+							let lighting =
+								widgets::icon_button(ui, icons::LIGHTBULB, "Lighting  (L)");
+							egui::Popup::menu(&lighting).show(|ui| {
+								widgets::menu_style(ui);
+								for preset in Lighting::ALL {
+									let on = self.config.lighting == preset;
+									if ui.selectable_label(on, preset.label()).clicked() {
+										self.set_lighting(preset);
+									}
+								}
+							});
 							ui.separator();
 							if widgets::icon_button(ui, icons::CORNERS_OUT, "Frame model  (F)")
 								.clicked()
 							{
 								self.frame_model();
+							}
+							if widgets::icon_button(ui, icons::CAMERA, "Save image  (F12)")
+								.clicked()
+							{
+								self.save_image();
 							}
 							let export =
 								widgets::icon_button(ui, icons::EXPORT, "Export and save images");
@@ -733,6 +776,23 @@ impl App {
 		if key(Key::G) {
 			self.show_grid = !self.show_grid;
 		}
+		if key(Key::K) {
+			self.show_skeleton = !self.show_skeleton;
+		}
+		if key(Key::J) {
+			self.show_joints = !self.show_joints;
+		}
+		if key(Key::L) {
+			let all = Lighting::ALL;
+			let next = all
+				.iter()
+				.position(|l| *l == self.config.lighting)
+				.map_or(0, |i| (i + 1) % all.len());
+			self.set_lighting(all[next]);
+		}
+		if key(Key::F12) {
+			self.save_image();
+		}
 		if ctx.input_mut(|i| {
 			i.consume_key(Modifiers::SHIFT, Key::Questionmark)
 				|| i.consume_key(Modifiers::NONE, Key::Questionmark)
@@ -759,5 +819,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
 	("1 / 2 / 3", "Solid / solid + wireframe / wireframe"),
 	("M", "Toggle maps"),
 	("G", "Toggle ground grid"),
+	("K / J", "Toggle the skeleton / joints of an animated model"),
+	("L", "Next lighting preset"),
+	("F12", "Save the view as an image"),
 	("?", "Show this list"),
 ];

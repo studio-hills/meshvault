@@ -113,6 +113,133 @@ pub struct ViewSettings {
 	pub grid_colour: Color32,
 	/// The model's own lights, in world space.
 	pub lights: Vec<SceneLight>,
+	pub lighting: Lighting,
+	/// The colour a highlighted part is tinted.
+	pub highlight: Color32,
+}
+
+/// How the scene is lit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Lighting {
+	/// A key light above and left of the camera, a fill, and a soft sky.
+	#[default]
+	Studio,
+	/// A warm sun from the model's front right, under a blue sky.
+	Daylight,
+	/// Soft, even light from a bright cloudy sky.
+	Overcast,
+	/// A low orange sun from behind, rimming the model.
+	Sunset,
+	/// Dim moonlight, so the model's own lights stand out.
+	Night,
+	/// No shading: every surface in its own colour.
+	Flat,
+}
+
+impl Lighting {
+	pub const ALL: [Lighting; 6] = [
+		Lighting::Studio,
+		Lighting::Daylight,
+		Lighting::Overcast,
+		Lighting::Sunset,
+		Lighting::Night,
+		Lighting::Flat,
+	];
+
+	pub fn label(self) -> &'static str {
+		match self {
+			Lighting::Studio => "Studio",
+			Lighting::Daylight => "Daylight",
+			Lighting::Overcast => "Overcast",
+			Lighting::Sunset => "Sunset",
+			Lighting::Night => "Night",
+			Lighting::Flat => "Flat (unlit)",
+		}
+	}
+
+	/// The direction towards the key light, and the shader's lighting rows
+	/// (see `Uniforms::env`) without a highlight. Studio and Overcast light
+	/// from the camera; the others from fixed places in the world.
+	fn rig(self, right: V3, up: V3, forward: V3) -> (V3, [[f32; 4]; 4]) {
+		let from_camera =
+			|r: f32, u: f32| normalize([0, 1, 2].map(|k| -forward[k] + u * up[k] + r * right[k]));
+		let rows = |key: V3, fill: f32, sky: V3, exposure: f32, ground: V3| {
+			[
+				[key[0], key[1], key[2], fill],
+				[sky[0], sky[1], sky[2], exposure],
+				[ground[0], ground[1], ground[2], 0.0],
+				[0.0; 4],
+			]
+		};
+		match self {
+			Lighting::Studio => (
+				from_camera(-0.4, 0.6),
+				rows([2.8; 3], 0.7, [0.45, 0.48, 0.55], 1.0, [0.2, 0.18, 0.16]),
+			),
+			// Roblox models face -Z: the sun is in front, to the right, high
+			Lighting::Daylight => (
+				normalize([0.45, 0.8, -0.4]),
+				rows(
+					[3.8, 3.3, 2.6],
+					0.3,
+					[0.3, 0.45, 0.85],
+					1.0,
+					[0.3, 0.26, 0.2],
+				),
+			),
+			Lighting::Overcast => (
+				from_camera(0.0, 1.4),
+				rows(
+					[1.1, 1.1, 1.15],
+					0.6,
+					[0.85, 0.87, 0.9],
+					1.0,
+					[0.4, 0.38, 0.36],
+				),
+			),
+			Lighting::Sunset => (
+				normalize([-0.7, 0.18, 0.5]),
+				rows(
+					[3.6, 1.9, 1.0],
+					0.25,
+					[0.32, 0.3, 0.48],
+					1.1,
+					[0.16, 0.1, 0.1],
+				),
+			),
+			Lighting::Night => (
+				normalize([0.3, 0.7, -0.5]),
+				rows(
+					[0.35, 0.45, 0.75],
+					0.08,
+					[0.06, 0.08, 0.14],
+					1.3,
+					[0.02, 0.02, 0.03],
+				),
+			),
+			Lighting::Flat => (
+				from_camera(0.0, 0.0),
+				rows([0.0; 3], 0.0, [1.0; 3], -1.0, [1.0; 3]),
+			),
+		}
+	}
+}
+
+/// Where the world point `p` lands in the view `rect`, if it is in front
+/// of the camera.
+pub fn project(camera: &Camera, rect: Rect, p: V3) -> Option<Pos2> {
+	let (right, up, forward) = camera.basis();
+	let d = sub(p, camera.eye());
+	let z = dot(d, forward);
+	if z <= camera.radius * 0.01 {
+		return None;
+	}
+	let focal = rect.height() * 0.5 / 35f32.to_radians().tan();
+	let centre = rect.center();
+	Some(Pos2::new(
+		centre.x + dot(d, right) / z * focal,
+		centre.y - dot(d, up) / z * focal,
+	))
 }
 
 /// A Roblox light placed in the scene.
@@ -162,6 +289,8 @@ pub struct ScenePart<'a> {
 	/// Set when this draws a decal over its part's geometry; `material`
 	/// then holds the decal's image.
 	pub decal: Option<DecalDraw>,
+	/// Tinted to stand out (hovered in the parts list).
+	pub highlight: bool,
 }
 
 /// A Decal or Texture drawn on one face of its part: the part's geometry
@@ -237,6 +366,9 @@ pub enum AlphaMode {
 	TintMask,
 	/// Alpha is ignored.
 	Opaque,
+	/// The map's alpha makes the surface see-through. Not a Roblox mode:
+	/// offered for meshes shown on their own (hair cards, leaves).
+	Blend,
 }
 
 impl AlphaMode {
@@ -577,12 +709,9 @@ fn mesh_callback(
 		[0.0, 0.0, far / (near - far), near * far / (near - far)],
 		[0.0, 0.0, -1.0, 0.0],
 	];
-	// key light above and to the left of the camera
-	let to_light = normalize([
-		-forward[0] + 0.6 * up[0] - 0.4 * right[0],
-		-forward[1] + 0.6 * up[1] - 0.4 * right[1],
-		-forward[2] + 0.6 * up[2] - 0.4 * right[2],
-	]);
+	let (to_light, mut env) = settings.lighting.rig(right, up, forward);
+	let h = linear_rgb(settings.highlight);
+	env[3] = [h[0], h[1], h[2], 0.0];
 	let (wire_mode, wire_colour, wire_strength) = match settings.shading {
 		Shading::Solid => (0.0, [0.0; 3], 0.0),
 		Shading::SolidWireframe => (1.0, [0.01, 0.012, 0.015], 0.7),
@@ -610,6 +739,7 @@ fn mesh_callback(
 		decal_size: [1.0, 1.0, 1.0, 0.0],
 		decal_tile: [1.0, 1.0, 0.0, 0.0],
 		decal_colour: [1.0; 4],
+		env,
 		..light_uniforms(&settings.lights, camera.target)
 	};
 	// see-through parts are drawn after the rest, the farthest first
@@ -669,6 +799,11 @@ fn mesh_callback(
 			tint: {
 				let linear = s.tint.map(|c| srgb_channel_to_linear(c.clamp(0.0, 1.0)));
 				[linear[0], linear[1], linear[2], s.alpha_mode as u8 as f32]
+			},
+			env: {
+				let mut env = uniforms.env;
+				env[2][3] = if part.highlight { 0.75 } else { 0.0 };
+				env
 			},
 			..match decal {
 				Some((part_from_mesh, decal, decal_size, decal_tile, decal_colour, clothing)) => {

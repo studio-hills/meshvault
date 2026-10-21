@@ -35,6 +35,8 @@ pub struct Document {
 	pub material: Material,
 	/// The mesh uploaded to the GPU, created on first draw.
 	pub gpu: Option<GpuScene>,
+	/// What the colour map's alpha does.
+	pub alpha: crate::viewport::AlphaMode,
 }
 
 impl Document {
@@ -87,6 +89,10 @@ pub struct App {
 	pub show_axes: bool,
 	pub show_grid: bool,
 	pub show_maps: bool,
+	/// Overlays on an animated model: lines between its joints and bones,
+	/// and a mark at each joint.
+	pub show_skeleton: bool,
+	pub show_joints: bool,
 	/// Shown instead of the document's maps when they are switched off.
 	pub no_material: Material,
 	/// `None` when the GPU renderer is unavailable; drawing falls back to the CPU.
@@ -146,6 +152,8 @@ impl App {
 			show_axes: true,
 			show_grid: true,
 			show_maps: true,
+			show_skeleton: false,
+			show_joints: false,
 			no_material: Material::default(),
 			gpu,
 			adapter,
@@ -273,6 +281,7 @@ impl App {
 					hull_visible,
 					material: Material::default(),
 					gpu: None,
+					alpha: crate::viewport::AlphaMode::Overlay,
 				});
 				true
 			}
@@ -1105,8 +1114,12 @@ impl App {
 					colour: crate::viewport::PART_COLOUR,
 					scene: &mut doc.gpu,
 					moved: false,
-					surface: crate::viewport::Surface::OPAQUE,
+					surface: crate::viewport::Surface {
+						alpha_mode: doc.alpha,
+						..crate::viewport::Surface::OPAQUE
+					},
 					decal: None,
+					highlight: false,
 				}];
 				out.push(crate::viewport::render_image(
 					&mut parts,
@@ -1132,6 +1145,28 @@ impl App {
 		};
 		let even = |v: f32| ((v / 2.0).round() as u32).max(1) * 2;
 		[even(height * aspect), even(height)]
+	}
+
+	pub fn set_lighting(&mut self, lighting: crate::viewport::Lighting) {
+		self.config.lighting = lighting;
+		self.config.save();
+	}
+
+	/// Copies the view as it is now, over the viewport's background.
+	pub fn copy_image(&mut self) {
+		let size = self.frame_size(STILL_HEIGHT);
+		let Some(image) = self.render_view(size, 1, 0.0).and_then(|mut f| f.pop()) else {
+			self.toasts.error("Copying images needs the GPU renderer.");
+			return;
+		};
+		let p = theme::palette(&self.ctx);
+		let image = over_gradient(&image, p.viewport_top, p.viewport_bottom);
+		let pixels = egui::ColorImage::from_rgba_unmultiplied(
+			[image.width() as usize, image.height() as usize],
+			image.as_raw(),
+		);
+		self.ctx.copy_image(pixels);
+		self.toasts.success("Copied the view to the clipboard");
 	}
 
 	/// Saves the view as it is now as a PNG with a transparent background.

@@ -60,13 +60,37 @@ pub struct Uniforms {
 	/// each box face (Right, Top, Back, Left, Bottom, Front), then the box's
 	/// centre and half size in the body section's space.
 	pub clothing: [[f32; 4]; 8],
+	/// Lighting and highlight (see `viewport::Lighting`): key light colour
+	/// and fill strength; sky colour and exposure; ground colour and how
+	/// strongly this draw is highlighted; the highlight colour.
+	pub env: [[f32; 4]; 4],
+}
+
+/// How a surface is drawn, which picks its pipeline.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+	Opaque,
+	/// Cut out by its colour map's alpha, with smooth (multisampled) edges.
+	Cutout,
+	Decal,
+	SeeThrough,
+}
+
+/// The render pipelines: each with no culling, then with back faces culled.
+#[derive(Clone)]
+struct Pipelines {
+	opaque: [wgpu::RenderPipeline; 2],
+	cutout: [wgpu::RenderPipeline; 2],
+	decal: [wgpu::RenderPipeline; 2],
+	/// No culling, back faces culled, and front faces culled (to draw a
+	/// see-through surface's far side before its near side).
+	see_through: [wgpu::RenderPipeline; 3],
 }
 
 pub struct GpuRenderer {
 	device: wgpu::Device,
 	queue: wgpu::Queue,
-	/// [opaque, see-through, decal][no culling, back-face culling]
-	pipelines: [[wgpu::RenderPipeline; 2]; 3],
+	pipelines: Pipelines,
 	layout: wgpu::BindGroupLayout,
 	sampler: wgpu::Sampler,
 	/// Bound to slots without a map.
@@ -162,7 +186,10 @@ impl GpuRenderer {
 		// see-through parts blend over what is behind them and leave the depth
 		// buffer alone, so they are drawn last, from the back to the front;
 		// decals blend over their part's own surface, at the same depth
-		let pipeline = |see_through: bool, decal: bool, cull_mode| {
+		let pipeline = |kind: Kind, cull_mode| {
+			// decals blend too, over the surface they lie on
+			let see_through = matches!(kind, Kind::SeeThrough | Kind::Decal);
+			let decal = kind == Kind::Decal;
 			device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 				label: Some("rbx_mesh pipeline"),
 				layout: Some(&pipeline_layout),
@@ -199,7 +226,8 @@ impl GpuRenderer {
 				multisample: wgpu::MultisampleState {
 					count: MSAA_SAMPLES,
 					mask: !0,
-					alpha_to_coverage_enabled: false,
+					// a cutout's alpha decides how many samples it covers
+					alpha_to_coverage_enabled: kind == Kind::Cutout,
 				},
 				fragment: Some(wgpu::FragmentState {
 					module: &module,
@@ -215,13 +243,17 @@ impl GpuRenderer {
 				cache: None,
 			})
 		};
-		let pipelines =
-			[(false, false), (true, false), (true, true)].map(|(see_through, decal)| {
-				[
-					pipeline(see_through, decal, None),
-					pipeline(see_through, decal, Some(wgpu::Face::Back)),
-				]
-			});
+		let both = |kind| [pipeline(kind, None), pipeline(kind, Some(wgpu::Face::Back))];
+		let pipelines = Pipelines {
+			opaque: both(Kind::Opaque),
+			cutout: both(Kind::Cutout),
+			decal: both(Kind::Decal),
+			see_through: [
+				pipeline(Kind::SeeThrough, None),
+				pipeline(Kind::SeeThrough, Some(wgpu::Face::Back)),
+				pipeline(Kind::SeeThrough, Some(wgpu::Face::Front)),
+			],
+		};
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("rbx_mesh sampler"),
 			address_mode_u: wgpu::AddressMode::Repeat,
@@ -377,11 +409,16 @@ impl GpuRenderer {
 			.map(|(scene, groups, mut uniforms)| {
 				uniforms.flags = scene.flags;
 				uniforms.params[1] = if self.gamma_output { 1.0 } else { 0.0 };
+				// alpha modes: 1 Transparency (a cutout), 4 Blend
+				let mode = uniforms.tint[3];
+				let has_map = scene.flags[0] != 0;
 				Draw {
 					pass: if uniforms.decal[0] > 0.0 {
 						Pass::Decal
-					} else if uniforms.surface[0] < 1.0 {
+					} else if uniforms.surface[0] < 1.0 || (has_map && (mode - 4.0).abs() < 0.5) {
 						Pass::SeeThrough
+					} else if has_map && (mode - 1.0).abs() < 0.5 {
+						Pass::Cutout
 					} else {
 						Pass::Opaque
 					},
@@ -397,7 +434,8 @@ impl GpuRenderer {
 			})
 			.collect();
 		MeshCallback {
-			pipelines: self.pipelines.each_ref().map(|p| p[cull as usize].clone()),
+			pipelines: self.pipelines.clone(),
+			cull,
 			draws,
 		}
 	}
@@ -660,11 +698,12 @@ fn upload_texture(
 	texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Drawn in this order: opaque surfaces, the decals on them, then
-/// see-through surfaces.
+/// Drawn in this order: opaque surfaces, cutouts, the decals on them,
+/// then see-through surfaces.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
 	Opaque,
+	Cutout,
 	Decal,
 	SeeThrough,
 }
@@ -679,8 +718,9 @@ struct Draw {
 }
 
 pub struct MeshCallback {
-	/// [opaque, see-through, decal]
-	pipelines: [wgpu::RenderPipeline; 3],
+	pipelines: Pipelines,
+	/// Back faces are culled.
+	cull: bool,
 	draws: Vec<Draw>,
 }
 
@@ -711,16 +751,38 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 
 impl MeshCallback {
 	fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
-		for (pass, pipeline) in [(Pass::Opaque, 0), (Pass::Decal, 2), (Pass::SeeThrough, 1)] {
-			render_pass.set_pipeline(&self.pipelines[pipeline]);
-			for draw in self.draws.iter().filter(|d| d.pass == pass) {
-				render_pass.set_bind_group(0, &draw.bind_group, &[]);
-				render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
-				for range in &draw.ranges {
-					if !range.is_empty() {
-						render_pass.draw(range.clone(), 0..1);
-					}
+		let p = &self.pipelines;
+		let cull = self.cull as usize;
+		let one = |render_pass: &mut wgpu::RenderPass<'_>, draw: &Draw| {
+			render_pass.set_bind_group(0, &draw.bind_group, &[]);
+			render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
+			for range in &draw.ranges {
+				if !range.is_empty() {
+					render_pass.draw(range.clone(), 0..1);
 				}
+			}
+		};
+		for (pass, pipeline) in [
+			(Pass::Opaque, &p.opaque[cull]),
+			(Pass::Cutout, &p.cutout[cull]),
+			(Pass::Decal, &p.decal[cull]),
+		] {
+			render_pass.set_pipeline(pipeline);
+			for draw in self.draws.iter().filter(|d| d.pass == pass) {
+				one(render_pass, draw);
+			}
+		}
+		// see-through surfaces come sorted from the farthest; each draws its
+		// far side before its near side, so it blends over itself in order
+		let sides: &[&wgpu::RenderPipeline] = if self.cull {
+			&[&p.see_through[1]]
+		} else {
+			&[&p.see_through[2], &p.see_through[1]]
+		};
+		for draw in self.draws.iter().filter(|d| d.pass == Pass::SeeThrough) {
+			for pipeline in sides {
+				render_pass.set_pipeline(pipeline);
+				one(render_pass, draw);
 			}
 		}
 	}

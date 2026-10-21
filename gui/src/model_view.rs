@@ -426,6 +426,8 @@ pub struct ModelView {
 	bone_scale: Vec<f32>,
 	/// The pose needs solving again (time, clip or rest changed).
 	dirty: bool,
+	/// The part tinted to stand out (hovered in the parts list).
+	pub highlight: Option<usize>,
 }
 
 /// Parts this transparent are invisible in Roblox (HumanoidRootPart).
@@ -1246,6 +1248,7 @@ impl ModelView {
 			scale: model.scale,
 			captured_pose: model.joints.iter().any(|j| j.transform.is_some()),
 			dirty: true,
+			highlight: None,
 			clips,
 			parts,
 		};
@@ -1416,6 +1419,57 @@ impl ModelView {
 			None => (self.rest.clone(), HashMap::new()),
 		};
 		(posed, by_name, face)
+	}
+
+	/// The skeleton where the model is posed now: lines from joint to joint
+	/// (and on to the middle of each limb's last part), and each joint.
+	pub fn skeleton(&mut self) -> Skeleton {
+		self.update_pose();
+		let posed = &self.posed;
+		let rig = &self.rig;
+		let links = rig.part_links();
+		let pivot = |m: usize| {
+			let m = &rig.motors[m];
+			posed.parts[m.part0].mul(&m.c0).pos
+		};
+		// where a part hangs from its parent, or its middle for a root
+		let point = |p: usize| links[p].map_or(posed.parts[p].pos, |(_, m)| pivot(m));
+		let mut has_child = vec![false; rig.parts.len()];
+		for &(parent, _) in links.iter().flatten() {
+			has_child[parent] = true;
+		}
+		let mut skeleton = Skeleton::default();
+		for (p, link) in links.iter().enumerate() {
+			let Some((parent, _)) = link else { continue };
+			skeleton.bones.push((point(*parent), point(p)));
+			if !has_child[p] {
+				skeleton.bones.push((point(p), posed.parts[p].pos));
+			}
+		}
+		for (i, m) in rig.motors.iter().enumerate() {
+			skeleton.joints.push(Joint {
+				at: pivot(i),
+				name: m.name.clone(),
+				animated: m.animated,
+			});
+		}
+		for (i, b) in rig.bones.iter().enumerate() {
+			let at = posed.bones[i].pos;
+			let from = match b.parent {
+				BoneParent::Part(p) => Some(posed.parts[p].pos),
+				BoneParent::Bone(q) => Some(posed.bones[q].pos),
+				BoneParent::None => None,
+			};
+			if let Some(from) = from {
+				skeleton.bones.push((from, at));
+			}
+			skeleton.joints.push(Joint {
+				at,
+				name: b.name.clone(),
+				animated: true,
+			});
+		}
+		skeleton
 	}
 
 	// ---------------------------------------------------------------- export
@@ -1603,10 +1657,12 @@ impl ModelView {
 		let posed = &self.posed;
 		let rig = &self.rig;
 		let show_blocks = self.show_blocks;
+		let highlight = self.highlight;
 		self.parts
 			.iter_mut()
 			.filter(|p| p.visible)
 			.flat_map(|part| {
+				let lit = highlight == Some(part.index);
 				let part_world = posed.parts[part.index];
 				let size = rig.parts[part.index].size;
 				let PartView {
@@ -1674,6 +1730,7 @@ impl ModelView {
 					moved,
 					surface: *surface,
 					decal: None,
+					highlight: lit,
 				}];
 				for d in decals.iter_mut() {
 					drawn.push(ScenePart {
@@ -1686,6 +1743,7 @@ impl ModelView {
 						scene: &mut d.gpu,
 						moved,
 						surface: *surface,
+						highlight: lit,
 						decal: Some(DecalDraw {
 							// clothing places the mesh in its body section's box
 							part_from_mesh: match &d.clothing {
@@ -1775,6 +1833,21 @@ impl ModelView {
 			})
 			.sum()
 	}
+}
+
+/// What the skeleton overlay draws, in world space.
+#[derive(Default)]
+pub struct Skeleton {
+	pub bones: Vec<(V3, V3)>,
+	pub joints: Vec<Joint>,
+}
+
+/// A joint of the skeleton overlay: a Motor6D, weld or Bone.
+pub struct Joint {
+	pub at: V3,
+	pub name: String,
+	/// Clips drive it (a weld only holds its parts together).
+	pub animated: bool,
 }
 
 /// A node of the exported skeleton: a part, a Bone, or a bone only a

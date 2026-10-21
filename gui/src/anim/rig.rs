@@ -340,16 +340,24 @@ impl Rig {
 	/// Each part's parent in the joint tree: the part a joint places it
 	/// from. Roots (and parts no joint reaches) have none.
 	pub fn part_parents(&self) -> Vec<Option<usize>> {
-		let mut parents = vec![None; self.parts.len()];
+		self.part_links()
+			.into_iter()
+			.map(|l| l.map(|(parent, _)| parent))
+			.collect()
+	}
+
+	/// Each part's parent in the joint tree and the joint between them.
+	pub fn part_links(&self) -> Vec<Option<(usize, usize)>> {
+		let mut links = vec![None; self.parts.len()];
 		for &(i, forward) in &self.motor_order {
 			let m = &self.motors[i];
 			if forward {
-				parents[m.part1] = Some(m.part0);
+				links[m.part1] = Some((m.part0, i));
 			} else {
-				parents[m.part0] = Some(m.part1);
+				links[m.part0] = Some((m.part1, i));
 			}
 		}
-		parents
+		links
 	}
 
 	/// The pose the model was exported in: joints at their captured

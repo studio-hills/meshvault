@@ -1,5 +1,6 @@
 //! The right-hand panel describing the open model and its material.
 
+use crate::viewport::AlphaMode;
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
 use super::theme::{ROW, palette, semibold};
@@ -79,6 +80,20 @@ impl App {
 						let mut remove = None;
 						for slot in Slot::ALL {
 							map_row(ui, slot, &doc.material, &mut pick, &mut toggle, &mut remove);
+						}
+						if doc.material.active(Slot::Base).is_some() {
+							ui.add_space(4.0);
+							ui.label(RichText::new("Colour map alpha").color(p.text_weak))
+								.on_hover_text("Over colour: the map over the part colour, as Roblox draws a MeshPart's TextureID.\nCutout: see-through below half alpha, with smooth edges.\nBlend: see-through by alpha (hair cards, leaves).");
+							widgets::text_segmented(
+								ui,
+								&mut doc.alpha,
+								&[
+									(AlphaMode::Overlay, "Over colour"),
+									(AlphaMode::Transparency, "Cutout"),
+									(AlphaMode::Blend, "Blend"),
+								],
+							);
 						}
 						if self.gpu.is_none()
 							&& [Slot::Normal, Slot::Roughness, Slot::Metalness]

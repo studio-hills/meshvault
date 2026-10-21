@@ -302,6 +302,8 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 		background: [egui::Color32::BLACK; 2],
 		grid_colour: egui::Color32::BLACK,
 		lights: Vec::new(),
+		lighting: Default::default(),
+		highlight: egui::Color32::BLACK,
 	};
 	let big = [SIZE * SUPERSAMPLE; 2];
 	let image = match prepared {
@@ -324,6 +326,7 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 				moved: false,
 				surface: viewport::Surface::OPAQUE,
 				decal: None,
+				highlight: false,
 			}];
 			viewport::render_image(&mut parts, &camera, &settings, renderer, big)
 		}

@@ -21,6 +21,9 @@
 - Export for Blender: animated models and meshes export as binary glTF (`.glb`) with one armature, skin weights, every clip baked at 30 fps, and their maps embedded; checked by importing into Blender 5.2
 - OBJ exports carry texture coordinates, normals and an MTL file with the maps beside it, from the viewer (an animated model as posed now) and the library
 - Save the view as a transparent PNG, or as a turntable GIF that plays the selected clip
+- Lighting presets (Studio, Daylight, Overcast, Sunset, Night, Flat), a screenshot button (F12) and copying the view to the clipboard
+- Skeleton and joint overlays for animated models, and highlighting a part hovered in the parts list
+- See-through parts blend their far side under their near side; cutout maps get smooth edges (alpha to coverage); meshes opened on their own can blend or cut out by their colour map's alpha
 - Exports record a model's classic clothing (Shirt, Pants, ShirtGraphic and their colours), and Meshvault dresses the body in it as Studio does
 - Exports record each part's MaterialVariant (its maps and studs per tile), and Meshvault tiles it over the part as Studio does
 - Exports record each part's Decals and Textures, and Meshvault downloads their images and draws them on their faces as Studio does (no longer standing a mesh part's decal in for its texture)

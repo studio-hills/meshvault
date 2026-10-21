@@ -200,7 +200,7 @@ fn bake(
 	let see_through = map.pixels().any(|p| p[3] < 255);
 	let changes = match mode {
 		AlphaMode::Overlay | AlphaMode::TintMask => see_through || !white,
-		AlphaMode::Transparency => !white,
+		AlphaMode::Transparency | AlphaMode::Blend => !white,
 		AlphaMode::Opaque => see_through || !white,
 	};
 	if !changes {
@@ -226,9 +226,9 @@ fn bake(
 			let rgb = [0, 1, 2].map(|k| match mode {
 				AlphaMode::Overlay => part[k] + (c[k] * tint[k] - part[k]) * a,
 				AlphaMode::TintMask => c[k] * (1.0 + (tint[k] - 1.0) * a),
-				AlphaMode::Transparency | AlphaMode::Opaque => c[k] * tint[k],
+				AlphaMode::Transparency | AlphaMode::Opaque | AlphaMode::Blend => c[k] * tint[k],
 			});
-			let alpha = if mode == AlphaMode::Transparency {
+			let alpha = if matches!(mode, AlphaMode::Transparency | AlphaMode::Blend) {
 				p[3]
 			} else {
 				255
@@ -558,7 +558,7 @@ impl Gltf {
 		if surface.neon {
 			value["emissiveFactor"] = json!(part);
 		}
-		if opacity < 0.999 {
+		if opacity < 0.999 || (surface.alpha_mode == AlphaMode::Blend && base.is_some()) {
 			value["alphaMode"] = json!("BLEND");
 		} else if surface.alpha_mode == AlphaMode::Transparency && base.is_some() {
 			value["alphaMode"] = json!("MASK");

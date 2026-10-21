@@ -498,11 +498,20 @@ mod tests {
 			mesh,
 			maps: Vec::new(),
 		};
-		let report = export(&egui::Context::default(), &dir, vec![job], Vec::new(), Format::Glb);
+		let report = export(
+			&egui::Context::default(),
+			&dir,
+			vec![job],
+			Vec::new(),
+			Format::Glb,
+		);
 		assert_eq!(report.written, 1, "{:?}", report.failed);
 		let glb = std::fs::read(dir.join("Sample.glb")).unwrap();
 		assert_eq!(&glb[..4], b"glTF");
-		assert_eq!(u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize, glb.len());
+		assert_eq!(
+			u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize,
+			glb.len()
+		);
 	}
 
 	/// Exports every animated model of the workspace at `MESHVAULT_WS`.

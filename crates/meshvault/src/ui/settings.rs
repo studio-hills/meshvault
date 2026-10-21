@@ -22,21 +22,54 @@ pub struct SettingsDialog {
 	concurrency: usize,
 	test_id: String,
 	test: Option<Receiver<Result<String, String>>>,
-	message: Option<(bool, String)>,
+	message: Option<Message>,
 	/// Shown at the top, e.g. why the dialog was opened.
 	pub notice: Option<String>,
-	/// Whether a credential is saved for [API key, cookie]; cached to avoid
-	/// querying the credential store every frame.
-	saved: [bool; 2],
+	/// Cached to avoid querying the credential store every frame.
+	saved: Saved,
 	/// "Forget" was clicked; waiting for the inline confirmation.
 	confirm_forget: bool,
 }
 
-fn slot(method: AuthMethod) -> usize {
-	match method {
-		AuthMethod::ApiKey => 0,
-		AuthMethod::Cookie => 1,
+/// The line under the fields: how the last action went.
+enum Message {
+	Ok(String),
+	Err(String),
+}
+
+/// Whether a credential is saved for each method.
+#[derive(Clone, Copy)]
+struct Saved {
+	api_key: bool,
+	cookie: bool,
+}
+
+impl Saved {
+	fn get(self, method: AuthMethod) -> bool {
+		match method {
+			AuthMethod::ApiKey => self.api_key,
+			AuthMethod::Cookie => self.cookie,
+		}
 	}
+
+	fn set(&mut self, method: AuthMethod, saved: bool) {
+		match method {
+			AuthMethod::ApiKey => self.api_key = saved,
+			AuthMethod::Cookie => self.cookie = saved,
+		}
+	}
+}
+
+/// Every field shares one width, so inputs and buttons line up.
+const FIELD: f32 = 320.0;
+
+/// A field of the grid, laid out right to left in the shared width.
+fn field(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+	ui.allocate_ui_with_layout(
+		egui::vec2(FIELD, ui.spacing().interact_size.y),
+		egui::Layout::right_to_left(egui::Align::Center),
+		add,
+	);
 }
 
 /// Builds the download client from saved settings, if a credential is saved.
@@ -64,10 +97,10 @@ impl SettingsDialog {
 			message: None,
 			notice: None,
 			confirm_forget: false,
-			saved: [
-				config::load_secret(AuthMethod::ApiKey).is_some(),
-				config::load_secret(AuthMethod::Cookie).is_some(),
-			],
+			saved: Saved {
+				api_key: config::load_secret(AuthMethod::ApiKey).is_some(),
+				cookie: config::load_secret(AuthMethod::Cookie).is_some(),
+			},
 		}
 	}
 
@@ -85,7 +118,7 @@ impl SettingsDialog {
 		let place_id = self.place_id()?;
 		if !self.secret.trim().is_empty() {
 			config::save_secret(self.method, &self.secret)?;
-			self.saved[slot(self.method)] = true;
+			self.saved.set(self.method, true);
 			self.secret.clear();
 		}
 		config.auth_method = self.method;
@@ -100,7 +133,7 @@ impl SettingsDialog {
 		let place_id = match self.place_id() {
 			Ok(p) => p,
 			Err(e) => {
-				self.message = Some((false, e));
+				self.message = Some(Message::Err(e));
 				return;
 			}
 		};
@@ -110,11 +143,11 @@ impl SettingsDialog {
 			Some(self.secret.clone())
 		};
 		let Some(secret) = secret else {
-			self.message = Some((false, "Enter a credential first.".into()));
+			self.message = Some(Message::Err("Enter a credential first.".into()));
 			return;
 		};
 		let Some(id) = crate::content_id::parse_asset_id(&self.test_id) else {
-			self.message = Some((false, "Enter an asset id to test with.".into()));
+			self.message = Some(Message::Err("Enter an asset id to test with.".into()));
 			return;
 		};
 		let client = Client::new(
@@ -150,193 +183,228 @@ impl SettingsDialog {
 		self.message = None;
 	}
 
-	/// Returns false when the dialog should close.
-	pub fn show(&mut self, ctx: &egui::Context, config: &mut Config) -> bool {
+	/// Takes the test's result once it has arrived, before the frame draws.
+	fn poll_test(&mut self) {
 		if let Some(rx) = &self.test
 			&& let Ok(result) = rx.try_recv()
 		{
 			self.message = Some(match result {
-				Ok(m) => (true, m),
-				Err(e) => (false, e),
+				Ok(m) => Message::Ok(m),
+				Err(e) => Message::Err(e),
 			});
 			self.test = None;
 		}
+	}
 
-		let mut open = true;
+	/// Returns false when the dialog should close.
+	pub fn show(&mut self, ctx: &egui::Context, config: &mut Config) -> bool {
+		self.poll_test();
 		let mut close = false;
 		let modal = widgets::modal(ctx, "settings_dialog").show(ctx, |ui| {
-				ui.set_width(500.0);
-				let accent = palette(ui.ctx()).accent;
-				widgets::dialog_title(ui, Some((icons::KEY, 20.0, accent)), "Roblox access");
+			ui.set_width(500.0);
+			let accent = palette(ui.ctx()).accent;
+			widgets::dialog_title(ui, Some((icons::KEY, 20.0, accent)), "Roblox access");
+			ui.add_space(4.0);
+			if let Some(notice) = &self.notice {
+				ui.label(RichText::new(notice).color(palette(ui.ctx()).warning));
 				ui.add_space(4.0);
-				if let Some(notice) = &self.notice {
-					ui.label(RichText::new(notice).color(palette(ui.ctx()).warning));
-					ui.add_space(4.0);
-				}
-				ui.label("Roblox only delivers assets to signed-in users, so downloads need a credential.");
-				ui.add_space(6.0);
-				let api = widgets::pointer(ui.radio_value(
-					&mut self.method,
-					AuthMethod::ApiKey,
-					"Open Cloud API key (recommended)",
-				));
-				let cookie = widgets::pointer(ui.radio_value(
-					&mut self.method,
-					AuthMethod::Cookie,
-					".ROBLOSECURITY cookie",
-				));
-				// a pending "forget" belongs to the credential it was asked about
-				if api.changed() || cookie.changed() {
-					self.confirm_forget = false;
-				}
+			}
+			self.method_choice(ui);
+			ui.add_space(6.0);
+			self.fields_grid(ui);
+			if let Some(message) = &self.message {
 				ui.add_space(4.0);
-				match self.method {
-					AuthMethod::ApiKey => {
-						ui.horizontal_wrapped(|ui| {
-							ui.label("Create a key at");
-							ui.hyperlink_to(
-								"create.roblox.com → Credentials",
-								"https://create.roblox.com/dashboard/credentials",
-							);
-							ui.label("and give it the");
-							ui.code("legacy-asset:manage");
-							ui.label("permission. Keys made for a group cannot use this permission; use one for your own account.");
-						});
-					}
-					AuthMethod::Cookie => {
-						ui.label(
-							RichText::new(
-								"Your .ROBLOSECURITY cookie gives full access to your account. Only use \
-								it on a computer you trust. It is stored in the system credential \
-								store, never in a file, and only sent to roblox.com.",
-							)
-							.color(ui.visuals().warn_fg_color),
-						);
-					}
-				}
-				ui.add_space(6.0);
-				let saved = self.saved[slot(self.method)];
-				// every field shares one width, so inputs and buttons line up
-				const FIELD: f32 = 320.0;
-				let field = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-					ui.allocate_ui_with_layout(
-						egui::vec2(FIELD, ui.spacing().interact_size.y),
-						egui::Layout::right_to_left(egui::Align::Center),
-						|ui| add(ui),
-					);
+				let p = palette(ui.ctx());
+				let (colour, text) = match message {
+					Message::Ok(text) => (p.success, text),
+					Message::Err(text) => (p.danger, text),
 				};
-				egui::Grid::new("settings")
-					.num_columns(2)
-					.spacing(egui::vec2(16.0, 10.0))
-					.show(ui, |ui| {
-						ui.label(match self.method {
-							AuthMethod::ApiKey => "API key",
-							AuthMethod::Cookie => "Cookie",
-						});
-						field(ui, &mut |ui| {
-							// laid out right to left: the buttons first, then the input
-							// or the confirmation fills the rest
-							if saved && self.confirm_forget {
-								let what = match self.method {
-									AuthMethod::ApiKey => "key",
-									AuthMethod::Cookie => "cookie",
-								};
-								if widgets::danger_button(ui, "Forget").clicked() {
-									// a failed delete is not reported yet (bug B07)
-									let _ = config::delete_secret(self.method);
-									self.saved[slot(self.method)] = false;
-									self.confirm_forget = false;
-									self.message = Some((true, "Saved credential removed.".into()));
-								}
-								if widgets::text_button(ui, "Keep").clicked() {
-									self.confirm_forget = false;
-								}
-								ui.label(
-									RichText::new(format!("Delete the saved {what}?"))
-										.color(palette(ui.ctx()).danger),
-								);
-								return;
-							}
-							if saved {
-								let p = palette(ui.ctx());
-								let forget = ui.add(
-									egui::Button::new(RichText::new("Forget").color(p.danger))
-										.stroke(egui::Stroke::new(1.0, p.danger.gamma_multiply(0.5))),
-								);
-								if forget.on_hover_text("Delete the saved credential").clicked() {
-									self.confirm_forget = true;
-								}
-							}
-							ui.add(
-								widgets::input(&mut self.secret)
-									.password(true)
-									.desired_width(ui.available_width())
-									.hint_text(if saved { "saved (type to replace)" } else { "paste here" }),
-							);
-						});
-						ui.end_row();
+				ui.label(RichText::new(text).color(colour));
+			}
+			ui.add_space(6.0);
+			close = self.footer(ui, config);
+		});
+		!modal.should_close() && !close
+	}
 
-						ui.label("Place ID");
-						field(ui, &mut |ui| {
-							ui.add(
-								widgets::input(&mut self.place_id)
-									.desired_width(ui.available_width())
-									.hint_text("optional"),
-							)
-							.on_hover_text(
-								"A place you can edit. Sent as Roblox-Place-Id, which can grant access \
-								to private assets used in that place.",
-							);
-						});
-						ui.end_row();
-
-						ui.label("Parallel downloads");
-						field(ui, &mut |ui| {
-							// right to left like the other fields: the number box ends
-							// on the shared right edge and the slider fills the rest
-							let height = ui.spacing().interact_size.y;
-							widgets::pointer(ui.add_sized(
-								[48.0, height],
-								egui::DragValue::new(&mut self.concurrency).range(1..=MAX_CONCURRENCY_SETTING),
-							));
-							ui.spacing_mut().slider_width = ui.available_width() - ui.spacing().item_spacing.x;
-							widgets::pointer(ui.add(
-								egui::Slider::new(&mut self.concurrency, 1..=MAX_CONCURRENCY_SETTING).show_value(false),
-							));
-						});
-						ui.end_row();
-
-						ui.label("Test with asset id");
-						field(ui, &mut |ui| {
-							if self.test.is_some() {
-								ui.spinner();
-							} else if widgets::text_button(ui, "Test").clicked() {
-								self.start_test(ui.ctx());
-							}
-							ui.add(widgets::input(&mut self.test_id).desired_width(ui.available_width()));
-						});
-						ui.end_row();
-					});
-				if let Some((ok, message)) = &self.message {
-					ui.add_space(4.0);
-					let p = palette(ui.ctx());
-					let colour = if *ok { p.success } else { p.danger };
-					ui.label(RichText::new(message).color(colour));
-				}
-				ui.add_space(6.0);
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					if widgets::primary_button(ui, "Save").clicked() {
-						match self.save(config) {
-							Ok(()) => close = true,
-							Err(e) => self.message = Some((false, e)),
-						}
-					}
-					if widgets::text_button(ui, "Cancel").clicked() {
-						close = true;
-					}
+	/// The credential kind to use, with how to get one.
+	fn method_choice(&mut self, ui: &mut egui::Ui) {
+		ui.label("Roblox only delivers assets to signed-in users, so downloads need a credential.");
+		ui.add_space(6.0);
+		let api = widgets::pointer(ui.radio_value(
+			&mut self.method,
+			AuthMethod::ApiKey,
+			"Open Cloud API key (recommended)",
+		));
+		let cookie = widgets::pointer(ui.radio_value(
+			&mut self.method,
+			AuthMethod::Cookie,
+			".ROBLOSECURITY cookie",
+		));
+		// a pending "forget" belongs to the credential it was asked about
+		if api.changed() || cookie.changed() {
+			self.confirm_forget = false;
+		}
+		ui.add_space(4.0);
+		match self.method {
+			AuthMethod::ApiKey => {
+				ui.horizontal_wrapped(|ui| {
+					ui.label("Create a key at");
+					ui.hyperlink_to(
+						"create.roblox.com → Credentials",
+						"https://create.roblox.com/dashboard/credentials",
+					);
+					ui.label("and give it the");
+					ui.code("legacy-asset:manage");
+					ui.label(
+						"permission. Keys made for a group cannot use this permission; use one for your own account.",
+					);
 				});
+			}
+			AuthMethod::Cookie => {
+				ui.label(
+					RichText::new(
+						"Your .ROBLOSECURITY cookie gives full access to your account. Only use \
+						it on a computer you trust. It is stored in the system credential \
+						store, never in a file, and only sent to roblox.com.",
+					)
+					.color(ui.visuals().warn_fg_color),
+				);
+			}
+		}
+	}
+
+	/// The credential, place id, concurrency and test fields.
+	fn fields_grid(&mut self, ui: &mut egui::Ui) {
+		// read once, so the whole frame shows the state it started with
+		let saved = self.saved.get(self.method);
+		egui::Grid::new("settings")
+			.num_columns(2)
+			.spacing(egui::vec2(16.0, 10.0))
+			.show(ui, |ui| {
+				ui.label(match self.method {
+					AuthMethod::ApiKey => "API key",
+					AuthMethod::Cookie => "Cookie",
+				});
+				field(ui, |ui| self.credential_row(ui, saved));
+				ui.end_row();
+
+				ui.label("Place ID");
+				field(ui, |ui| {
+					ui.add(
+						widgets::input(&mut self.place_id)
+							.desired_width(ui.available_width())
+							.hint_text("optional"),
+					)
+					.on_hover_text(
+						"A place you can edit. Sent as Roblox-Place-Id, which can grant access \
+						to private assets used in that place.",
+					);
+				});
+				ui.end_row();
+
+				ui.label("Parallel downloads");
+				field(ui, |ui| {
+					// right to left like the other fields: the number box ends
+					// on the shared right edge and the slider fills the rest
+					let height = ui.spacing().interact_size.y;
+					widgets::pointer(
+						ui.add_sized(
+							[48.0, height],
+							egui::DragValue::new(&mut self.concurrency)
+								.range(1..=MAX_CONCURRENCY_SETTING),
+						),
+					);
+					ui.spacing_mut().slider_width =
+						ui.available_width() - ui.spacing().item_spacing.x;
+					widgets::pointer(
+						ui.add(
+							egui::Slider::new(&mut self.concurrency, 1..=MAX_CONCURRENCY_SETTING)
+								.show_value(false),
+						),
+					);
+				});
+				ui.end_row();
+
+				ui.label("Test with asset id");
+				field(ui, |ui| {
+					if self.test.is_some() {
+						ui.spinner();
+					} else if widgets::text_button(ui, "Test").clicked() {
+						self.start_test(ui.ctx());
+					}
+					ui.add(widgets::input(&mut self.test_id).desired_width(ui.available_width()));
+				});
+				ui.end_row();
 			});
-		open &= !modal.should_close();
-		open && !close
+	}
+
+	/// The credential field: the input with a Forget button while one is
+	/// saved, or the inline confirmation in place of both. `saved` is as it
+	/// was when the frame began.
+	fn credential_row(&mut self, ui: &mut egui::Ui, saved: bool) {
+		// laid out right to left: the buttons first, then the input
+		// or the confirmation fills the rest
+		if saved && self.confirm_forget {
+			let what = match self.method {
+				AuthMethod::ApiKey => "key",
+				AuthMethod::Cookie => "cookie",
+			};
+			if widgets::danger_button(ui, "Forget").clicked() {
+				// a failed delete is not reported yet (bug B07)
+				let _ = config::delete_secret(self.method);
+				self.saved.set(self.method, false);
+				self.confirm_forget = false;
+				self.message = Some(Message::Ok("Saved credential removed.".into()));
+			}
+			if widgets::text_button(ui, "Keep").clicked() {
+				self.confirm_forget = false;
+			}
+			ui.label(
+				RichText::new(format!("Delete the saved {what}?")).color(palette(ui.ctx()).danger),
+			);
+			// the confirmation replaces the input in this field only
+			return;
+		}
+		if saved {
+			let p = palette(ui.ctx());
+			let forget = ui.add(
+				egui::Button::new(RichText::new("Forget").color(p.danger))
+					.stroke(egui::Stroke::new(1.0, p.danger.gamma_multiply(0.5))),
+			);
+			if forget
+				.on_hover_text("Delete the saved credential")
+				.clicked()
+			{
+				self.confirm_forget = true;
+			}
+		}
+		ui.add(
+			widgets::input(&mut self.secret)
+				.password(true)
+				.desired_width(ui.available_width())
+				.hint_text(if saved {
+					"saved (type to replace)"
+				} else {
+					"paste here"
+				}),
+		);
+	}
+
+	/// Save and Cancel, laid out right to left. Returns true to close.
+	fn footer(&mut self, ui: &mut egui::Ui, config: &mut Config) -> bool {
+		let mut close = false;
+		ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+			if widgets::primary_button(ui, "Save").clicked() {
+				match self.save(config) {
+					Ok(()) => close = true,
+					Err(e) => self.message = Some(Message::Err(e)),
+				}
+			}
+			if widgets::text_button(ui, "Cancel").clicked() {
+				close = true;
+			}
+		});
+		close
 	}
 }

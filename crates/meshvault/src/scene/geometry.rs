@@ -59,8 +59,6 @@ impl Geometry {
 		}
 	}
 
-	/// Attaches texture coordinates, ignoring them if the count does not
-	/// match the positions (some formats store them separately).
 	/// Attaches vertex normals, ignored unless there is one per position.
 	fn with_normals(mut self, normals: Vec<[f32; 3]>) -> Self {
 		if normals.len() == self.positions.len() && !normals.is_empty() {
@@ -69,6 +67,8 @@ impl Geometry {
 		self
 	}
 
+	/// Attaches texture coordinates, ignoring them if the count does not
+	/// match the positions (some formats store them separately).
 	fn with_uvs(mut self, uvs: Vec<[f32; 2]>) -> Self {
 		if uvs.len() == self.positions.len() && !uvs.is_empty() {
 			self.uvs = Some(uvs);
@@ -1294,7 +1294,7 @@ fn unit_corner_wedge() -> Geometry {
 	)
 }
 
-/// A unit cube, used to visualise the BLOCK physics shape.
+/// A unit cube: the Block primitive, and the BLOCK physics shape.
 pub fn unit_cube() -> Geometry {
 	let positions = (0..8)
 		.map(|i| {

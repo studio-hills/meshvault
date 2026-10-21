@@ -39,7 +39,7 @@ pub struct MeshSource {
 pub struct MeshAsset {
 	pub name: String,
 	pub geometry: Geometry,
-	/// Groups drawn: the most detailed LOD.
+	/// Groups drawn: the finest LOD, or every hull or group.
 	pub groups: Vec<usize>,
 	/// `Ok(None)` when the mesh is not skinned.
 	pub skin: Result<Option<Skin>, String>,
@@ -48,7 +48,8 @@ pub struct MeshAsset {
 
 pub enum PartShape {
 	Mesh(Arc<MeshAsset>),
-	/// A part without a file mesh: a block, ball, cylinder or wedge.
+	/// A part without a file mesh: a block, ball, cylinder, head, wedge,
+	/// corner wedge or truss.
 	Primitive(Primitive),
 	/// Not drawn, and why.
 	Missing(String),
@@ -1206,8 +1207,8 @@ impl ModelView {
 			})
 			.collect();
 
-		// clips that move parts no exported joint connects: newer avatars use
-		// AnimationConstraints, which the exporter does not read
+		// clips that move parts no exported joint connects (the exporters do
+		// read AnimationConstraints, so these are other or broken joints)
 		let joined: std::collections::HashSet<usize> =
 			rig.motors.iter().flat_map(|m| [m.part0, m.part1]).collect();
 		let loose: std::collections::HashSet<&str> = rig
@@ -1474,8 +1475,6 @@ impl ModelView {
 		skeleton
 	}
 
-	// ---------------------------------------------------------------- export
-
 	/// The model as a skeleton for export: every part, then every Bone,
 	/// then each skinned mesh's bones that only the mesh has.
 	pub fn export_nodes(&self) -> Vec<ExportNode> {
@@ -1518,7 +1517,8 @@ impl ModelView {
 		nodes
 	}
 
-	/// The visible parts with a skin, in node order.
+	/// Every part with a skin, visible or not, in node order (hidden parts
+	/// still own nodes).
 	fn skins(&self) -> impl Iterator<Item = (&PartView, &PartSkin)> {
 		self.parts
 			.iter()

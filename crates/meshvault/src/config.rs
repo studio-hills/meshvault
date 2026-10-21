@@ -15,6 +15,7 @@ const APP_ID: &str = "meshvault";
 /// The name used before the app was called Meshvault; settings and
 /// credentials saved under it are migrated on first use.
 const LEGACY_APP_ID: &str = "rbx_mesh_gui";
+/// How many recent workspaces the welcome screen lists.
 const MAX_RECENT: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

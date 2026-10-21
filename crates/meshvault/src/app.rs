@@ -59,6 +59,7 @@ impl Document {
 	}
 }
 
+/// An export being read on a background thread.
 pub struct Parsing {
 	pub path: PathBuf,
 	rx: std::sync::mpsc::Receiver<Result<export_file::Export, String>>,
@@ -647,7 +648,6 @@ impl App {
 		});
 	}
 
-	/// The open workspace's model stored at `path`, if it is one.
 	/// The open workspace's item whose mesh is the file at `path`.
 	fn workspace_item_at(&self, path: &Path) -> Option<usize> {
 		let ws = self.workspace.as_ref()?;
@@ -659,6 +659,7 @@ impl App {
 		})
 	}
 
+	/// The open workspace's model stored at `path`, if it is one.
 	fn workspace_model_at(&self, path: &Path) -> Option<usize> {
 		let ws = self.workspace.as_ref()?;
 		let path = path.canonicalize().ok()?;

@@ -1,5 +1,7 @@
-//! Meshvault: a desktop viewer for Roblox mesh, union graphics and union
-//! physics files, with workspaces for bulk downloading a game's models.
+//! Meshvault: a desktop viewer for Roblox meshes (including union graphics
+//! and union physics files) and animated models, with workspaces for bulk
+//! downloading a game's assets, a localhost link that receives exports from
+//! Roblox Studio, and OBJ/glTF export.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

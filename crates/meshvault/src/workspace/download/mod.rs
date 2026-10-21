@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use self::client::{AuthMethod, Client, Credentials, Endpoints, FetchError};
 pub use crate::workspace::store::{Stored, sniff_extension};
-use crate::workspace::{Job, store};
+use crate::workspace::{Job, Workspace, store};
 
 /// Most download threads at once. The settings allow fewer, but a
 /// hand-edited config can ask for up to this many.
@@ -27,6 +27,9 @@ pub enum Event {
 	Finished {
 		job: Job,
 		result: Result<Vec<Stored>, String>,
+		/// Whether it counts towards the totals: it is from the latest run.
+		/// Set when it is polled. Pass it to [`Downloader::record`].
+		counted: bool,
 	},
 	/// Credentials were rejected; the rest of the queue was cancelled.
 	/// Sent once per run, by the first worker to be rejected.
@@ -273,16 +276,53 @@ impl Downloader {
 		events
 	}
 
+	/// Records a polled [`Event::Finished`] in the workspace (see
+	/// [`Workspace::record_download`]). A counted download whose files could
+	/// not all be put in place counts as failed, once, however many of its
+	/// targets failed.
+	pub fn record(
+		&mut self,
+		ws: &mut Workspace,
+		job: &Job,
+		result: Result<Vec<Stored>, String>,
+		counted: bool,
+	) {
+		if !ws.record_download(job, result) && counted {
+			self.failed += 1;
+		}
+	}
+
+	/// What the latest run did, to tell the user once it has stopped:
+	/// `Ok` when nothing failed, `Err` when something did.
+	pub fn summary(&self) -> Result<String, String> {
+		let ok = self.completed - self.failed;
+		if self.failed > 0 {
+			Err(format!(
+				"Downloads finished: {ok} succeeded, {} failed. Hover a red item in the library for the reason.",
+				self.failed
+			))
+		} else {
+			Ok(format!("Downloaded {ok} assets"))
+		}
+	}
+
 	/// The event in `message` if [`Self::poll`] returns it, counted.
-	fn accept(&mut self, Message { run, event }: Message, root: Option<&Path>) -> Option<Event> {
+	fn accept(
+		&mut self,
+		Message { run, mut event }: Message,
+		root: Option<&Path>,
+	) -> Option<Event> {
 		self.settle();
 		if root != Some(run.root.as_path()) {
 			// nothing will publish its files: dropping the event deletes them
 			return None;
 		}
 		let latest = self.run.as_ref().is_some_and(|r| Arc::ptr_eq(r, &run));
-		match &event {
-			Event::Finished { result, .. } if latest => {
+		match &mut event {
+			Event::Finished {
+				result, counted, ..
+			} if latest => {
+				*counted = true;
 				self.completed += 1;
 				if result.is_err() {
 					self.failed += 1;
@@ -375,7 +415,11 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 		// targets added from here on queue a new job, served from the cache
 		let job = run.land(asset_id).unwrap_or(popped);
 		let result = bytes.and_then(|bytes| store::stage(root, &job, &bytes));
-		send(Event::Finished { job, result });
+		send(Event::Finished {
+			job,
+			result,
+			counted: false,
+		});
 	}
 }
 
@@ -689,10 +733,15 @@ mod tests {
 		let events = run_to_end(&mut downloader, &dir);
 		assert_eq!(events.len(), 4);
 		for event in events {
-			let Event::Finished { job, result } = event else {
+			let Event::Finished {
+				job,
+				result,
+				counted,
+			} = event
+			else {
 				panic!("auth failure")
 			};
-			ws.record_download(&job, result);
+			downloader.record(&mut ws, &job, result, counted);
 		}
 		assert_eq!((downloader.completed, downloader.failed), (4, 1));
 
@@ -1105,6 +1154,7 @@ mod tests {
 		let finished = |id| Event::Finished {
 			job: mesh_job(id, "Models/X"),
 			result: Ok(Vec::new()),
+			counted: false,
 		};
 		send(&other, finished(1));
 		send(&other, Event::AuthFailed("A".into()));
@@ -1242,6 +1292,68 @@ mod tests {
 			.unwrap_or_default()
 	}
 
+	/// A download that arrives and is cached, but cannot be put in place
+	/// (here a file is where the Models folder should be), fails its item
+	/// and counts as failed in the summary, once for the job however many
+	/// of its targets failed (once it was "Downloaded 2 assets").
+	#[test]
+	fn a_download_that_cannot_be_put_in_place_counts_as_failed() {
+		use crate::workspace::{AssetState, Workspace};
+		let dir = TempDir::new("download_blocked_publish");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		// Body and Arm share asset 1, so its job has two targets
+		ws.add([
+			top_entry("Body", 1),
+			top_entry("Arm", 1),
+			top_entry("Head", 2),
+		]);
+		let jobs = ws.pending_jobs();
+		assert_eq!(jobs[0].targets.len(), 2);
+		std::fs::write(dir.join("Models"), b"not a folder").unwrap();
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 2);
+		let events = run_to_stop(&mut downloader, &dir);
+		assert!(matches!(events.last(), Some(Event::Stopped { .. })));
+		for event in events {
+			if let Event::Finished {
+				job,
+				result,
+				counted,
+			} = event
+			{
+				assert!(result.is_ok() && counted);
+				downloader.record(&mut ws, &job, result, counted);
+			}
+		}
+		for item in ws.items() {
+			assert!(matches!(item.mesh, AssetState::Failed { .. }), "{item:?}");
+		}
+		assert!(std::fs::read(crate::workspace::cache_path(&dir, 1)).is_ok());
+		assert_eq!((downloader.completed, downloader.failed), (2, 2));
+		let summary = downloader.summary().unwrap_err();
+		assert!(summary.contains("0 succeeded, 2 failed"), "{summary}");
+		assert_eq!(cache_leftovers(&dir), Vec::<String>::new());
+	}
+
+	/// A result from an older run for the same workspace is still recorded,
+	/// but counts only towards its own run, which is no longer shown.
+	#[test]
+	fn an_older_runs_result_that_cannot_be_put_in_place_is_not_counted() {
+		use crate::workspace::{AssetState, Workspace};
+		let dir = TempDir::new("download_blocked_old_run");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([top_entry("Body", 1)]);
+		let job = ws.pending_jobs().remove(0);
+		std::fs::write(dir.join("Models"), b"not a folder").unwrap();
+		let mut downloader = Downloader::default();
+		let written = store::stage(&dir, &job, b"version 4.00\nONE").unwrap();
+		downloader.record(&mut ws, &job, Ok(written), false);
+		assert!(matches!(ws.items()[0].mesh, AssetState::Failed { .. }));
+		assert_eq!(downloader.failed, 0);
+	}
+
 	/// A download that finishes after its item was removed, and the stem
 	/// reused by a new item with another mesh, leaves the new item and its
 	/// file alone (B02).
@@ -1268,8 +1380,13 @@ mod tests {
 		assert_eq!(ws.items()[0].stem, "Models/Body");
 		gate.release();
 		for event in run_to_end(&mut downloader, &dir) {
-			if let Event::Finished { job, result } = event {
-				ws.record_download(&job, result);
+			if let Event::Finished {
+				job,
+				result,
+				counted,
+			} = event
+			{
+				downloader.record(&mut ws, &job, result, counted);
 			}
 		}
 		assert_eq!(ws.items()[0].mesh, AssetState::Pending);
@@ -1334,7 +1451,12 @@ mod tests {
 		assert_eq!(downloader.total, 1);
 		gate.release();
 		let mut events = run_to_end(&mut downloader, &dir);
-		let [Event::Finished { job, result: Ok(_) }] = &events[..] else {
+		let [
+			Event::Finished {
+				job, result: Ok(_), ..
+			},
+		] = &events[..]
+		else {
 			panic!("one download expected");
 		};
 		let stems: Vec<&str> = job.targets.iter().map(|(s, _)| s.as_str()).collect();

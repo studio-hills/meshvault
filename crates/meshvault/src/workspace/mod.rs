@@ -504,8 +504,16 @@ impl Workspace {
 	/// and become `Done`, or every target of the job becomes `Failed` with
 	/// the error. Targets whose item no longer uses the job's asset (it was
 	/// removed while the download ran, and its stem perhaps reused) are
-	/// left alone, and their files deleted.
-	pub fn record_download(&mut self, job: &Job, result: Result<Vec<store::Stored>, String>) {
+	/// left alone, and their files deleted. Returns false if the download
+	/// succeeded but a file an item still wants could not be put in place
+	/// (that item is then `Failed`); a failed download returns true, since
+	/// the downloader counted its failure already.
+	pub fn record_download(
+		&mut self,
+		job: &Job,
+		result: Result<Vec<store::Stored>, String>,
+	) -> bool {
+		let mut placed = true;
 		match result {
 			Ok(written) => {
 				for mut w in written {
@@ -517,7 +525,10 @@ impl Workspace {
 						Ok(()) => AssetState::Done {
 							path: w.path.clone(),
 						},
-						Err(error) => AssetState::Failed { error },
+						Err(error) => {
+							placed = false;
+							AssetState::Failed { error }
+						}
 					};
 					self.set_state(&w.stem, w.kind, state);
 				}
@@ -537,6 +548,7 @@ impl Workspace {
 				}
 			}
 		}
+		placed
 	}
 
 	/// Whether the item with `stem` (for an image, any model) still uses

@@ -75,11 +75,15 @@ impl App {
 		let mut summary = true;
 		for event in events {
 			match event {
-				Event::Finished { job, result } => {
+				Event::Finished {
+					job,
+					result,
+					counted,
+				} => {
 					let Some(ws) = &mut self.workspace else {
 						continue;
 					};
-					ws.record_download(&job, result);
+					self.downloader.record(ws, &job, result, counted);
 				}
 				Event::AuthFailed(message) => {
 					self.toasts.error(format!("Downloads stopped: {message}"));
@@ -96,15 +100,9 @@ impl App {
 			self.save_workspace();
 		}
 		if finished && summary {
-			let d = &self.downloader;
-			let ok = d.completed - d.failed;
-			if d.failed > 0 {
-				self.toasts.error(format!(
-					"Downloads finished: {ok} succeeded, {} failed. Hover a red item in the library for the reason.",
-					d.failed
-				));
-			} else {
-				self.toasts.success(format!("Downloaded {ok} assets"));
+			match self.downloader.summary() {
+				Ok(text) => self.toasts.success(text),
+				Err(text) => self.toasts.error(text),
 			}
 		}
 	}

@@ -852,45 +852,63 @@ mod tests {
 
 		// Rust's side: each field's name, offset, size and how many vec4s of
 		// which scalar it holds (a mat4x4 and an array of four vec4s are laid
-		// out alike)
+		// out alike). The scalar and count come from the field's own type, so
+		// changing a field from u32 to f32 (or i32) fails here too.
+		trait Scalar {
+			const KIND: naga::ScalarKind;
+		}
+		impl Scalar for f32 {
+			const KIND: naga::ScalarKind = naga::ScalarKind::Float;
+		}
+		impl Scalar for u32 {
+			const KIND: naga::ScalarKind = naga::ScalarKind::Uint;
+		}
+		impl Scalar for i32 {
+			const KIND: naga::ScalarKind = naga::ScalarKind::Sint;
+		}
+		trait Shape {
+			const SHAPE: (naga::ScalarKind, u32);
+		}
+		impl<S: Scalar> Shape for [S; 4] {
+			const SHAPE: (naga::ScalarKind, u32) = (S::KIND, 1);
+		}
+		impl<S: Scalar, const N: usize> Shape for [[S; 4]; N] {
+			const SHAPE: (naga::ScalarKind, u32) = (S::KIND, N as u32);
+		}
+		fn size_and_shape<T: Shape>(_: fn(&Uniforms) -> &T) -> (u32, (naga::ScalarKind, u32)) {
+			(size_of::<T>() as u32, T::SHAPE)
+		}
 		macro_rules! field {
-			($name:ident, $scalar:expr, $vec4s:expr) => {
+			($name:ident) => {{
+				let (size, shape) = size_and_shape(|u: &Uniforms| &u.$name);
 				(
 					stringify!($name),
 					offset_of!(Uniforms, $name) as u32,
-					size_of_field(|u: &Uniforms| &u.$name),
-					($scalar, $vec4s),
+					size,
+					shape,
 				)
-			};
+			}};
 		}
-		fn size_of_field<T>(_: fn(&Uniforms) -> &T) -> u32 {
-			size_of::<T>() as u32
-		}
-		use naga::ScalarKind::{Float, Uint};
 		let rust = [
-			field!(view_proj, Float, 4),
-			field!(model, Float, 4),
-			field!(normal_model, Float, 4),
-			field!(eye, Float, 1),
-			field!(light_dir, Float, 1),
-			field!(wire_color, Float, 1),
-			field!(params, Float, 1),
-			field!(flags, Uint, 1),
-			field!(surface, Float, 1),
-			field!(tint, Float, 1),
-			field!(part_from_mesh, Float, 4),
-			field!(decal, Float, 1),
-			field!(decal_size, Float, 1),
-			field!(decal_tile, Float, 1),
-			field!(decal_colour, Float, 1),
-			field!(
-				lights,
-				Float,
-				crate::render::viewport::MAX_LIGHTS as u32 * 3
-			),
-			field!(light_count, Float, 1),
-			field!(clothing, Float, 8),
-			field!(env, Float, 4),
+			field!(view_proj),
+			field!(model),
+			field!(normal_model),
+			field!(eye),
+			field!(light_dir),
+			field!(wire_color),
+			field!(params),
+			field!(flags),
+			field!(surface),
+			field!(tint),
+			field!(part_from_mesh),
+			field!(decal),
+			field!(decal_size),
+			field!(decal_tile),
+			field!(decal_colour),
+			field!(lights),
+			field!(light_count),
+			field!(clothing),
+			field!(env),
 		];
 		// each Rust field is 4-byte scalars, so its size follows from the shape
 		for (name, _, size, (_, vec4s)) in rust {

@@ -29,10 +29,12 @@ pub enum Event {
 		result: Result<Vec<Stored>, String>,
 	},
 	/// Credentials were rejected; the rest of the queue was cancelled.
+	/// Sent once per run, by the first worker to be rejected.
 	AuthFailed(String),
 	/// The run's last worker has stopped: every event of the run came
-	/// before this one.
-	Stopped,
+	/// before this one. `auth_failed` says whether it was stopped by a
+	/// rejected credential.
+	Stopped { auth_failed: bool },
 }
 
 /// What a worker sends: an event, and the run it came from.
@@ -55,6 +57,12 @@ struct Run {
 	/// queue locked, so a worker that finds the queue empty stops counting
 	/// at once, and `start` never counts on a worker that is stopping.
 	workers: AtomicUsize,
+	/// Set by the first worker whose credential is rejected.
+	auth_failed: AtomicBool,
+	/// Jobs taken off the run without a result: cleared from the queue by
+	/// Cancel or a rejected credential, or cut short by either while in
+	/// flight. Their items stay pending.
+	dropped: AtomicUsize,
 }
 
 /// Points in the workers a test can act at.
@@ -74,6 +82,8 @@ impl Run {
 			queue: Mutex::default(),
 			cancel: AtomicBool::new(false),
 			workers: AtomicUsize::new(0),
+			auth_failed: AtomicBool::new(false),
+			dropped: AtomicUsize::new(0),
 		}
 	}
 
@@ -100,6 +110,8 @@ pub struct Downloader {
 	pub total: usize,
 	pub completed: usize,
 	pub failed: usize,
+	/// How much of the latest run's `dropped` is already off `total`.
+	settled: usize,
 	#[cfg(test)]
 	hooks: Arc<Hooks>,
 }
@@ -114,6 +126,7 @@ impl Default for Downloader {
 			total: 0,
 			completed: 0,
 			failed: 0,
+			settled: 0,
 			#[cfg(test)]
 			hooks: Arc::default(),
 		}
@@ -134,7 +147,18 @@ impl Downloader {
 		self.total = 0;
 		self.completed = 0;
 		self.failed = 0;
+		self.settled = 0;
 		run
+	}
+
+	/// Takes the latest run's dropped jobs off the total, so it counts only
+	/// jobs that will have a result.
+	fn settle(&mut self) {
+		if let Some(run) = &self.run {
+			let dropped = run.dropped.load(Ordering::SeqCst);
+			self.total = self.total.saturating_sub(dropped - self.settled);
+			self.settled = dropped;
+		}
 	}
 
 	/// Queues jobs for the workspace at `root`; a job already queued gains
@@ -201,14 +225,13 @@ impl Downloader {
 	/// Stops after the downloads in flight; queued jobs stay pending.
 	pub fn cancel(&mut self) {
 		let Some(run) = &self.run else { return };
-		let dropped = {
+		{
 			let mut queue = run.queue();
 			run.cancel.store(true, Ordering::SeqCst);
-			let n = queue.len();
+			run.dropped.fetch_add(queue.len(), Ordering::SeqCst);
 			queue.clear();
-			n
-		};
-		self.total -= dropped;
+		}
+		self.settle();
 	}
 
 	/// The events since the last poll for the workspace at `root` (none
@@ -217,14 +240,17 @@ impl Downloader {
 	/// credential failure.
 	pub fn poll(&mut self, root: Option<&Path>) -> Vec<Event> {
 		let messages: Vec<Message> = self.rx.try_iter().collect();
-		messages
+		let events = messages
 			.into_iter()
 			.filter_map(|message| self.accept(message, root))
-			.collect()
+			.collect();
+		self.settle();
+		events
 	}
 
 	/// The event in `message` if [`Self::poll`] returns it, counted.
 	fn accept(&mut self, Message { run, event }: Message, root: Option<&Path>) -> Option<Event> {
+		self.settle();
 		if root != Some(run.root.as_path()) {
 			return None;
 		}
@@ -236,7 +262,7 @@ impl Downloader {
 					self.failed += 1;
 				}
 			}
-			Event::AuthFailed(_) | Event::Stopped if !latest => return None,
+			Event::AuthFailed(_) | Event::Stopped { .. } if !latest => return None,
 			_ => {}
 		}
 		Some(event)
@@ -269,7 +295,8 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 					// a run with no workers is never restarted, so this is
 					// its last event
 					if last {
-						send(Event::Stopped);
+						let auth_failed = run.auth_failed.load(Ordering::SeqCst);
+						send(Event::Stopped { auth_failed });
 					}
 					return;
 				}
@@ -287,16 +314,23 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 						Ok(bytes)
 					}
 					Err(FetchError::Auth(message)) => {
-						{
+						let first = {
 							let mut queue = run.queue();
 							run.cancel.store(true, Ordering::SeqCst);
+							// the queued jobs and this one
+							run.dropped.fetch_add(queue.len() + 1, Ordering::SeqCst);
 							queue.clear();
+							!run.auth_failed.swap(true, Ordering::SeqCst)
+						};
+						// one report per run, however many workers are rejected
+						if first {
+							send(Event::AuthFailed(message));
 						}
-						send(Event::AuthFailed(message));
 						continue;
 					}
 					// cancelled mid-retry: leave the item pending
 					Err(FetchError::Transient(..)) if run.cancel.load(Ordering::SeqCst) => {
+						run.dropped.fetch_add(1, Ordering::SeqCst);
 						continue;
 					}
 					Err(e) => Err(e.to_string()),
@@ -774,16 +808,26 @@ mod tests {
 	/// Waits for the latest run to stop, returning every event polled for
 	/// `root` until then, without the final [`Event::Stopped`].
 	fn run_to_end(downloader: &mut Downloader, root: &Path) -> Vec<Event> {
+		let mut events = run_to_stop(downloader, root);
+		events.pop();
+		events
+	}
+
+	/// Waits for the latest run to stop, returning every event polled for
+	/// `root` until then, ending with the [`Event::Stopped`].
+	fn run_to_stop(downloader: &mut Downloader, root: &Path) -> Vec<Event> {
 		let mut events = Vec::new();
 		loop {
 			let message = downloader
 				.rx
 				.recv_timeout(test_server::WATCHDOG)
 				.expect("downloads timed out");
-			match downloader.accept(message, Some(root)) {
-				Some(Event::Stopped) => return events,
-				Some(event) => events.push(event),
-				None => {}
+			if let Some(event) = downloader.accept(message, Some(root)) {
+				let stopped = matches!(event, Event::Stopped { .. });
+				events.push(event);
+				if stopped {
+					return events;
+				}
 			}
 		}
 	}
@@ -1013,15 +1057,15 @@ mod tests {
 		send(&old, Event::AuthFailed("old".into()));
 		send(&latest, finished(3));
 		send(&latest, Event::AuthFailed("latest".into()));
-		send(&old, Event::Stopped);
-		send(&latest, Event::Stopped);
+		send(&old, Event::Stopped { auth_failed: false });
+		send(&latest, Event::Stopped { auth_failed: false });
 		let events = downloader.poll(Some(&b));
 		let seen: Vec<String> = events
 			.iter()
 			.map(|e| match e {
 				Event::Finished { job, .. } => format!("finished {}", job.asset_id),
 				Event::AuthFailed(m) => format!("auth {m}"),
-				Event::Stopped => "stopped".into(),
+				Event::Stopped { .. } => "stopped".into(),
 			})
 			.collect();
 		assert_eq!(seen, ["finished 2", "finished 3", "auth latest", "stopped"]);
@@ -1049,5 +1093,74 @@ mod tests {
 		assert_eq!((downloader.total, downloader.completed), (2, 2));
 		// the stopped run sends nothing more
 		assert!(downloader.rx.try_recv().is_err());
+	}
+
+	/// When several workers have the credential rejected, the run reports
+	/// it once, and the total drops every job that will have no result:
+	/// the rejected ones in flight and the queued ones (B18).
+	#[test]
+	fn a_rejected_credential_is_reported_once_and_settles_the_total() {
+		let dir = TempDir::new("download_auth_once");
+		let api = serve(vec![
+			("/oc/1", 401, vec![], vec![]),
+			("/oc/2", 401, vec![], vec![]),
+			("/oc/3", 401, vec![], vec![]),
+		]);
+		let (one, two) = (api.gate("/oc/1"), api.gate("/oc/2"));
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let jobs = vec![
+			mesh_job(1, "Models/One"),
+			mesh_job(2, "Models/Two"),
+			mesh_job(3, "Models/Three"),
+		];
+		let client = Arc::new(client(&api.base, AuthMethod::ApiKey));
+		downloader.start(&ctx, dir.to_path_buf(), client, jobs, 2);
+		// both workers are mid-request before either is rejected
+		one.wait_for_request();
+		two.wait_for_request();
+		one.release();
+		two.release();
+		let events = run_to_stop(&mut downloader, &dir);
+		let auth = events
+			.iter()
+			.filter(|e| matches!(e, Event::AuthFailed(_)))
+			.count();
+		assert_eq!(auth, 1);
+		assert!(matches!(
+			events.last(),
+			Some(Event::Stopped { auth_failed: true })
+		));
+		assert_eq!((downloader.total, downloader.completed), (0, 0));
+		assert_eq!(api.count("GET /oc/3 "), 0);
+	}
+
+	/// A job whose retry wait is cut short by Cancel comes off the total,
+	/// since it will have no result (B18).
+	#[test]
+	fn a_job_cancelled_mid_retry_comes_off_the_total() {
+		let dir = TempDir::new("download_cancel_retry");
+		let api = serve(vec![(
+			"/oc/5",
+			429,
+			vec![("Retry-After", "30".into())],
+			vec![],
+		)]);
+		let gate = api.gate("/oc/5");
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let client = Arc::new(client(&api.base, AuthMethod::ApiKey));
+		let jobs = vec![mesh_job(5, "Models/Five")];
+		downloader.start(&ctx, dir.to_path_buf(), client, jobs, 1);
+		gate.wait_for_request();
+		downloader.cancel();
+		assert_eq!(downloader.total, 1, "the job in flight still counts");
+		gate.release();
+		let events = run_to_stop(&mut downloader, &dir);
+		assert!(matches!(
+			&events[..],
+			[Event::Stopped { auth_failed: false }]
+		));
+		assert_eq!((downloader.total, downloader.completed), (0, 0));
 	}
 }

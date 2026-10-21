@@ -71,6 +71,8 @@ impl App {
 		let events = self.downloader.poll(root);
 		let had_events = !events.is_empty();
 		let mut finished = false;
+		// a rejected credential has had its own toast
+		let mut summary = true;
 		for event in events {
 			match event {
 				Event::Finished { job, result } => {
@@ -83,14 +85,17 @@ impl App {
 					self.toasts.error(format!("Downloads stopped: {message}"));
 					self.open_settings(Some(message));
 				}
-				Event::Stopped => finished = true,
+				Event::Stopped { auth_failed } => {
+					finished = true;
+					summary = !auth_failed;
+				}
 			}
 		}
 		// save progress regularly, and once everything has finished
 		if finished || (had_events && self.last_save.elapsed() > DOWNLOAD_SAVE_INTERVAL) {
 			self.save_workspace();
 		}
-		if finished {
+		if finished && summary {
 			let d = &self.downloader;
 			let ok = d.completed - d.failed;
 			if d.failed > 0 {

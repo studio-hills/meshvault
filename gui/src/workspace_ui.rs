@@ -175,6 +175,12 @@ fn status_colour(p: &Palette, s: Status) -> Color32 {
 	}
 }
 
+/// Shown in place of the list or grid when the search and filters leave
+/// nothing.
+fn nothing_matches(ui: &mut egui::Ui) {
+	ui.label(RichText::new("Nothing matches.").color(palette(ui.ctx()).text_weak));
+}
+
 /// A status marker: a filled dot when done or failed, a ring while
 /// pending. Rows, tiles and the status chips share it.
 fn status_dot(painter: &egui::Painter, p: &Palette, centre: egui::Pos2, s: Status) {
@@ -866,6 +872,12 @@ impl Browser {
 			|ui| match view {
 				View::List => {
 					ui.spacing_mut().interact_size.y = ROW;
+					let any = (0..ws.models().len())
+						.any(|i| self.model_matches(ws, &ws.models()[i]))
+						|| ws.items().iter().any(|item| self.matches(item));
+					if !any {
+						nothing_matches(ui);
+					}
 					self.models(ui, ws, open_model, &mut actions);
 					let tree = std::mem::take(&mut self.tree);
 					self.folder(ui, ws, &tree, "", open_stem, &mut actions);
@@ -1144,7 +1156,7 @@ impl Browser {
 			}
 		}
 		if sections.is_empty() {
-			ui.label(RichText::new("Nothing matches.").color(palette(ui.ctx()).text_weak));
+			nothing_matches(ui);
 			return;
 		}
 		let p = palette(ui.ctx());

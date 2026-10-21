@@ -31,6 +31,20 @@ pub const PORT: u16 = 34875;
 const MAX_CHUNK: usize = 64 * 1024 * 1024;
 /// Largest whole export accepted.
 const MAX_EXPORT: usize = 2 * 1024 * 1024 * 1024;
+/// Most pieces one export may say it has, so a bad count cannot make a
+/// huge list of pieces.
+const MAX_PIECES: usize = 100_000;
+/// How long one read of a request may wait before the connection is
+/// dropped, so a sender that stalls does not hold the link.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// The folder (in the workspaces folder) that received exports go to.
+const EXPORTS_FOLDER: &str = "Exports";
+/// What the Studio code says when it cannot fetch the exporter, in two
+/// halves so the formatted layout can break the line between them.
+const UNREACHABLE: [&str; 2] = [
+	"Could not reach Meshvault (is it open, and is Studio in ",
+	"Edit mode, not Play?): ",
+];
 
 /// The exporters served, by schema version. The newest is the default.
 const EXPORTERS: [(u32, &str); 2] = [
@@ -96,14 +110,13 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 		format!("?schema={schema}")
 	};
 	let url = format!("http://localhost:{PORT}/export.luau{query}");
-	let unreachable =
-		"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): ";
+	let [unreachable_start, unreachable_end] = UNREACHABLE;
 	match layout {
 		CodeLayout::OneLine => {
 			let fetch = format!(
 				"local h=game:GetService(\"HttpService\") local e=h.HttpEnabled h.HttpEnabled=true \
 				 local ok,s=pcall(h.GetAsync,h,\"{url}\") h.HttpEnabled=e \
-				 assert(ok,\"{unreachable}\"..tostring(s))"
+				 assert(ok,\"{unreachable_start}{unreachable_end}\"..tostring(s))"
 			);
 			match mode {
 				CodeMode::Send => format!("{fetch} loadstring(s)()()"),
@@ -121,8 +134,8 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 				 http.HttpEnabled = true\n\
 				 local ok, source = pcall(http.GetAsync, http, url)\n\
 				 http.HttpEnabled = enabled\n\
-				 assert(ok, \"Could not reach Meshvault (is it open, and is Studio in \"\n\
-				 \t.. \"Edit mode, not Play?): \" .. tostring(source))\n\
+				 assert(ok, \"{unreachable_start}\"\n\
+				 \t.. \"{unreachable_end}\" .. tostring(source))\n\
 				 \n"
 			);
 			match mode {
@@ -218,11 +231,11 @@ struct Reply {
 }
 
 impl Reply {
-	fn text(code: u16, body: &str) -> Self {
+	fn text(code: u16, body: impl Into<Vec<u8>>) -> Self {
 		Self {
 			code,
 			content_type: "text/plain; charset=utf-8",
-			body: body.as_bytes().to_vec(),
+			body: body.into(),
 		}
 	}
 }
@@ -230,7 +243,7 @@ impl Reply {
 fn serve(listener: TcpListener, tx: Sender<Event>, ctx: egui::Context) {
 	let mut pending: HashMap<String, Pending> = HashMap::new();
 	for stream in listener.incoming().flatten() {
-		let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+		let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
 		let reply = match read_request(&stream) {
 			Ok(request) => route(request, &mut pending, &tx),
 			Err(reply) => reply,
@@ -321,26 +334,23 @@ fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<E
 					SCHEMAS.map(|v| v.to_string()).join(" and ")
 				)
 			});
-			Reply {
-				code: 200,
-				content_type: "text/plain; charset=utf-8",
-				body: script.into_bytes(),
-			}
+			Reply::text(200, script)
 		}
 		("GET", "/") => Reply::text(200, "Meshvault Studio link"),
 		("POST", "/export") => match receive_piece(request, pending) {
 			Ok(Some(done)) => {
 				// the exporter prints this, so Studio users know where it went. Studio's
 				// Output shows only the last part of a path, so the folder is in words
+				// (the same folder receive_piece saves to)
 				let reply = format!(
-					"saving it as {} in Documents › Meshvault › Exports",
+					"saving it as {} in Documents › Meshvault › {EXPORTS_FOLDER}",
 					done.path
 						.file_name()
 						.map(|n| n.to_string_lossy())
 						.unwrap_or_default()
 				);
 				let _ = tx.send(Event::Received(done));
-				Reply::text(200, &reply)
+				Reply::text(200, reply)
 			}
 			Ok(None) => {
 				// how far the exports still arriving have got
@@ -376,7 +386,7 @@ fn receive_piece(
 				n.trim().parse::<usize>().ok()?,
 			))
 		})
-		.filter(|&(i, n)| i >= 1 && i <= n && n <= 100_000)
+		.filter(|&(i, n)| i >= 1 && i <= n && n <= MAX_PIECES)
 		.ok_or(Reply::text(400, "X-Meshvault-Chunk must be i/n"))?;
 
 	let entry = pending.entry(id.clone()).or_insert_with(|| Pending {
@@ -399,11 +409,12 @@ fn receive_piece(
 	if entry.chunks.iter().any(Option::is_none) {
 		return Ok(None);
 	}
+	// still there: `entry` was this id's entry a moment ago
 	let done = pending.remove(id).expect("present");
 	let json = done.chunks.into_iter().flatten().flatten().collect();
 	Ok(Some(Received {
 		path: crate::config::Config::default_workspaces_dir()
-			.join("Exports")
+			.join(EXPORTS_FOLDER)
 			.join(file_name(&done.name)),
 		name: done.name,
 		json,

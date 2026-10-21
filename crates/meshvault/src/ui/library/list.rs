@@ -1,5 +1,7 @@
 //! The list view: the export's folder tree, one row per model.
 
+use std::path::{Path, PathBuf};
+
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Vec2};
 
 use super::menus::item_hover;
@@ -7,12 +9,34 @@ use super::{Action, Browser, Row, SCOPE, Status, status, status_dot};
 use crate::ui::theme::{CAPTION, CONTROL_RADIUS, LIST_TEXT, Palette, ROW, palette};
 use crate::ui::tree::{self, FolderTree};
 use crate::ui::{icons, widgets};
-use crate::workspace::Workspace;
+use crate::workspace::{Item, Workspace};
 
 /// Shown in place of the list or grid when the search and filters leave
 /// nothing.
 pub(super) fn nothing_matches(ui: &mut egui::Ui) {
 	ui.label(RichText::new("Nothing matches.").color(palette(ui.ctx()).text_weak));
+}
+
+/// The folder on disk that holds `node`'s meshes. It is found from the
+/// first mesh at or below `node`, going up from that mesh's own folder by
+/// how far below `node` it is, so the stored (sanitised) names are used.
+fn folder_dir(root: &Path, items: &[Item], node: &FolderTree) -> Option<PathBuf> {
+	/// The first item in the tree, as (index, how many folders down).
+	fn first(node: &FolderTree) -> Option<(usize, usize)> {
+		if let Some(&i) = node.items.first() {
+			return Some((i, 0));
+		}
+		node.folders
+			.values()
+			.find_map(first)
+			.map(|(i, depth)| (i, depth + 1))
+	}
+	let (i, depth) = first(node)?;
+	let mut dir = root.join(&items.get(i)?.stem);
+	for _ in 0..=depth {
+		dir = dir.parent()?.to_path_buf();
+	}
+	Some(dir)
 }
 
 impl Browser {
@@ -167,14 +191,11 @@ impl Browser {
 							s.keys = visible.iter().map(|&i| Row::Mesh(i)).collect();
 							ui.close();
 						}
-						if let Some(first) = all.first() {
-							let dir = ws.root.join(&items[*first].stem);
-							if ui.button("Show in file browser").clicked() {
-								if let Some(parent) = dir.parent() {
-									actions.push(Action::Reveal(parent.to_path_buf()));
-								}
-								ui.close();
-							}
+						if let Some(dir) = folder_dir(&ws.root, items, child)
+							&& ui.button("Show in file browser").clicked()
+						{
+							actions.push(Action::Reveal(dir));
+							ui.close();
 						}
 						ui.separator();
 						if let Some(command) = tree::subtree_menu_items(ui, &path) {
@@ -317,4 +338,31 @@ fn library_row(
 		);
 	}
 	widgets::pointer(response)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::ui::library::fixtures::{done, item};
+
+	#[test]
+	fn a_folder_is_shown_at_its_own_place_on_disk() {
+		let items = [
+			item("deep", &["A", "B"], 1, done("A/B/deep.mesh")),
+			item("top", &["C"], 2, done("C/top.mesh")),
+		];
+		let tree = FolderTree::build(items.iter().map(|i| i.folder.as_slice()));
+		let root = Path::new("ws");
+		let a = &tree.folders["A"];
+		// A holds only a subfolder; it once opened A/B (bug B33)
+		assert_eq!(folder_dir(root, &items, a), Some(root.join("A")));
+		assert_eq!(
+			folder_dir(root, &items, &a.folders["B"]),
+			Some(root.join("A").join("B"))
+		);
+		assert_eq!(
+			folder_dir(root, &items, &tree.folders["C"]),
+			Some(root.join("C"))
+		);
+	}
 }

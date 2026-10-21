@@ -3,15 +3,17 @@
 //! - `GET /export.luau[?schema=N]` serves the exporter (the newest schema
 //!   unless asked otherwise), so it never has to be kept or pasted by hand.
 //!   [`studio_command`] is the Command Bar line that fetches and runs it.
-//! - `POST /export` receives the export in pieces, each with these headers:
-//!   `X-Meshvault-Export` (an id shared by all pieces of one export),
-//!   `X-Meshvault-Chunk` (`i/n`, 1-based) and optionally `X-Meshvault-Name`
-//!   (a name for the saved file). Once all `n` pieces have arrived they are
-//!   joined in order and handed to the app.
+//! - `POST /export` receives the export in pieces. Each body starts with a
+//!   line of JSON saying which piece it is, `{"export": id, "chunk": i,
+//!   "count": n, "name": name}` (the id shared by all pieces of one export,
+//!   `i` counting from 1, and optionally a name for the saved file), then
+//!   the piece itself. Once all `n` pieces have arrived they are joined in
+//!   order and handed to the app.
 //!
-//! Only connections from this machine are accepted, and requiring custom
-//! headers means a web page cannot send an export (browsers would need a
-//! CORS preflight, which is never answered).
+//! Only connections from this machine are accepted, and only with
+//! `Content-Type: application/json`, which a web page cannot send to
+//! another site without a CORS preflight (never answered here), so a page
+//! cannot send an export.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -283,26 +285,50 @@ fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<E
 	}
 }
 
+/// The line of JSON before each piece of an export, saying which it is.
+#[derive(serde::Deserialize)]
+struct PieceInfo {
+	/// Shared by every piece of one export.
+	export: String,
+	/// Which piece this is, from 1.
+	chunk: usize,
+	count: usize,
+	/// A name for the saved file.
+	#[serde(default)]
+	name: Option<String>,
+}
+
 /// Stores one piece. Returns the whole export once its last piece arrives.
 fn receive_piece(
 	request: Request,
 	pending: &mut HashMap<String, Pending>,
 ) -> Result<Option<Received>, Reply> {
-	let headers = &request.headers;
-	let id = headers
-		.get("x-meshvault-export")
-		.ok_or(Reply::text(400, "X-Meshvault-Export required"))?;
-	let (index, count) = headers
-		.get("x-meshvault-chunk")
-		.and_then(|v| v.split_once('/'))
-		.and_then(|(i, n)| {
-			Some((
-				i.trim().parse::<usize>().ok()?,
-				n.trim().parse::<usize>().ok()?,
-			))
-		})
-		.filter(|&(i, n)| i >= 1 && i <= n && n <= 100_000)
-		.ok_or(Reply::text(400, "X-Meshvault-Chunk must be i/n"))?;
+	// a web page cannot send this without a preflight, which is never answered
+	let json = request.headers.get("content-type").is_some_and(|t| {
+		t.trim()
+			.to_ascii_lowercase()
+			.starts_with("application/json")
+	});
+	if !json {
+		return Err(Reply::text(415, "Content-Type: application/json required"));
+	}
+	let mut body = request.body;
+	let line = body.iter().position(|&b| b == b'\n').ok_or(Reply::text(
+		400,
+		"the body must start with a line saying which piece it is",
+	))?;
+	let info: PieceInfo = serde_json::from_slice(&body[..line]).map_err(|e| {
+		Reply::text(
+			400,
+			&format!("the first line must say which piece this is: {e}"),
+		)
+	})?;
+	let piece = body.split_off(line + 1);
+	let (index, count) = (info.chunk, info.count);
+	if !(index >= 1 && index <= count && count <= 100_000) {
+		return Err(Reply::text(400, "chunk must be from 1 to count"));
+	}
+	let id = &info.export;
 
 	let entry = pending.entry(id.clone()).or_insert_with(|| Pending {
 		chunks: vec![None; count],
@@ -312,15 +338,15 @@ fn receive_piece(
 		pending.remove(id);
 		return Err(Reply::text(400, "piece count changed"));
 	}
-	if let Some(name) = headers.get("x-meshvault-name") {
-		entry.name = name.clone();
+	if let Some(name) = info.name {
+		entry.name = name;
 	}
-	entry.size += request.body.len();
+	entry.size += piece.len();
 	if entry.size > MAX_EXPORT {
 		pending.remove(id);
 		return Err(Reply::text(413, "export too large"));
 	}
-	entry.chunks[index - 1] = Some(request.body);
+	entry.chunks[index - 1] = Some(piece);
 	if entry.chunks.iter().any(Option::is_none) {
 		return Ok(None);
 	}
@@ -373,13 +399,15 @@ mod tests {
 		reply
 	}
 
-	fn post(port: u16, id: &str, chunk: &str, body: &str) -> String {
+	/// Sends piece `chunk` of `count` of export `id`, as the exporter does.
+	fn post(port: u16, id: &str, chunk: usize, count: usize, body: &str) -> String {
+		let info = format!(
+			"{{\"export\":\"{id}\",\"chunk\":{chunk},\"count\":{count},\"name\":\"Test Place\"}}"
+		);
 		request(
 			port,
-			&format!(
-				"POST /export HTTP/1.1\r\nX-Meshvault-Export: {id}\r\nX-Meshvault-Chunk: {chunk}\r\nX-Meshvault-Name: Test Place"
-			),
-			body,
+			"POST /export HTTP/1.1\r\nContent-Type: application/json",
+			&format!("{info}\n{body}"),
 		)
 	}
 
@@ -395,10 +423,10 @@ mod tests {
 	fn joins_pieces_in_order() {
 		let (port, rx) = start();
 		// out of order, and another export interleaved
-		assert!(post(port, "a", "2/3", "\"Models\":[],").contains("ok"));
-		assert!(post(port, "b", "1/1", "{}").contains("saving it as"));
-		assert!(post(port, "a", "1/3", "{\"SchemaVersion\":2,").contains("ok"));
-		assert!(post(port, "a", "3/3", "\"Meshes\":[]}").contains("saving it as"));
+		assert!(post(port, "a", 2, 3, "\"Models\":[],").contains("ok"));
+		assert!(post(port, "b", 1, 1, "{}").contains("saving it as"));
+		assert!(post(port, "a", 1, 3, "{\"SchemaVersion\":2,").contains("ok"));
+		assert!(post(port, "a", 3, 3, "\"Meshes\":[]}").contains("saving it as"));
 		assert_eq!(received(&rx).json, b"{}");
 		let second = received(&rx);
 		assert_eq!(second.name, "Test Place");
@@ -406,8 +434,22 @@ mod tests {
 			String::from_utf8(second.json).unwrap(),
 			"{\"SchemaVersion\":2,\"Models\":[],\"Meshes\":[]}"
 		);
-		// requests without the export headers are refused
-		assert!(post(port, "c", "0/1", "x").contains("400"));
+		// a piece numbered outside its count is refused
+		assert!(post(port, "c", 0, 1, "x").contains("400"));
+		// so is a body without the line saying which piece it is
+		let bare = request(
+			port,
+			"POST /export HTTP/1.1\r\nContent-Type: application/json",
+			"{}",
+		);
+		assert!(bare.contains("400"));
+		// and anything a web page could send without a preflight
+		let form = request(
+			port,
+			"POST /export HTTP/1.1\r\nContent-Type: text/plain",
+			"{\"export\":\"d\",\"chunk\":1,\"count\":1}\n{}",
+		);
+		assert!(form.contains("415"));
 	}
 
 	#[test]

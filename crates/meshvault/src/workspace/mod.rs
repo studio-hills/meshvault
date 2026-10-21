@@ -358,6 +358,43 @@ impl Workspace {
 		self.generation += 1;
 	}
 
+	/// The first item with `stem`, as (index, name).
+	pub fn item_with_stem(&self, stem: &str) -> Option<(usize, String)> {
+		let items = &self.manifest.items;
+		items
+			.iter()
+			.position(|i| i.stem == stem)
+			.map(|i| (i, items[i].name.clone()))
+	}
+
+	/// The items holding an animated model's meshes, as (index, name): each
+	/// stem once, in stem order, skipping stems no item has. Empty when
+	/// there is no model `model`.
+	pub fn meshes_of_model(&self, model: usize) -> Vec<(usize, String)> {
+		let Some(model) = self.manifest.models.get(model) else {
+			return Vec::new();
+		};
+		let mut stems: Vec<&String> = model.meshes.values().collect();
+		stems.sort();
+		stems.dedup();
+		stems
+			.into_iter()
+			.filter_map(|stem| self.item_with_stem(stem))
+			.collect()
+	}
+
+	/// The animated models using the mesh with `stem`, as (index, name), in
+	/// workspace order.
+	pub fn models_using(&self, stem: &str) -> Vec<(usize, String)> {
+		self.manifest
+			.models
+			.iter()
+			.enumerate()
+			.filter(|(_, m)| m.meshes.values().any(|s| s == stem))
+			.map(|(i, m)| (i, m.name.clone()))
+			.collect()
+	}
+
 	/// Pending downloads grouped by asset id, so each asset is fetched once.
 	pub fn pending_jobs(&self) -> Vec<Job> {
 		let mut jobs: Vec<Job> = Vec::new();
@@ -542,6 +579,83 @@ mod tests {
 			maps: maps.iter().copied().collect(),
 			source_id: None,
 		}
+	}
+
+	/// An item named `name` with `stem`.
+	fn item_at(stem: &str, name: &str) -> Item {
+		serde_json::from_value(serde_json::json!({
+			"name": name,
+			"folder": [],
+			"mesh_id": 1,
+			"stem": stem,
+			"mesh": AssetState::Pending,
+		}))
+		.unwrap()
+	}
+
+	/// A model named `name` whose parts use `stems`, by mesh ref in order.
+	fn model_using(name: &str, stems: &[&str]) -> ModelItem {
+		ModelItem {
+			name: name.into(),
+			path: format!("Workspace/{name}"),
+			folder: Vec::new(),
+			file: format!("Rigs/{name}.rig.json"),
+			meshes: (0..).zip(stems.iter().map(|s| s.to_string())).collect(),
+			parts: stems.len(),
+			clips: 0,
+			playable_clips: 0,
+			images: BTreeMap::new(),
+		}
+	}
+
+	#[test]
+	fn a_models_meshes_are_its_stems_once_each_in_stem_order() {
+		let dir = TempDir::new("ws_meshes_of_model");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.set_contents(
+			vec![
+				item_at("Models/Tail", "Tail"),
+				item_at("Models/Body", "Body"),
+				item_at("Models/Body", "Body again"),
+			],
+			vec![model_using(
+				"Shark",
+				&["Models/Tail", "Models/Body", "Models/Tail", "Models/Gone"],
+			)],
+		);
+		// sorted by stem, the repeated tail once, the first item of a stem,
+		// and a stem no item has left out
+		assert_eq!(
+			ws.meshes_of_model(0),
+			[(1, "Body".to_string()), (0, "Tail".to_string())]
+		);
+		assert!(ws.meshes_of_model(1).is_empty());
+	}
+
+	#[test]
+	fn the_models_using_a_stem_are_in_workspace_order() {
+		let dir = TempDir::new("ws_models_using");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.set_contents(
+			vec![item_at("Models/Fin", "Fin")],
+			vec![
+				model_using("Wolf", &["Models/Leg"]),
+				model_using("Shark", &["Models/Fin", "Models/Fin"]),
+				model_using("Fish", &["Models/Fin"]),
+			],
+		);
+		assert_eq!(
+			ws.models_using("Models/Fin"),
+			[(1, "Shark".to_string()), (2, "Fish".to_string())]
+		);
+		// a stem no item has still finds the models that use it
+		assert_eq!(ws.models_using("Models/Leg"), [(0, "Wolf".to_string())]);
+		assert!(ws.models_using("Models/Nothing").is_empty());
+		assert_eq!(
+			ws.item_with_stem("Models/Fin"),
+			Some((0, "Fin".to_string()))
+		);
+		assert_eq!(ws.item_with_stem("Models/Leg"), None);
 	}
 
 	#[test]

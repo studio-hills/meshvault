@@ -27,36 +27,22 @@ impl App {
 		let Some(ws) = &self.workspace else {
 			return Counterparts::default();
 		};
-		let item_named = |stem: &String| {
-			ws.items()
-				.iter()
-				.position(|i| &i.stem == stem)
-				.map(|i| (i, ws.items()[i].name.clone()))
-		};
+		// an open model comes first, even with a mesh open as well
 		if let Some(model) = &self.model {
 			let Some(item) = ws.models().get(model.index) else {
 				return Counterparts::default();
 			};
-			let mut stems: Vec<&String> = item.meshes.values().collect();
-			stems.sort();
-			stems.dedup();
 			return Counterparts {
 				models: vec![(model.index, item.name.clone())],
-				meshes: stems.into_iter().filter_map(item_named).collect(),
+				meshes: ws.meshes_of_model(model.index),
 			};
 		}
 		let Some(stem) = &self.open_stem else {
 			return Counterparts::default();
 		};
 		Counterparts {
-			models: ws
-				.models()
-				.iter()
-				.enumerate()
-				.filter(|(_, m)| m.meshes.values().any(|s| s == stem))
-				.map(|(i, m)| (i, m.name.clone()))
-				.collect(),
-			meshes: item_named(stem).into_iter().collect(),
+			models: ws.models_using(stem),
+			meshes: ws.item_with_stem(stem).into_iter().collect(),
 		}
 	}
 

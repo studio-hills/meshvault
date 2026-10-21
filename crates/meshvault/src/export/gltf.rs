@@ -1031,7 +1031,7 @@ mod tests {
 	/// files of the same name are overwritten and left there to inspect).
 	/// Ignored as it needs a real workspace; run it with
 	/// `MESHVAULT_WS=<workspace folder> cargo test -p meshvault -- --ignored gltf::tests`.
-	/// The OBJ counterpart is `obj::tests::exports_workspace_models`.
+	/// The OBJ counterpart is `export::tests::exports_workspace_models`.
 	#[test]
 	#[ignore]
 	fn exports_workspace_models() {

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 
-use crate::export::obj::Format;
+use crate::export::Format;
 use crate::render::gpu::GpuRenderer;
 use crate::render::thumbnails::{Subject, Thumbnails};
 use crate::scene::maps::MapKind;

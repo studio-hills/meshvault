@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::config::Config;
-use crate::export::obj::Format;
+use crate::export::Format;
 use crate::render::gpu::{GpuRenderer, GpuScene};
 use crate::render::viewport::{Camera, Shading};
 use crate::scene::geometry::{self, GroupKind, Loaded};
@@ -861,7 +861,7 @@ impl App {
 	/// Exports library meshes and animated models into a folder the user
 	/// picks, on a background thread.
 	pub fn export_library(&mut self, items: &[usize], models: &[usize], format: Format) {
-		use crate::export::obj::{MeshJob, ModelJob};
+		use crate::export::{MeshJob, ModelJob};
 		let Some(ws) = &self.workspace else { return };
 		let meshes: Vec<MeshJob> = items
 			.iter()
@@ -908,7 +908,7 @@ impl App {
 			));
 		}
 		self.in_background(move |ctx| {
-			let report = crate::export::obj::export(ctx, &dir, meshes, models, format);
+			let report = crate::export::export(ctx, &dir, meshes, models, format);
 			let written = plural(report.written, "model", "models");
 			if report.failed.is_empty() {
 				Ok(format!(

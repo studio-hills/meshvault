@@ -33,7 +33,7 @@ release. Every test fails when a variable it needs is not set.
 | `scene::model_view::tests::plays_real_export` | `MESHVAULT_EXPORT`, as above | as above |
 | `studio::export_file::tests::parses_real_export` | `MESHVAULT_EXPORT`, as above: an export without warnings or skipped entries | as above |
 | `export::gltf::tests::exports_workspace_models` | `MESHVAULT_WS`: a workspace; optional `MESHVAULT_GLB_OUT` (default: the temp folder) | any workspace, e.g. from `make_test_workspace.py` |
-| `export::obj::tests::exports_workspace_models` | `MESHVAULT_WS`, as above | as above |
+| `export::tests::exports_workspace_models` | `MESHVAULT_WS`, as above | as above |
 | `anim::real_export_tests::matches_studio_samples` | `MESHVAULT_EXPORT` and `MESHVAULT_STUDIO_SAMPLES`; optional `MESHVAULT_DETAIL` (a joint, bone or part name, printed at every sample) | a developer diagnostic: export the test place's models through the stand-in link, then run `sample_animator.luau` against the same models. It prints differences rather than failing. |
 
 For example, with a generated workspace:

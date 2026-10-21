@@ -59,7 +59,10 @@ pub(super) fn transpose(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 ///
 /// The 3x3 is first divided by its largest entry, so how singular it is
 /// does not depend on its overall size: a tiny but invertible scale
-/// (whose determinant is far below 1e-12) still has normals.
+/// (whose determinant is far below 1e-12) still has normals. One that
+/// still looks singular then may only be very uneven across its axes (say
+/// 1000 along one and 0.0001 along the others), so it is judged again
+/// with each axis at its own size, by [`uneven_normal_matrix`].
 pub(super) fn normal_matrix(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 	let size = (0..3)
 		.flat_map(|r| (0..3).map(move |c| (r, c)))
@@ -67,10 +70,7 @@ pub(super) fn normal_matrix(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 		.fold(0.0f32, f32::max);
 	let mut out = IDENTITY;
 	if !(size > 0.0 && size.is_finite()) {
-		for row in out.iter_mut().take(3) {
-			row[..3].fill(0.0);
-		}
-		return out;
+		return flat();
 	}
 	let a = |r: usize, c: usize| m[r][c] / size;
 	let cof = |r: usize, c: usize| {
@@ -79,19 +79,63 @@ pub(super) fn normal_matrix(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 		a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)
 	};
 	let det = a(0, 0) * cof(0, 0) + a(0, 1) * cof(0, 1) + a(0, 2) * cof(0, 2);
+	// what passes here is worked out as it always was, to the last digit
+	if det.abs() <= 1e-12 {
+		return uneven_normal_matrix(m).unwrap_or_else(flat);
+	}
 	// (M^-1)^T is the cofactor matrix over the determinant; dividing M by
 	// `size` multiplies its inverse by `size`, which is undone here
-	let inv_det = if det.abs() > 1e-12 {
-		1.0 / (det * size)
-	} else {
-		0.0
-	};
+	let inv_det = 1.0 / (det * size);
 	for (r, row) in out.iter_mut().enumerate().take(3) {
 		for (c, v) in row.iter_mut().enumerate().take(3) {
 			*v = cof(r, c) * inv_det;
 		}
 	}
 	out
+}
+
+/// The normal matrix of a flat transform: zeros in the 3x3.
+fn flat() -> [[f32; 4]; 4] {
+	let mut out = IDENTITY;
+	for row in out.iter_mut().take(3) {
+		row[..3].fill(0.0);
+	}
+	out
+}
+
+/// [`normal_matrix`] with each column (axis) of the 3x3 divided by its own
+/// length, in f64, so a long axis does not make the short ones look like
+/// nothing: what is left is singular only if the axes really are flat
+/// (lie in a plane, or one is zero). `None` then, or if the inverse is too
+/// large for f32.
+fn uneven_normal_matrix(m: [[f32; 4]; 4]) -> Option<[[f32; 4]; 4]> {
+	let lengths = [0, 1, 2].map(|c| {
+		let column = [0, 1, 2].map(|r| f64::from(m[r][c]));
+		column.iter().map(|v| v * v).sum::<f64>().sqrt()
+	});
+	if !lengths.iter().all(|&l| l > 0.0 && l.is_finite()) {
+		return None;
+	}
+	let a = |r: usize, c: usize| f64::from(m[r][c]) / lengths[c];
+	let cof = |r: usize, c: usize| {
+		let (r1, r2) = ((r + 1) % 3, (r + 2) % 3);
+		let (c1, c2) = ((c + 1) % 3, (c + 2) % 3);
+		a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)
+	};
+	// at most 1 in size, with axes of length 1
+	let det = a(0, 0) * cof(0, 0) + a(0, 1) * cof(0, 1) + a(0, 2) * cof(0, 2);
+	if det.abs() <= 1e-12 {
+		return None;
+	}
+	// with M = A D (D the lengths), (M^-1)^T = (A^-1)^T D^-1
+	let mut out = IDENTITY;
+	for (r, row) in out.iter_mut().enumerate().take(3) {
+		for (c, v) in row.iter_mut().enumerate().take(3) {
+			*v = (cof(r, c) / (det * lengths[c])) as f32;
+		}
+	}
+	let finite = out.iter().flatten().all(|v| v.is_finite());
+	finite.then_some(out)
 }
 
 /// The point `p` placed by the row-major transform `m`.
@@ -253,6 +297,44 @@ mod tests {
 		// a flat transform at any size still has no normals
 		m[1][1] = 0.0;
 		assert_eq!(apply_normal(&m, [1.0, 1.0, 0.0]), [0.0; 3]);
+	}
+
+	/// A scale that is very uneven across its axes but invertible still turns
+	/// normals (once, measuring it against its largest entry alone took it
+	/// for flat and gave zero normals), while one that is really flat, at
+	/// the same sizes, still gives none.
+	#[test]
+	fn apply_normal_of_a_very_uneven_scale_is_not_zero() {
+		let mut m = IDENTITY;
+		m[0][0] = 1000.0;
+		m[1][1] = 0.0001;
+		m[2][2] = 0.0001;
+		assert_eq!(apply_normal(&m, [0.0, 1.0, 0.0]), [0.0, 1.0, 0.0]);
+		assert_eq!(apply_normal(&m, [0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+		assert_eq!(apply_normal(&m, [1.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+		// a normal leaning a little towards the long axis leans less
+		let n = apply_normal(&m, [1.0, 1.0, 0.0]);
+		assert!(
+			n.iter().all(|v| v.is_finite()) && close(n[0], 1e-7) && close(n[1], 1.0),
+			"{n:?}"
+		);
+		// the true inverse transpose, entry by entry
+		let inverse = normal_matrix(m);
+		for (k, want) in [1e-3, 1e4, 1e4].into_iter().enumerate() {
+			assert!(close(inverse[k][k] / want, 1.0), "{inverse:?}");
+		}
+		// the same sizes, with the last two axes made the same: flat
+		let mut flat = m;
+		flat[1][2] = 0.0001;
+		flat[2][2] = 0.0;
+		assert_eq!(apply_normal(&flat, [0.0, 1.0, 0.0]), [0.0; 3]);
+		let mut expected = [[0.0; 4]; 4];
+		expected[3][3] = 1.0;
+		assert_eq!(normal_matrix(flat), expected);
+		// and with an axis squashed to nothing
+		let mut flat = m;
+		flat[2][2] = 0.0;
+		assert_eq!(normal_matrix(flat), expected);
 	}
 
 	/// A turn with a uniform scale keeps normals perpendicular as it is, so

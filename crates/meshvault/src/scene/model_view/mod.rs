@@ -145,13 +145,12 @@ fn load_asset(ctx: &egui::Context, source: &MeshSource) -> Result<MeshAsset, Str
 	let path = source.mesh.as_ref().map_err(Clone::clone)?;
 	let bytes =
 		std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
-	let loaded = geometry::load(&bytes)?;
+	let (loaded, skin) = geometry::load_with_skin(&bytes)?;
 	let geometry = loaded.geometry;
 	if geometry.triangles.is_empty() {
 		return Err(loaded.note.unwrap_or_else(|| "the mesh is empty".into()));
 	}
 	let groups = geometry.default_groups();
-	let skin = geometry::skin(&bytes, geometry.positions.len());
 	let material = if geometry.uvs.is_some() {
 		texture::load_maps(ctx, &source.maps)
 	} else {

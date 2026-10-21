@@ -4,6 +4,8 @@
 use std::io::Cursor;
 use std::ops::Range;
 
+use rbx_mesh::mesh::Mesh;
+
 mod facs;
 mod mesh;
 mod skin;
@@ -14,6 +16,7 @@ pub use self::skin::{Skin, skin};
 pub use crate::scene::primitive::Primitive;
 
 use self::mesh::from_mesh;
+use self::skin::skin_of;
 use self::union::{from_union_graphics, from_union_physics};
 
 /// What a group of triangles represents, so the UI can label it.
@@ -196,12 +199,29 @@ pub struct Loaded {
 
 /// Tries each decoder in turn and returns the first one that understands the file.
 pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
+	decode(bytes).map(|(loaded, _)| loaded)
+}
+
+/// [`load`] and [`skin()`] together, parsing the file once. The skin is
+/// `Ok(None)` for a file that is not a mesh, and has its own error.
+pub fn load_with_skin(bytes: &[u8]) -> Result<(Loaded, Result<Option<Skin>, String>), String> {
+	let (loaded, mesh) = decode(bytes)?;
+	let skin = match &mesh {
+		Some(mesh) => skin_of(mesh, loaded.geometry.positions.len()),
+		None => Ok(None),
+	};
+	Ok((loaded, skin))
+}
+
+/// What [`load`] does, also handing back a mesh file's parsed contents so
+/// its skin can be read without parsing the file again.
+fn decode(bytes: &[u8]) -> Result<(Loaded, Option<Mesh>), String> {
 	// Mesh files start with a readable "version x.yy" line, so decode them
 	// directly to give a focused error instead of one per decoder.
 	if let Some(rest) = bytes.strip_prefix(b"version ") {
 		let version = String::from_utf8_lossy(&rest[..rest.len().min(4)]).into_owned();
 		return match rbx_mesh::read_mesh_versioned(Cursor::new(bytes)) {
-			Ok(mesh) => Ok(finish(from_mesh(mesh))),
+			Ok(mesh) => Ok((finish(from_mesh(&mesh)), Some(mesh))),
 			Err(_) if !matches!(version.as_bytes().first(), Some(b'1'..=b'7')) => Err(format!(
 				"Mesh version {version} is not supported by rbx_mesh yet (supported: 1.00 – 7.00)."
 			)),
@@ -213,16 +233,16 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
 	}
 	if bytes.starts_with(b"CSGPHS") {
 		return rbx_mesh::read_union_physics_versioned(Cursor::new(bytes))
-			.map(|m| finish(from_union_physics(m)))
+			.map(|m| (finish(from_union_physics(m)), None))
 			.map_err(|e| format!("Union physics data failed to decode:\n{}", clean(e)));
 	}
 	let mut errors = Vec::new();
 	match rbx_mesh::read_union_graphics_versioned(Cursor::new(bytes)) {
-		Ok(mesh) => return Ok(finish(from_union_graphics(mesh))),
+		Ok(mesh) => return Ok((finish(from_union_graphics(mesh)), None)),
 		Err(e) => errors.push(format!("union graphics: {}", clean(e))),
 	}
 	match rbx_mesh::read_union_physics_versioned(Cursor::new(bytes)) {
-		Ok(mesh) => return Ok(finish(from_union_physics(mesh))),
+		Ok(mesh) => return Ok((finish(from_union_physics(mesh)), None)),
 		Err(e) => errors.push(format!("union physics: {}", clean(e))),
 	}
 	Err(format!(

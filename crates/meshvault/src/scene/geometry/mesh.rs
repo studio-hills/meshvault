@@ -65,7 +65,7 @@ fn facs_controls_row(names: &[u8]) -> Option<(String, String)> {
 	(!controls.is_empty()).then(|| detail("FACS controls", controls))
 }
 
-pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
+pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 	match mesh {
 		Mesh::V1(m) => {
 			let revision = match m.revision {
@@ -176,8 +176,8 @@ pub(super) fn from_mesh(mesh: Mesh) -> Loaded {
 				note: None,
 			}
 		}
-		Mesh::V6(m) => from_chunks(&m, "6.00"),
-		Mesh::V7(m) => from_chunks(&m, "7.00"),
+		Mesh::V6(m) => from_chunks(m, "6.00"),
+		Mesh::V7(m) => from_chunks(m, "7.00"),
 	}
 }
 

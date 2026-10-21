@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, RichText, Vec2};
 
-use super::layout::SHORTCUTS;
+use super::shortcuts::SHORTCUTS;
 use super::theme::{BODY_LINE_HEIGHT, TITLE, display, palette};
 use super::{icons, widgets};
 use crate::app::App;

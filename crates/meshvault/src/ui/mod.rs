@@ -5,6 +5,7 @@
 
 mod code;
 mod dialogs;
+mod drop;
 pub(crate) mod format;
 pub mod icons;
 pub mod import;
@@ -13,11 +14,15 @@ mod layout;
 pub mod library;
 mod model;
 pub mod settings;
+mod shortcuts;
+mod status_bar;
 mod studio;
 mod switch;
 pub mod theme;
 mod toasts;
+mod top_bar;
 pub mod tree;
+mod viewport_toolbar;
 mod welcome;
 pub mod widgets;
 pub mod window;

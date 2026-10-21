@@ -357,49 +357,45 @@ pub fn properties(ui: &mut Ui, id: &str, rows: &[(String, String)]) {
 		});
 }
 
-/// A row of figures, each a value over a small caption, in equal cells
-/// split by hairlines. Flat, so it reads as part of the header rather than
-/// a card of its own.
+/// Key numbers about what is open, in a card: equal columns, each a value
+/// over its caption, left-aligned on a shared edge.
 pub fn stat_strip(ui: &mut Ui, stats: &[(String, &str)]) {
 	let p = palette(ui.ctx());
 	if stats.is_empty() {
 		return;
 	}
-	let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::hover());
-	let cell = rect.width() / stats.len() as f32;
-	let painter = ui.painter();
-	for (i, (value, caption)) in stats.iter().enumerate() {
-		let left = rect.left() + cell * i as f32;
-		if i > 0 {
-			painter.line_segment(
-				[
-					egui::pos2(left, rect.top() + 4.0),
-					egui::pos2(left, rect.bottom() - 4.0),
-				],
-				Stroke::new(1.0, p.border),
-			);
-		}
-		let x = if i == 0 { left } else { left + 12.0 };
-		let clip = egui::Rect::from_min_max(
-			egui::pos2(x, rect.top()),
-			egui::pos2(left + cell, rect.bottom()),
-		);
-		let painter = painter.with_clip_rect(clip);
-		painter.text(
-			egui::pos2(x, rect.top() + 2.0),
-			Align2::LEFT_TOP,
-			value,
-			FontId::new(16.0, display()),
-			p.text,
-		);
-		painter.text(
-			egui::pos2(x, rect.bottom() - 2.0),
-			Align2::LEFT_BOTTOM,
-			*caption,
-			FontId::proportional(11.0),
-			p.text_weak,
-		);
-	}
+	Frame::NONE
+		.fill(p.raised)
+		.stroke(Stroke::new(1.0, p.border))
+		.corner_radius(CornerRadius::same(8))
+		.inner_margin(Margin::symmetric(12, 10))
+		.show(ui, |ui| {
+			let (rect, _) =
+				ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::hover());
+			let cell = rect.width() / stats.len() as f32;
+			for (i, (value, caption)) in stats.iter().enumerate() {
+				let left = rect.left() + cell * i as f32;
+				let clip = egui::Rect::from_min_max(
+					egui::pos2(left, rect.top()),
+					egui::pos2(left + cell - 4.0, rect.bottom()),
+				);
+				let painter = ui.painter().with_clip_rect(clip);
+				painter.text(
+					egui::pos2(left, rect.top()),
+					Align2::LEFT_TOP,
+					value,
+					FontId::new(16.0, display()),
+					p.text,
+				);
+				painter.text(
+					egui::pos2(left, rect.bottom()),
+					Align2::LEFT_BOTTOM,
+					*caption,
+					FontId::proportional(11.0),
+					p.text_weak,
+				);
+			}
+		});
 }
 
 /// A dashed rounded rectangle, used as a drop target.

@@ -69,9 +69,9 @@ impl App {
 }
 
 /// The top of the inspector, laid out the same for a model and a mesh so
-/// nothing moves when switching between them: the switch (when there is
-/// something to switch to), then the name and a one-line subtitle, both
-/// cut short with the full text on hover.
+/// nothing moves when switching between them: the name and a one-line
+/// subtitle (both cut short, with the full text on hover), then the switch
+/// when there is something to switch to.
 pub(super) fn header(
 	ui: &mut egui::Ui,
 	on_model: bool,
@@ -81,71 +81,63 @@ pub(super) fn header(
 	subtitle_hover: &str,
 ) -> Option<Switch> {
 	let p = palette(ui.ctx());
-	let switch = view_switch(ui, on_model, c);
-	if !c.models.is_empty() && !c.meshes.is_empty() {
-		ui.add_space(10.0);
-	}
 	ui.add(
 		egui::Label::new(
 			egui::RichText::new(title)
-				.size(16.0)
+				.size(17.0)
 				.family(super::theme::display()),
 		)
 		.truncate(),
 	)
 	.on_hover_text(title);
+	ui.add_space(2.0);
 	ui.add(
 		egui::Label::new(egui::RichText::new(subtitle).size(12.0).color(p.text_weak)).truncate(),
 	)
 	.on_hover_text(subtitle_hover);
-	ui.add_space(8.0);
+	ui.add_space(12.0);
+	let switch = view_switch(ui, on_model, c);
+	if !c.models.is_empty() && !c.meshes.is_empty() {
+		ui.add_space(8.0);
+	}
 	switch
 }
 
-/// A two-part control: "Animated" and "Mesh", with the open one
-/// highlighted. When the other side has several choices (a model built
-/// from several meshes, or a mesh several models use) it opens a list.
-/// Shown only when both sides exist.
+/// A two-part control: "Animated" and "Meshes", with the open one
+/// highlighted and how many of each there are beside its name. When the
+/// other side has several choices (a model built from several meshes, or a
+/// mesh several models use) it opens a list. Shown only when both sides
+/// exist.
 pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -> Option<Switch> {
 	if c.models.is_empty() || c.meshes.is_empty() {
 		return None;
 	}
 	let p = palette(ui.ctx());
 	let mut out = None;
+	let pad = 2.0;
+	let track = CONTROL_RADIUS + pad as u8;
+	// as tall as a small control, like the other segmented controls
+	let height = CONTROL_SM - 2.0 * (pad + 1.0);
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(CONTROL_RADIUS + 2))
-		.inner_margin(Margin::same(2))
+		.corner_radius(CornerRadius::same(track))
+		.inner_margin(Margin::same(pad as i8))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
-			// the row is exactly as tall as the halves, so the 2px padding is
-			// even on every side, and the halves' corners are concentric with
-			// the track's (inner = outer − padding and border)
-			ui.spacing_mut().interact_size.y = CONTROL_SM - 4.0;
-			widgets::nest(ui, CONTROL_RADIUS + 2, 3.0);
+			ui.spacing_mut().interact_size.y = height;
+			// the halves' corners are concentric with the track's
+			widgets::nest(ui, track, pad + 1.0);
 			let half = ((ui.available_width() - 2.0) / 2.0).floor();
 			ui.horizontal(|ui| {
 				let sides = [
-					(
-						true,
-						icons::PERSON_SIMPLE_RUN,
-						"Animated",
-						"Animated",
-						&c.models,
-					),
-					(false, icons::CUBE, "Mesh", "Meshes", &c.meshes),
+					(true, icons::PERSON_SIMPLE_RUN, "Animated", &c.models),
+					(false, icons::CUBE, "Meshes", &c.meshes),
 				];
-				for (is_model, icon, label, plural, targets) in sides {
+				for (is_model, icon, label, targets) in sides {
 					let current = is_model == on_model;
-					let label = match (current, targets.len()) {
-						(false, n) if n > 1 => {
-							format!("{icon}  {plural} ({n})  {}", icons::CARET_DOWN)
-						}
-						_ => format!("{icon}  {label}"),
-					};
 					let (rect, response) =
-						ui.allocate_exact_size(Vec2::new(half, CONTROL_SM - 4.0), Sense::click());
+						ui.allocate_exact_size(Vec2::new(half, height), Sense::click());
 					let response = if current {
 						response
 					} else {
@@ -168,13 +160,38 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 					} else {
 						p.text_weak
 					};
-					ui.painter().text(
-						rect.center(),
-						Align2::CENTER_CENTER,
-						label,
+					// icon and name, then the count and (when it opens a
+					// list) a caret, quieter, centred together
+					let many = !current && targets.len() > 1;
+					let painter = ui.painter();
+					let name = painter.layout_no_wrap(
+						format!("{icon}  {label}"),
 						FontId::new(12.5, medium()),
 						colour,
 					);
+					let count = painter.layout_no_wrap(
+						if many {
+							format!("{}  {}", targets.len(), icons::CARET_DOWN)
+						} else {
+							targets.len().to_string()
+						},
+						FontId::proportional(11.5),
+						if current {
+							p.accent.gamma_multiply(0.7)
+						} else {
+							p.text_weak.gamma_multiply(0.8)
+						},
+					);
+					let gap = 6.0;
+					let width = name.size().x + gap + count.size().x;
+					let left = rect.center().x - width / 2.0;
+					let name_pos = egui::pos2(left, rect.center().y - name.size().y / 2.0);
+					let count_pos = egui::pos2(
+						left + name.size().x + gap,
+						rect.center().y - count.size().y / 2.0,
+					);
+					painter.galley(name_pos, name, colour);
+					painter.galley(count_pos, count, colour);
 					if current {
 						continue;
 					}

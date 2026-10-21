@@ -3,7 +3,9 @@
 //! (Windows Credential Manager; macOS Keychain; on Linux the kernel keyring,
 //! which keeps them only until reboot).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +84,38 @@ fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
 	std::fs::rename(path, &kept).map(|()| kept)
 }
 
+/// Writes `bytes` to a new file beside `path` and closes it, returning its
+/// name. The name is this write's own (by process id and a count, and made
+/// only if it does not exist), so two apps saving at once never write to
+/// the same file, and neither can remove the other's.
+fn write_beside(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+	static NEXT: AtomicU64 = AtomicU64::new(0);
+	let name = path.file_name().unwrap_or_default().to_string_lossy();
+	loop {
+		let n = NEXT.fetch_add(1, Ordering::Relaxed);
+		let tmp = path.with_file_name(format!("{name}.{}-{n}.tmp", std::process::id()));
+		let mut file = match std::fs::OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(&tmp)
+		{
+			Ok(file) => file,
+			// left by an earlier app that had the same process id
+			Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+			Err(e) => return Err(e),
+		};
+		let written = file.write_all(bytes);
+		drop(file);
+		return match written {
+			Ok(()) => Ok(tmp),
+			Err(e) => {
+				let _ = std::fs::remove_file(&tmp);
+				Err(e)
+			}
+		};
+	}
+}
+
 impl Config {
 	/// Reads the settings, with anything that went wrong to tell the user.
 	pub fn load() -> (Self, Vec<String>) {
@@ -146,6 +180,12 @@ impl Config {
 	/// could not be read is first moved aside; until it can be, nothing is
 	/// saved.
 	fn save_to(&mut self, path: &Path) -> Result<(), String> {
+		self.save_with(path, || {})
+	}
+
+	/// [`Self::save_to`], calling `before_replace` once the new file is
+	/// written and closed, just before it replaces the old one.
+	fn save_with(&mut self, path: &Path, before_replace: impl FnOnce()) -> Result<(), String> {
 		if let Some(bad) = &self.unreadable {
 			match set_aside(bad) {
 				Ok(_) => {}
@@ -164,14 +204,14 @@ impl Config {
 		}
 		let json = serde_json::to_string_pretty(self)
 			.map_err(|e| format!("Could not save the settings: {e}"))?;
-		let name = path.file_name().unwrap_or_default().to_string_lossy();
-		let tmp = path.with_file_name(format!("{name}.tmp"));
-		std::fs::write(&tmp, json)
-			.and_then(|()| std::fs::rename(&tmp, path))
-			.map_err(|e| {
-				let _ = std::fs::remove_file(&tmp);
-				format!("Could not save the settings to {}: {e}", path.display())
-			})
+		let failed =
+			|e: std::io::Error| format!("Could not save the settings to {}: {e}", path.display());
+		let tmp = write_beside(path, json.as_bytes()).map_err(failed)?;
+		before_replace();
+		std::fs::rename(&tmp, path).map_err(|e| {
+			let _ = std::fs::remove_file(&tmp);
+			failed(e)
+		})
 	}
 
 	/// Takes a workspace off the recent list. Its folder is not touched.
@@ -521,7 +561,7 @@ mod tests {
 		let blocked = dir.join("blocked.json");
 		std::fs::create_dir_all(&blocked).unwrap();
 		config.save_to(&blocked).unwrap_err();
-		assert!(!dir.join("blocked.json.tmp").exists());
+		assert_eq!(names(&dir), ["blocked.json", "config.json"]);
 	}
 
 	#[test]
@@ -591,5 +631,61 @@ mod tests {
 		config.save_to(&primary).unwrap();
 		assert_eq!(load(Some(primary), None).place_id, Some(4));
 		assert!(!dir.join("config.json.bad2").exists());
+	}
+
+	/// The names of the files in `dir`, sorted.
+	fn names(dir: &Path) -> Vec<String> {
+		let mut names: Vec<String> = std::fs::read_dir(dir)
+			.unwrap()
+			.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+			.collect();
+		names.sort();
+		names
+	}
+
+	/// Two apps saving at once each write a file of their own, so each
+	/// replaces the settings with a whole file of its own (once both wrote
+	/// config.json.tmp, and the second's rename took the first's file).
+	#[test]
+	fn saves_at_the_same_time_do_not_share_a_file() {
+		let dir = TempDir::new("config");
+		let path = dir.join("config.json");
+		let mut first = Config {
+			place_id: Some(1),
+			..Default::default()
+		};
+		let mut second = Config {
+			place_id: Some(2),
+			..Default::default()
+		};
+		first
+			.save_with(&path, || {
+				// the other app saves between this one writing its file and
+				// moving it into place
+				second.save_with(&path, || {}).unwrap();
+				assert_eq!(load(Some(path.clone()), None).place_id, Some(2));
+				// and this one's file is still there, whole
+				let waiting: Vec<_> = names(&dir)
+					.into_iter()
+					.filter(|n| n.ends_with(".tmp"))
+					.collect();
+				assert_eq!(waiting.len(), 1, "{waiting:?}");
+				let text = std::fs::read_to_string(dir.join(&waiting[0])).unwrap();
+				assert_eq!(
+					serde_json::from_str::<Config>(&text).unwrap().place_id,
+					Some(1)
+				);
+			})
+			.unwrap();
+		assert_eq!(load(Some(path.clone()), None).place_id, Some(1));
+		assert_eq!(names(&dir), ["config.json"]);
+
+		// a save that fails removes its own file and no other
+		let other = dir.join("config.json.1-0.tmp");
+		std::fs::write(&other, "another app's").unwrap();
+		std::fs::remove_file(&path).unwrap();
+		std::fs::create_dir(&path).unwrap();
+		first.save_to(&path).unwrap_err();
+		assert_eq!(names(&dir), ["config.json", "config.json.1-0.tmp"]);
 	}
 }

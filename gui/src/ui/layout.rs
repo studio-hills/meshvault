@@ -53,7 +53,10 @@ impl eframe::App for App {
 				.default_size(300.0)
 				.size_range(240.0..=520.0)
 				.frame(Frame::NONE.fill(p.panel).inner_margin(Margin::same(12)))
-				.show(ui, |ui| self.inspector(ui));
+				.show(ui, |ui| {
+					header_backdrop(ui);
+					self.inspector(ui)
+				});
 		}
 		egui::CentralPanel::default()
 			.frame(Frame::NONE.fill(p.bg))
@@ -831,3 +834,54 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
 	("F12", "Save the view as an image"),
 	("?", "Show this list"),
 ];
+
+/// Behind the top of the inspector: the accent fading down into the panel,
+/// with a fine grid of dots fading with it.
+fn header_backdrop(ui: &egui::Ui) {
+	let p = palette(ui.ctx());
+	// the whole width of the panel, from its top edge (past its margin)
+	let panel = ui.max_rect().expand(12.0);
+	let rect = egui::Rect::from_min_size(panel.min, Vec2::new(panel.width(), 170.0));
+	let painter = ui.painter().with_clip_rect(rect);
+	let mut mesh = egui::Mesh::default();
+	let top = p.accent.gamma_multiply(0.08);
+	mesh.colored_vertex(rect.left_top(), top);
+	mesh.colored_vertex(rect.right_top(), top);
+	mesh.colored_vertex(rect.right_bottom(), Color32::TRANSPARENT);
+	mesh.colored_vertex(rect.left_bottom(), Color32::TRANSPARENT);
+	mesh.add_triangle(0, 1, 2);
+	mesh.add_triangle(0, 2, 3);
+	painter.add(egui::Shape::mesh(mesh));
+	// Roblox's studs: one a cell, lit from the top left
+	const STEP: f32 = 20.0;
+	const RADIUS: f32 = 6.0;
+	let arc = |centre: egui::Pos2, from: f32, to: f32| -> Vec<egui::Pos2> {
+		(0..=12)
+			.map(|k| {
+				let a = (from + (to - from) * k as f32 / 12.0).to_radians();
+				centre + Vec2::new(a.cos(), a.sin()) * RADIUS
+			})
+			.collect()
+	};
+	let mut y = rect.top() + STEP / 2.0;
+	while y < rect.bottom() {
+		let fade = 1.0 - (y - rect.top()) / rect.height();
+		let fade = fade * fade;
+		// an opaque face, so its drop shadow shows only as a crescent below it
+		// the gradient's own tint where the stud sits, a touch lighter
+		let tint = 0.08 * (1.0 - (y - rect.top()) / rect.height());
+		let body = p.panel.lerp_to_gamma(p.accent, tint + 0.02 * fade);
+		let drop = Color32::BLACK.gamma_multiply(0.17 * fade);
+		let light = Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.08 * fade));
+		let mut x = rect.left() + STEP / 2.0;
+		while x < rect.right() {
+			let centre = egui::pos2(x, y);
+			painter.circle_filled(centre + Vec2::new(0.8, 1.4), RADIUS, drop);
+			painter.circle_filled(centre, RADIUS, body);
+			// screen angles grow clockwise from the right: 225 degrees is up-left
+			painter.add(egui::Shape::line(arc(centre, 160.0, 290.0), light));
+			x += STEP;
+		}
+		y += STEP;
+	}
+}

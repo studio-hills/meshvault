@@ -46,13 +46,19 @@ pub fn write_mesh(
 	material: &Material,
 ) -> Result<(), String> {
 	let mut names = Names::default();
-	write_one(
-		Obj::chosen(path, &mut names)?,
-		geometry,
-		groups,
-		map_path(material, Slot::Base),
-		map_path(material, Slot::Normal),
-	)
+	let result = Obj::chosen(path, &mut names).and_then(|obj| {
+		write_one(
+			obj,
+			geometry,
+			groups,
+			map_path(material, Slot::Base),
+			map_path(material, Slot::Normal),
+		)
+	});
+	if result.is_err() {
+		names.discard_since(0);
+	}
+	result
 }
 
 /// Writes `groups` of one mesh, unmoved, into `obj`, in the part colour or
@@ -88,7 +94,11 @@ fn map_of(maps: &[(Slot, PathBuf)], slot: Slot) -> Option<&Path> {
 /// Writes an animated model as posed now to the OBJ file `path`.
 pub fn write_model(path: &Path, model: &mut ModelView) -> Result<(), String> {
 	let mut names = Names::default();
-	write_parts(Obj::chosen(path, &mut names)?, model)
+	let result = Obj::chosen(path, &mut names).and_then(|obj| write_parts(obj, model));
+	if result.is_err() {
+		names.discard_since(0);
+	}
+	result
 }
 
 /// A file path's folder and its name without the extension.
@@ -144,7 +154,7 @@ fn write_parts(mut obj: Obj, model: &mut ModelView) -> Result<(), String> {
 
 /// A sidecar's file name: `name` and `tail` (such as `.normal.png`), with
 /// `_n` between them from the second on.
-fn numbered(name: &str, n: usize, tail: &str) -> String {
+pub(super) fn numbered(name: &str, n: usize, tail: &str) -> String {
 	match n {
 		1 => format!("{name}{tail}"),
 		n => format!("{name}_{n}{tail}"),

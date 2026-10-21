@@ -59,7 +59,9 @@ pub struct Report {
 }
 
 /// Writes each mesh and model into `dir`. Names that clash, with each
-/// other or with files already there, get a number.
+/// other or with files already there (another export's included, even one
+/// running at the same time), get a number. A job that fails leaves none of
+/// its files behind.
 pub fn export(
 	ctx: &egui::Context,
 	dir: &Path,
@@ -74,6 +76,7 @@ pub fn export(
 	};
 	let mut names = Names::default();
 	for job in meshes {
+		let mark = names.mark();
 		let name = names.unique(dir, &job.name, format);
 		let result = match format {
 			Format::Obj => export_mesh(dir, &name, &job, &mut names),
@@ -81,10 +84,14 @@ pub fn export(
 		};
 		match result {
 			Ok(()) => report.written += 1,
-			Err(e) => report.failed.push(format!("{}: {e}", job.name)),
+			Err(e) => {
+				names.discard_since(mark);
+				report.failed.push(format!("{}: {e}", job.name));
+			}
 		}
 	}
 	for job in models {
+		let mark = names.mark();
 		let name = names.unique(dir, &job.name, format);
 		let result = (job.load)(ctx).and_then(|mut model| match format {
 			Format::Obj => export_model(dir, &name, &mut model, &mut names),
@@ -94,7 +101,10 @@ pub fn export(
 		});
 		match result {
 			Ok(()) => report.written += 1,
-			Err(e) => report.failed.push(format!("{}: {e}", job.name)),
+			Err(e) => {
+				names.discard_since(mark);
+				report.failed.push(format!("{}: {e}", job.name));
+			}
 		}
 	}
 	report
@@ -103,8 +113,17 @@ pub fn export(
 /// File names in the export folder handed out so far (lower case, as
 /// Windows ignores case), so no file an export writes, the OBJ's MTL and
 /// maps included, replaces another of the same batch or one already there.
+///
+/// A name is handed out by creating its file, empty, only if there is no
+/// such file yet, so another export writing into the same folder at the
+/// same time (or another program) cannot be handed it too. The export then
+/// writes over its own empty file.
 #[derive(Default)]
-struct Names(std::collections::HashSet<String>);
+struct Names {
+	handed_out: std::collections::HashSet<String>,
+	/// The files made by handing names out, in order.
+	made: Vec<PathBuf>,
+}
 
 impl Names {
 	/// A name for the files of `name` that are all free: `name.obj` and
@@ -118,37 +137,74 @@ impl Names {
 		let base = sanitize(name);
 		let mut name = base.clone();
 		let mut n = 2;
-		while extensions
-			.iter()
-			.any(|ext| self.taken(dir, &format!("{name}.{ext}")))
-		{
+		loop {
+			let mark = self.mark();
+			if extensions
+				.iter()
+				.all(|ext| self.claim(dir, &format!("{name}.{ext}")))
+			{
+				return name;
+			}
+			// all or none: the OBJ's name is no use without its MTL's
+			self.discard_since(mark);
 			name = format!("{base} ({n})");
 			n += 1;
 		}
-		for ext in extensions {
-			self.reserve(&format!("{name}.{ext}"));
-		}
-		name
 	}
 
 	/// The first free file name `file(n)` for `n` counting up from `from`,
 	/// handed out.
 	fn free(&mut self, dir: &Path, from: usize, file: impl Fn(usize) -> String) -> String {
 		let mut n = from;
-		while self.taken(dir, &file(n)) {
+		while !self.claim(dir, &file(n)) {
 			n += 1;
 		}
-		let file = file(n);
-		self.reserve(&file);
-		file
+		file(n)
 	}
 
-	fn taken(&self, dir: &Path, file: &str) -> bool {
-		self.0.contains(&file.to_lowercase()) || dir.join(file).exists()
+	/// Hands out `file` in `dir` if it is free, making it.
+	fn claim(&mut self, dir: &Path, file: &str) -> bool {
+		if self.handed_out.contains(&file.to_lowercase()) {
+			return false;
+		}
+		let path = dir.join(file);
+		match std::fs::OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(&path)
+		{
+			Ok(_) => self.made.push(path),
+			Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return false,
+			// it cannot be made (no such folder, say): writing it will fail
+			// and say why, unless it is something already there
+			Err(_) if path.exists() => return false,
+			Err(_) => {}
+		}
+		self.reserve(file);
+		true
 	}
 
+	/// Hands out `file` without making it: the OBJ the user chose, which
+	/// may replace a file.
 	fn reserve(&mut self, file: &str) {
-		self.0.insert(file.to_lowercase());
+		self.handed_out.insert(file.to_lowercase());
+	}
+
+	/// How many files have been made, for [`Self::discard_since`].
+	fn mark(&self) -> usize {
+		self.made.len()
+	}
+
+	/// Deletes the files made since `mark` (they are this export's own),
+	/// and takes their names back.
+	fn discard_since(&mut self, mark: usize) {
+		for path in self.made.drain(mark..) {
+			let _ = std::fs::remove_file(&path);
+			if let Some(file) = path.file_name() {
+				self.handed_out
+					.remove(&file.to_string_lossy().to_lowercase());
+			}
+		}
 	}
 }
 
@@ -321,6 +377,133 @@ mod tests {
 		std::fs::write(dir.join("c.mtl"), "").unwrap();
 		assert_eq!(Names::default().unique(&dir, "c", Format::Obj), "c (2)");
 		assert_eq!(Names::default().unique(&dir, "c", Format::Glb), "c");
+	}
+
+	/// Names handed out are made on disk, so a second export into the same
+	/// folder, with names of its own, does not get them too.
+	#[test]
+	fn names_are_free_across_exports() {
+		let dir = TempDir::new("obj_names_shared");
+		let (mut first, mut second) = (Names::default(), Names::default());
+		assert_eq!(first.unique(&dir, "Tree", Format::Obj), "Tree");
+		assert_eq!(second.unique(&dir, "Tree", Format::Obj), "Tree (2)");
+		let sidecar = |n: usize| obj::numbered("Tree", n, ".png");
+		assert_eq!(first.free(&dir, 1, sidecar), "Tree.png");
+		assert_eq!(second.free(&dir, 1, sidecar), "Tree_2.png");
+		// a name taken by another export only for its MTL is passed over
+		// whole, and the OBJ tried with it is not left behind
+		std::fs::write(dir.join("Bush.mtl"), "").unwrap();
+		assert_eq!(first.unique(&dir, "Bush", Format::Obj), "Bush (2)");
+		assert!(!dir.join("Bush.obj").exists());
+		// a failed job's files go, and their names are free again
+		let mark = second.mark();
+		assert_eq!(second.unique(&dir, "Rock", Format::Obj), "Rock");
+		second.discard_since(mark);
+		assert!(!dir.join("Rock.obj").exists() && !dir.join("Rock.mtl").exists());
+		assert_eq!(first.unique(&dir, "Rock", Format::Obj), "Rock");
+	}
+
+	/// A model job of one block in `colour`, read only once `ready` lets it.
+	fn block_job(ready: std::sync::Arc<std::sync::Barrier>, colour: [f32; 3]) -> ModelJob {
+		use std::collections::HashMap;
+
+		use crate::anim::math::CFrame;
+		use crate::anim::schema::{AnimatedModel, ModelPart};
+
+		let model = AnimatedModel {
+			name: "Tree".into(),
+			path: "Workspace/Tree".into(),
+			parts: vec![ModelPart {
+				name: "Trunk".into(),
+				path: "Workspace/Tree/Trunk".into(),
+				class_name: Some("Part".into()),
+				shape: Some("Block".into()),
+				size: [1.0; 3],
+				color: Some(colour),
+				cframe: CFrame::from_position([0.0; 3]).components(),
+				..Default::default()
+			}],
+			..Default::default()
+		};
+		ModelJob {
+			name: "Tree".into(),
+			load: Box::new(move |ctx| {
+				ready.wait();
+				Ok(ModelView::load(
+					ctx,
+					0,
+					&model,
+					&HashMap::new(),
+					&HashMap::new(),
+				))
+			}),
+		}
+	}
+
+	/// Two exports into one folder at once each get their own files. Bug:
+	/// each export only knew its own names, so both picked `Tree.obj` and
+	/// `Tree.mtl` before reading their models, and the second written
+	/// replaced the first.
+	#[test]
+	fn exports_at_the_same_time_never_share_a_file() {
+		let dir = TempDir::new("obj_concurrent");
+		// both have picked their names before either reads its model
+		let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+		let exports: Vec<_> = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+			.map(|colour| {
+				let (dir, job) = (dir.to_path_buf(), block_job(ready.clone(), colour));
+				std::thread::spawn(move || {
+					let ctx = egui::Context::default();
+					export(&ctx, &dir, Vec::new(), vec![job], Format::Obj)
+				})
+			})
+			.into_iter()
+			.map(|t| t.join().unwrap())
+			.collect();
+		for report in exports {
+			assert_eq!(report.written, 1, "{:?}", report.failed);
+		}
+		let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+		assert!(read("Tree.obj").contains("mtllib Tree.mtl\n"));
+		assert!(read("Tree (2).obj").contains("mtllib Tree (2).mtl\n"));
+		let mut kd: Vec<String> = ["Tree.mtl", "Tree (2).mtl"]
+			.map(|mtl| {
+				read(mtl)
+					.lines()
+					.find(|l| l.starts_with("Kd "))
+					.unwrap()
+					.to_string()
+			})
+			.into();
+		kd.sort();
+		assert_eq!(kd, ["Kd 0 0 1", "Kd 1 0 0"]);
+	}
+
+	/// A job that fails leaves no files, not even the names it was given.
+	#[test]
+	fn a_failed_job_leaves_nothing() {
+		let dir = TempDir::new("obj_failed");
+		for format in [Format::Obj, Format::Glb] {
+			let model = ModelJob {
+				name: "Broken".into(),
+				load: Box::new(|_| Err("unreadable".into())),
+			};
+			let mesh = MeshJob {
+				name: "Gone".into(),
+				mesh: dir.join("missing.mesh"),
+				maps: Vec::new(),
+			};
+			let report = export(
+				&egui::Context::default(),
+				&dir,
+				vec![mesh],
+				vec![model],
+				format,
+			);
+			assert_eq!(report.written, 0);
+			assert_eq!(report.failed.len(), 2, "{:?}", report.failed);
+		}
+		assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 	}
 
 	fn map_file(dir: &Path, name: &str) -> PathBuf {

@@ -48,7 +48,8 @@ pub enum Action {
 	},
 }
 
-/// The two export items of a menu, for `items` and `models`.
+/// The two export items of a menu, for `items` and `models`. `n` is how
+/// many things they export, named in the labels when it is not 1.
 fn export_items(
 	ui: &mut egui::Ui,
 	items: &[usize],
@@ -113,13 +114,17 @@ enum Key {
 	Item(usize),
 }
 
+/// The library's selected rows, with what Shift-click needs to select a
+/// range of them.
 #[derive(Default)]
 struct Selection {
 	keys: BTreeSet<Key>,
 	/// The row a Shift-click selects from.
 	anchor: Option<Key>,
-	/// Rows in the order drawn this frame, and the last.
+	/// Rows in the order they are drawn, gathered during this frame.
 	drawn: Vec<Key>,
+	/// Rows in the order the previous frame drew them; clicks, handled
+	/// while this frame draws, select ranges from this complete list.
 	order: Vec<Key>,
 }
 
@@ -167,7 +172,9 @@ pub struct Browser {
 	built_for: Option<(PathBuf, u64)>,
 	/// Expand/collapse requested while drawing, applied on the next frame.
 	pending: RefCell<Option<FolderCommand>>,
-	/// Open the folders leading to the open model and scroll to it.
+	/// Open the folders leading to the open model and scroll to it. Only an
+	/// open mesh is revealed today; an open animated model is not, though
+	/// the button's label says "model".
 	reveal: bool,
 	scroll_to_open: std::cell::Cell<bool>,
 	selection: RefCell<Selection>,
@@ -319,8 +326,10 @@ impl Browser {
 			.map(|&i| (i, &ws.items()[i]))
 	}
 
-	/// A model is done when every mesh it uses is downloaded, with its maps;
-	/// failed when any of them failed, even if others are still pending.
+	/// A model is done when every mesh it uses is in the workspace and
+	/// downloaded, with its maps (so a model with no meshes is done); pending
+	/// while any mesh is missing or any mesh or map is still to download;
+	/// failed when any mesh or map failed, even if others are pending.
 	fn model_status(&self, ws: &Workspace, model: &ModelItem) -> Status {
 		let mut s = if self.model_items(ws, model).count() < model.meshes.len() {
 			Status::Pending

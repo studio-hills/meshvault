@@ -880,7 +880,6 @@ fn header_backdrop(ui: &egui::Ui) {
 	while y < rect.bottom() {
 		let fade = 1.0 - (y - rect.top()) / rect.height();
 		let fade = fade * fade;
-		// an opaque face, so its drop shadow shows only as a crescent below it
 		// the gradient's own tint where the stud sits, a touch lighter
 		let tint = 0.08 * (1.0 - (y - rect.top()) / rect.height());
 		let body = p.panel.lerp_to_gamma(p.accent, tint + 0.02 * fade);
@@ -889,6 +888,7 @@ fn header_backdrop(ui: &egui::Ui) {
 		let mut x = rect.left() + STEP / 2.0;
 		while x < rect.right() {
 			let centre = egui::pos2(x, y);
+			// an opaque face, so its drop shadow shows only as a crescent below it
 			painter.circle_filled(centre + Vec2::new(0.8, 1.4), RADIUS, drop);
 			painter.circle_filled(centre, RADIUS, body);
 			// screen angles grow clockwise from the right: 225 degrees is up-left

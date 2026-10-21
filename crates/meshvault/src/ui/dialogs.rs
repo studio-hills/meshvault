@@ -1,6 +1,8 @@
-//! Modal dialogs owned by the app: new workspace, keyboard shortcuts and
-//! confirmation of destructive actions. Import and Roblox access live in
-//! their own modules.
+//! Modal dialogs owned by the app: new workspace, keyboard shortcuts,
+//! confirmation of destructive actions, and the progress dialogs shown
+//! while an export is parsed and while an animated model opens. The
+//! `dialogs` dispatcher also shows the import, Roblox access and Studio
+//! dialogs, which live in their own modules.
 
 use eframe::egui::{self, Id, Key, RichText, Vec2};
 

@@ -1,4 +1,4 @@
-//! Settings dialog for Roblox download credentials.
+//! Roblox access dialog: credentials, place id and download concurrency.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};

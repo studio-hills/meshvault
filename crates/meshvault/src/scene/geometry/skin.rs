@@ -1,11 +1,8 @@
 //! Bone weights from mesh files.
 
-use std::io::Cursor;
-
 use rbx_mesh::mesh::{Chunks6, CoreMeshChunk, Mesh};
 
 use super::facs::{Facs, facs_of};
-use super::strip_ansi;
 
 /// Where a Draco bitstream says how it encoded the mesh: after "DRACO",
 /// the major and minor version and the encoder type.
@@ -29,18 +26,6 @@ pub struct Skin {
 	pub influences: Vec<[(u16, f32); 4]>,
 	/// A FACS head's face poses, which move its face bones.
 	pub facs: Option<Facs>,
-}
-
-/// Reads a mesh's skinning. `Ok(None)` when it has none; an error when it
-/// has some that cannot be lined up with the decoded vertices.
-/// [`load_with_skin`](super::load_with_skin) does this without parsing the
-/// file a second time.
-pub fn skin(bytes: &[u8], vertex_count: usize) -> Result<Option<Skin>, String> {
-	if !bytes.starts_with(b"version ") {
-		return Ok(None);
-	}
-	let mesh = rbx_mesh::read_mesh_versioned(Cursor::new(bytes)).map_err(strip_ansi)?;
-	skin_of(&mesh, vertex_count)
 }
 
 /// The skinning of a parsed mesh with `vertex_count` decoded vertices.
@@ -176,8 +161,21 @@ fn build_skin(
 
 #[cfg(test)]
 mod tests {
+	use std::io::Cursor;
+
+	use super::super::strip_ansi;
 	use super::*;
 	use crate::scene::geometry::load;
+
+	/// Reads a mesh's skinning on its own (the app uses
+	/// [`load_with_skin`](super::super::load_with_skin), which parses once).
+	fn skin(bytes: &[u8], vertex_count: usize) -> Result<Option<Skin>, String> {
+		if !bytes.starts_with(b"version ") {
+			return Ok(None);
+		}
+		let mesh = rbx_mesh::read_mesh_versioned(Cursor::new(bytes)).map_err(strip_ansi)?;
+		skin_of(&mesh, vertex_count)
+	}
 
 	#[test]
 	fn sample_skins_line_up_with_vertices() {

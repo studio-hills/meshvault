@@ -136,10 +136,7 @@ fn read(path: &Path) -> MeshFacts {
 		return MeshFacts::default();
 	};
 	let geometry = loaded.geometry;
-	let skinned = skin
-		.ok()
-		.flatten()
-		.is_some_and(|s| !s.bones.is_empty());
+	let skinned = skin.ok().flatten().is_some_and(|s| !s.bones.is_empty());
 	MeshFacts {
 		skinned,
 		triangles: geometry.triangles.len(),

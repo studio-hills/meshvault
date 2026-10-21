@@ -14,7 +14,7 @@ mod skin;
 mod union;
 
 pub use self::facs::Facs;
-pub use self::skin::{Skin, skin};
+pub use self::skin::Skin;
 pub use crate::scene::primitive::Primitive;
 
 use self::mesh::from_mesh;
@@ -201,7 +201,7 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
 	decode(bytes).map(|(loaded, _)| loaded)
 }
 
-/// [`load`] and [`skin()`] together, parsing the file once. The skin is
+/// [`load`] and the mesh's [`Skin`] together, parsing the file once. The skin is
 /// `Ok(None)` for a file that is not a mesh, and has its own error.
 pub fn load_with_skin(bytes: &[u8]) -> Result<(Loaded, Result<Option<Skin>, String>), String> {
 	let (loaded, mesh) = decode(bytes)?;

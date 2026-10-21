@@ -619,6 +619,29 @@ impl Workspace {
 		self.dirty = true;
 	}
 
+	/// Records a finished download: the files it wrote become `Done`, or
+	/// every target of the job becomes `Failed` with the error.
+	pub fn record_download(&mut self, job: &Job, result: Result<Vec<download::Stored>, String>) {
+		match result {
+			Ok(written) => {
+				for w in written {
+					self.set_state(&w.stem, w.kind, AssetState::Done { path: w.path });
+				}
+			}
+			Err(error) => {
+				for (stem, kind) in &job.targets {
+					self.set_state(
+						stem,
+						*kind,
+						AssetState::Failed {
+							error: error.clone(),
+						},
+					);
+				}
+			}
+		}
+	}
+
 	/// Marks every failed decal image as pending so it is retried.
 	pub fn retry_images(&mut self) {
 		for model in &mut self.manifest.models {

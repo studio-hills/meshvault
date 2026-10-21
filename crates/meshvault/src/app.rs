@@ -563,24 +563,7 @@ impl App {
 					let Some(ws) = &mut self.workspace else {
 						continue;
 					};
-					match result {
-						Ok(written) => {
-							for w in written {
-								ws.set_state(&w.stem, w.kind, AssetState::Done { path: w.path });
-							}
-						}
-						Err(error) => {
-							for (stem, kind) in &job.targets {
-								ws.set_state(
-									stem,
-									*kind,
-									AssetState::Failed {
-										error: error.clone(),
-									},
-								);
-							}
-						}
-					}
+					ws.record_download(&job, result);
 				}
 				Event::AuthFailed(message) => {
 					self.toasts.error(format!("Downloads stopped: {message}"));

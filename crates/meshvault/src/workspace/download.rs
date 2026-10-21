@@ -757,24 +757,7 @@ mod tests {
 			let Event::Finished { job, result } = event else {
 				panic!("auth failure")
 			};
-			match result {
-				Ok(written) => {
-					for w in written {
-						ws.set_state(&w.stem, w.kind, AssetState::Done { path: w.path });
-					}
-				}
-				Err(error) => {
-					for (stem, kind) in &job.targets {
-						ws.set_state(
-							stem,
-							*kind,
-							AssetState::Failed {
-								error: error.clone(),
-							},
-						);
-					}
-				}
-			}
+			ws.record_download(&job, result);
 		}
 		assert_eq!((downloader.completed, downloader.failed), (4, 1));
 

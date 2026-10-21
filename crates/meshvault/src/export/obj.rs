@@ -11,6 +11,7 @@ use crate::render::maths::{IDENTITY, apply, apply_dir};
 use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
+use crate::scene::surface::PART_COLOUR;
 use crate::scene::texture::Material;
 
 pub(super) fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), String> {
@@ -49,8 +50,10 @@ pub fn write_mesh(
 	)
 }
 
-/// Writes `groups` of one mesh, unmoved, as the OBJ `name` in `dir`, white
-/// or showing the colour map `base`, with the maps copied beside it.
+/// Writes `groups` of one mesh, unmoved, as the OBJ `name` in `dir`, in
+/// the part colour or showing the colour map `base`, with the maps copied
+/// beside it. A mesh without texture coordinates cannot show maps, so it
+/// gets none, as in the viewer and the glTF export.
 fn write_one(
 	dir: &Path,
 	name: &str,
@@ -60,7 +63,13 @@ fn write_one(
 	normal: Option<&Path>,
 ) -> Result<(), String> {
 	let mut obj = Obj::new(dir, name);
-	let material = obj.material(base, normal, [1.0; 3])?;
+	let (base, normal) = if geometry.uvs.is_some() {
+		(base, normal)
+	} else {
+		(None, None)
+	};
+	let colour = [PART_COLOUR.r(), PART_COLOUR.g(), PART_COLOUR.b()].map(|c| c as f32 / 255.0);
+	let material = obj.material(base, normal, colour)?;
 	obj.add(name, geometry, groups, &IDENTITY, &material);
 	obj.write()
 }
@@ -291,6 +300,51 @@ mod tests {
 		obj.add("b", &triangle(true), &[0], &IDENTITY, "m");
 		assert!(obj.obj.contains("f 4/1/4 5/2/5 6/3/6"), "{}", obj.obj);
 		check_indices(&obj.obj);
+	}
+
+	fn read(path: PathBuf) -> String {
+		std::fs::read_to_string(path).unwrap()
+	}
+
+	/// The `Kd` line of the part colour, as the MTL writes it.
+	fn part_kd() -> String {
+		let [r, g, b] =
+			[PART_COLOUR.r(), PART_COLOUR.g(), PART_COLOUR.b()].map(|c| c as f32 / 255.0);
+		format!("Kd {r} {g} {b}\n")
+	}
+
+	#[test]
+	fn a_mesh_without_uvs_gets_the_part_colour_and_no_maps() {
+		let dir = TempDir::new("obj_no_uvs");
+		let map = dir.join("source.png");
+		std::fs::write(&map, "png").unwrap();
+		write_one(
+			&dir,
+			"plain",
+			&triangle(false),
+			&[0],
+			Some(&map),
+			Some(&map),
+		)
+		.unwrap();
+		let mtl = read(dir.join("plain.mtl"));
+		assert!(mtl.contains(&part_kd()), "{mtl}");
+		assert!(!mtl.contains("map_Kd") && !mtl.contains("norm"), "{mtl}");
+		assert!(!dir.join("plain.png").exists() && !dir.join("plain.normal.png").exists());
+	}
+
+	#[test]
+	fn a_mesh_with_uvs_is_white_under_its_map_and_the_part_colour_without() {
+		let dir = TempDir::new("obj_uvs");
+		let map = dir.join("source.png");
+		std::fs::write(&map, "png").unwrap();
+		write_one(&dir, "mapped", &triangle(true), &[0], Some(&map), None).unwrap();
+		let mtl = read(dir.join("mapped.mtl"));
+		assert!(mtl.contains("Kd 1 1 1\nmap_Kd mapped.png\n"), "{mtl}");
+		assert_eq!(read(dir.join("mapped.png")), "png");
+		write_one(&dir, "bare", &triangle(true), &[0], None, None).unwrap();
+		let mtl = read(dir.join("bare.mtl"));
+		assert!(mtl.contains(&part_kd()) && !mtl.contains("map_Kd"), "{mtl}");
 	}
 
 	#[test]

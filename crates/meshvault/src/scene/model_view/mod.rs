@@ -22,7 +22,7 @@ use crate::render::camera::Camera;
 use crate::render::gpu::GpuScene;
 use crate::scene::geometry::{self, Geometry, Primitive, Skin};
 use crate::scene::maps::Slot;
-use crate::scene::surface::{ClothingDraw, PART_COLOUR, Surface};
+use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
 
 mod decals;
@@ -35,7 +35,10 @@ pub use self::draw::{Joint, Skeleton};
 pub use self::export::ExportMesh;
 pub use self::skin::PartSkin;
 
-use self::decals::{PartDecal, SECTIONS, Section, face_index};
+use self::decals::{
+	ImageCache, PartDecal, body_sections, clothing_layers, insert_clothing, part_decals,
+	variant_layer,
+};
 use self::look::{BLOCK_COLOUR, INVISIBLE, Look, appearance, colour_of, look, surface_of};
 use self::skin::{Driver, mean, scale_translation};
 
@@ -193,118 +196,17 @@ impl ModelView {
 		}
 
 		let mut assets: HashMap<u32, Result<Arc<MeshAsset>, String>> = HashMap::new();
-		// decal images, each loaded once
-		let mut decal_images: HashMap<u64, Option<texture::Texture>> = HashMap::new();
+		let mut images = ImageCache::new(ctx, images);
 		let mut decals_missing = 0;
-		// classic clothing: each body section's box in the joints' rest pose,
-		// and where each of its parts sits in it
-		let joint_rest = rig.joint_rest();
-		let mut sections: HashMap<usize, (Section, CFrame, V3, V3)> = HashMap::new();
-		let mut clothing_images: Vec<(Section, Material, [f32; 3], bool)> = Vec::new();
-		if let Some(c) = &model.clothing {
-			let mut load = |content: &Option<String>| -> Option<texture::Texture> {
-				let id = crate::content_id::parse_asset_id(content.as_deref()?)?;
-				decal_images
-					.entry(id)
-					.or_insert_with(|| {
-						let path = images.get(&id)?;
-						let bytes = std::fs::read(path).ok()?;
-						texture::load(ctx, path, &bytes).ok()
-					})
-					.clone()
-			};
-			let material = |t: texture::Texture| {
-				let mut m = Material::default();
-				m.set(Slot::Base, t);
-				m
-			};
-			// drawn in this order: pants, then the shirt over them, then a T-shirt
-			let pants = load(&c.pants_template);
-			let shirt = load(&c.shirt_template);
-			let graphic = load(&c.graphic);
-			for (_, section) in SECTIONS {
-				let legs = matches!(section, Section::RightLeg | Section::LeftLeg);
-				let arms = matches!(section, Section::RightArm | Section::LeftArm);
-				if let Some(t) = &pants
-					&& !arms
-				{
-					clothing_images.push((
-						section,
-						material(t.clone()),
-						c.pants_color.unwrap_or([1.0; 3]),
-						false,
-					));
-				}
-				if let Some(t) = &shirt
-					&& !legs
-				{
-					clothing_images.push((
-						section,
-						material(t.clone()),
-						c.shirt_color.unwrap_or([1.0; 3]),
-						false,
-					));
-				}
-			}
-			if let Some(t) = graphic {
-				clothing_images.push((
-					Section::Torso,
-					material(t),
-					c.graphic_color.unwrap_or([1.0; 3]),
-					true,
-				));
-			}
-			let wanted = [&c.pants_template, &c.shirt_template, &c.graphic]
-				.iter()
-				.filter(|t| t.is_some())
-				.count();
-			let got = [
-				pants.is_some(),
-				shirt.is_some(),
-				clothing_images.iter().any(|c| c.3),
-			]
-			.iter()
-			.filter(|b| **b)
-			.count();
-			if got < wanted {
-				warnings.push(
-					"Some of the model's clothing is not drawn: its images are not downloaded yet."
-						.into(),
-				);
-			}
-			for (names, section) in SECTIONS {
-				let members: Vec<usize> = names
-					.iter()
-					.filter_map(|n| rig.parts.iter().position(|p| p.name == *n))
-					.collect();
-				let Some(&first) = members.first() else {
-					continue;
-				};
-				let frame = joint_rest.parts[first];
-				let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-				for &m in &members {
-					let in_frame = frame.inverse().mul(&joint_rest.parts[m]);
-					let h = rig.parts[m].size.map(|s| s * 0.5);
-					for corner in 0..8 {
-						let p = in_frame.point([
-							if corner & 1 == 0 { -h[0] } else { h[0] },
-							if corner & 2 == 0 { -h[1] } else { h[1] },
-							if corner & 4 == 0 { -h[2] } else { h[2] },
-						]);
-						for k in 0..3 {
-							lo[k] = lo[k].min(p[k]);
-							hi[k] = hi[k].max(p[k]);
-						}
-					}
-				}
-				let centre = [0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5);
-				let half = [0, 1, 2].map(|k| (hi[k] - lo[k]) * 0.5);
-				for &m in &members {
-					let in_frame = frame.inverse().mul(&joint_rest.parts[m]);
-					sections.insert(m, (section, in_frame, centre, half));
-				}
-			}
-		}
+		// classic clothing: the images over each body section, and each
+		// section's box in the joints' rest pose
+		let (clothing, sections) = match &model.clothing {
+			Some(c) => (
+				clothing_layers(c, &mut images, &mut warnings),
+				body_sections(&rig, &rig.joint_rest()),
+			),
+			None => (Vec::new(), HashMap::new()),
+		};
 		let mut variants_missing = 0;
 		let mut variants_on_meshes = 0;
 		let mut parts = Vec::with_capacity(rig.parts.len());
@@ -382,133 +284,19 @@ impl ModelView {
 				},
 				_ => None,
 			};
-			let mut decals: Vec<(i32, PartDecal)> = Vec::new();
-			for d in &record.decals {
-				let image = crate::content_id::parse_asset_id(&d.texture).and_then(|id| {
-					decal_images
-						.entry(id)
-						.or_insert_with(|| {
-							let path = images.get(&id)?;
-							let bytes = std::fs::read(path).ok()?;
-							texture::load(ctx, path, &bytes).ok()
-						})
-						.clone()
-				});
-				let Some(image) = image else {
-					decals_missing += 1;
-					continue;
-				};
-				let mut material = Material::default();
-				material.set(Slot::Base, image);
-				let tiles = d.studs_per_tile_u.map(|u| {
-					[
-						u,
-						d.studs_per_tile_v.unwrap_or(u),
-						d.offset_studs_u.unwrap_or(0.0),
-						d.offset_studs_v.unwrap_or(0.0),
-					]
-				});
-				decals.push((
-					d.z_index,
-					PartDecal {
-						face: face_index(&d.face),
-						tiles: if d.class_name == "Texture" {
-							tiles
-						} else {
-							None
-						},
-						colour: d.color,
-						transparency: d.transparency,
-						material,
-						gpu: None,
-						variant: false,
-						clothing: None,
-					},
-				));
-			}
-			decals.sort_by_key(|(z, _)| *z);
+			let mut decals = part_decals(record, &mut images, &mut decals_missing);
 			// a MaterialVariant covers the part, under its decals
-			if let Some(v) = &record.material_variant {
-				let mut material = Material::default();
-				let mut wanted = 0;
-				for (slot, content) in v.maps() {
-					let Some(id) = crate::content_id::parse_asset_id(content) else {
-						continue;
-					};
-					wanted += 1;
-					let image = decal_images
-						.entry(id)
-						.or_insert_with(|| {
-							let path = images.get(&id)?;
-							let bytes = std::fs::read(path).ok()?;
-							texture::load(ctx, path, &bytes).ok()
-						})
-						.clone();
-					if let Some(image) = image {
-						material.set(slot, image);
-					}
+			if let Some(v) = &record.material_variant
+				&& let Some(layer) = variant_layer(v, &mut images, &mut variants_missing)
+			{
+				if matches!(shape, PartShape::Mesh(_)) {
+					variants_on_meshes += 1;
 				}
-				if material.maps.len() < wanted {
-					variants_missing += 1;
-				}
-				if !material.maps.is_empty() {
-					if matches!(shape, PartShape::Mesh(_)) {
-						variants_on_meshes += 1;
-					}
-					let tile = v.studs_per_tile.max(0.01);
-					decals.insert(
-						0,
-						(
-							i32::MIN,
-							PartDecal {
-								face: 0,
-								tiles: Some([tile, tile, 0.0, 0.0]),
-								colour: [1.0; 3],
-								transparency: 0.0,
-								material,
-								gpu: None,
-								variant: true,
-								clothing: None,
-							},
-						),
-					);
-				}
+				decals.insert(0, (i32::MIN, layer));
 			}
 			// clothing over the body part, under its decals
-			if let Some(&(section, in_section, centre, half)) = sections.get(&i) {
-				let at = decals.iter().take_while(|(z, _)| *z == i32::MIN).count();
-				let layers = clothing_images.iter().filter(|c| c.0 == section).rev();
-				for (_, material, colour, graphic) in layers {
-					let mut regions = section.regions();
-					if *graphic {
-						// a T-shirt covers the front of the torso
-						regions = [[0.0; 4]; 6];
-						regions[5] = [0.0, 0.0, 1.0, 1.0];
-					}
-					decals.insert(
-						at,
-						(
-							i32::MIN,
-							PartDecal {
-								face: 0,
-								tiles: None,
-								colour: *colour,
-								transparency: 0.0,
-								material: material.clone(),
-								gpu: None,
-								variant: false,
-								clothing: Some((
-									ClothingDraw {
-										regions,
-										centre,
-										half,
-									},
-									in_section,
-								)),
-							},
-						),
-					);
-				}
+			if let Some(section) = sections.get(&i) {
+				insert_clothing(&mut decals, section, &clothing);
 			}
 			parts.push(PartView {
 				index: i,
@@ -946,6 +734,7 @@ mod fixtures {
 
 #[cfg(test)]
 mod tests {
+	use super::decals::Section;
 	use super::fixtures::placed_part;
 	use super::*;
 

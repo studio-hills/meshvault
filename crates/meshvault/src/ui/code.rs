@@ -1,6 +1,8 @@
 //! Luau source shown in the app, with syntax highlighting in the theme's
 //! colours.
 
+use std::ops::Range;
+
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
 
@@ -63,15 +65,13 @@ fn colour(p: &Palette, kind: Kind) -> Color32 {
 /// Splits Luau source into runs of one kind each.
 fn tokens(code: &str) -> Vec<(Kind, &str)> {
 	let bytes = code.as_bytes();
-	let mut out: Vec<(Kind, &str)> = Vec::new();
+	// byte ranges into `code`, sliced once at the end
+	let mut runs: Vec<(Kind, Range<usize>)> = Vec::new();
 	let mut push = |kind, from: usize, to: usize| {
 		// neighbouring plain runs join, so the layout has fewer sections
-		match out.last_mut() {
-			Some((Kind::Plain, last)) if kind == Kind::Plain => {
-				let start = last.as_ptr() as usize - code.as_ptr() as usize;
-				*last = &code[start..to];
-			}
-			_ => out.push((kind, &code[from..to])),
+		match runs.last_mut() {
+			Some((Kind::Plain, last)) if kind == Kind::Plain => last.end = to,
+			_ => runs.push((kind, from..to)),
 		}
 	};
 	let mut i = 0;
@@ -125,7 +125,9 @@ fn tokens(code: &str) -> Vec<(Kind, &str)> {
 			push(Kind::Plain, start, i);
 		}
 	}
-	out
+	runs.into_iter()
+		.map(|(kind, range)| (kind, &code[range]))
+		.collect()
 }
 
 /// `code` laid out in `font` with Luau syntax highlighting, wrapping at
@@ -168,6 +170,46 @@ mod tests {
 		assert_eq!(
 			tokens(code).iter().map(|(_, t)| *t).collect::<String>(),
 			code
+		);
+	}
+
+	/// Today's output for escapes, non-ASCII text and numbers, pinned so a
+	/// change to the lexer shows up here. `1e-3` splitting at the minus is
+	/// a known fault (bug B47), recorded as it is.
+	#[test]
+	fn pins_escapes_unicode_and_numbers() {
+		assert_eq!(
+			tokens(r#"s = "a\"b""#),
+			[(Kind::Plain, "s = "), (Kind::String, r#""a\"b""#)]
+		);
+		assert_eq!(
+			tokens("print(\"é\") -- café\né"),
+			[
+				(Kind::Builtin, "print"),
+				(Kind::Plain, "("),
+				(Kind::String, "\"é\""),
+				(Kind::Plain, ") "),
+				(Kind::Comment, "-- café"),
+				(Kind::Plain, "\né"),
+			]
+		);
+		assert_eq!(
+			tokens("x = 1e-3"),
+			[
+				(Kind::Plain, "x = "),
+				(Kind::Number, "1e"),
+				(Kind::Plain, "-"),
+				(Kind::Number, "3"),
+			]
+		);
+		assert_eq!(
+			tokens("y = 0xFF + 1.5"),
+			[
+				(Kind::Plain, "y = "),
+				(Kind::Number, "0xFF"),
+				(Kind::Plain, " + "),
+				(Kind::Number, "1.5"),
+			]
 		);
 	}
 }

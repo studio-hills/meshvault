@@ -37,6 +37,3 @@ binrw = "0.15.0"
 draco-core = { version = "2.3.2", default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode"], optional = true }
 ruzstd = { version = "0.8.2", default-features = false, optional = true, features = ["std"] }
 zstd = { version = "0.13.3", default-features = false, optional = true }
-
-[dev-dependencies]
-insta = "1.47.2"

@@ -1,3 +1,19 @@
+/// Asserts that `value`'s pretty Debug output (`{:#?}`) has the given 64-bit
+/// FNV-1a digest. This pins a whole decoded file without keeping a copy of its
+/// Debug output in the repository. When a change to the output is intended,
+/// print `{:#?}` to review it and take the new digest from the failure message.
+macro_rules! assert_debug_digest {
+	($value:expr, $digest:expr) => {
+		let digest = $crate::test::debug_digest(&$value);
+		assert_eq!(
+			digest,
+			$digest,
+			"Debug output of `{}` changed (digest {digest:#018x})",
+			stringify!($value)
+		);
+	};
+}
+
 #[cfg(feature = "mesh")]
 mod mesh;
 #[cfg(feature = "union-graphics")]
@@ -7,6 +23,13 @@ mod union_physics;
 
 use binrw::{BinRead, BinReaderExt, BinWrite, BinWriterExt};
 use std::io::Cursor;
+
+/// 64-bit FNV-1a of `value`'s pretty Debug output.
+pub fn debug_digest(value: &impl std::fmt::Debug) -> u64 {
+	format!("{value:#?}").bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+		(hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+	})
+}
 
 fn binread<M>(bytes: Vec<u8>) -> binrw::BinResult<(M, Cursor<Vec<u8>>)>
 where

@@ -9,42 +9,42 @@ fn mesh_100() {
 	let bytes = read("meshes/158071912").unwrap();
 	let mesh = super::readonly::<Mesh1>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision1::Version100);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0xef1ba0e85da6fa47);
 }
 #[test]
 fn mesh_200() {
 	let bytes = read("meshes/torso.mesh").unwrap();
 	let mesh = roundtrip::<Mesh2>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision2::Version200);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0xff4657fb7f7fd391);
 }
 #[test]
 fn mesh_300() {
 	let bytes = read("meshes/5115672913").unwrap();
 	let mesh = roundtrip::<Mesh3>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision3::Version300);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0x9485f3dfce3d60c6);
 }
 #[test]
 fn mesh_301() {
 	let bytes = read("meshes/5648093777").unwrap();
 	let mesh = roundtrip::<Mesh3>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision3::Version301);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0x6d2f979825129657);
 }
 #[test]
 fn mesh_401() {
 	let bytes = read("meshes/sphere.mesh").unwrap();
 	let mesh = roundtrip::<Mesh4>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision4::Version401);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0xbd678118c662afea);
 }
 #[test]
 fn mesh_401_random_padding() {
 	let bytes = read("meshes/7665777615").unwrap();
 	let mesh = roundtrip::<Mesh4>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision4::Version401);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0x511339a674f4262d);
 }
 //the only three v5.00 meshes I could find in bhop and surf
 #[test]
@@ -52,21 +52,21 @@ fn mesh_500() {
 	let bytes = read("meshes/13674780763").unwrap();
 	let mesh = roundtrip::<Mesh5>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision5::Version500);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0xcbf8f79a75c2c9f5);
 }
 #[test]
 fn mesh_500_alt1() {
 	let bytes = read("meshes/14818281896").unwrap();
 	let mesh = roundtrip::<Mesh5>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision5::Version500);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0x1516b8da7a0e1498);
 }
 #[test]
 fn mesh_500_alt2() {
 	let bytes = read("meshes/15256456161").unwrap();
 	let mesh = roundtrip::<Mesh5>(bytes).unwrap();
 	assert_eq!(mesh.revision, Revision5::Version500);
-	insta::assert_debug_snapshot!(mesh);
+	assert_debug_digest!(mesh, 0xbcaa64f924f98e12);
 }
 //also tested against ~2500 meshes from bhop and surf maps
 #[test]
@@ -90,7 +90,7 @@ fn mesh_700() {
 		assert_eq!(core.faces.len(), 268);
 		let vertex_count = core.vertices.len() as u32;
 		assert!(core.faces.iter().flat_map(|f| &f.0).all(|v| v.0 < vertex_count));
-		insta::assert_debug_snapshot!(core);
+		assert_debug_digest!(core, 0x5f2c52814f8f1186);
 	}
 }
 #[test]

@@ -283,6 +283,58 @@ fn detail(name: &str, value: impl ToString) -> (String, String) {
 mod tests {
 	use super::*;
 
+	/// binrw colours its messages; the colour codes are taken out.
+	#[test]
+	fn strip_ansi_removes_colour_codes() {
+		let e = rbx_mesh::mesh::Error::AssertFail {
+			pos: 16,
+			message: "\x1b[1;31mbad\x1b[0m size".into(),
+		};
+		assert_eq!(strip_ansi(e), "bad size at 0x10");
+	}
+
+	/// Triangles that point past the last vertex are dropped, each group
+	/// shrinks to the triangles it kept, and `finish` reports how many went.
+	#[test]
+	fn broken_triangles_are_dropped_and_counted() {
+		let mut g = Geometry::whole(
+			vec![[0.0; 3]; 3],
+			vec![[0, 1, 2], [0, 1, 3], [2, 1, 0], [5, 5, 5]],
+		);
+		g.groups = vec![0..2, 2..4];
+		let loaded = finish(Loaded {
+			format: String::new(),
+			details: Vec::new(),
+			geometry: g.clone(),
+			note: None,
+		});
+		assert_eq!(g.sanitize(), 2);
+		assert_eq!(g.triangles, [[0, 1, 2], [2, 1, 0]]);
+		assert_eq!(g.groups, [0..1, 1..2]);
+		assert_eq!(
+			loaded.details,
+			[("Invalid triangles skipped".to_string(), "2".to_string())]
+		);
+		// nothing to drop, nothing reported
+		let whole = finish(Loaded {
+			geometry: g,
+			..loaded
+		});
+		assert_eq!(whole.details.len(), 1, "only the row from before");
+	}
+
+	/// Names are split at NULs, in order, without empty ones; bytes that
+	/// are not UTF-8 are replaced, not dropped.
+	#[test]
+	fn nul_separated_names() {
+		assert_eq!(
+			nul_separated(b"\0Root\0\0Neck\xff\0"),
+			["Root", "Neck\u{fffd}"]
+		);
+		assert!(nul_separated(b"").is_empty());
+		assert!(nul_separated(b"\0\0").is_empty());
+	}
+
 	/// LOD meshes open on the finest level, even with no groups at all;
 	/// other kinds open with every group.
 	#[test]

@@ -442,3 +442,29 @@ pub(super) fn insert_clothing(
 		);
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Every body section's six face regions lie inside the template and
+	/// are not empty; the torso's front is where the template draws it.
+	#[test]
+	fn clothing_regions_lie_inside_the_template() {
+		for (_, section) in SECTIONS {
+			for [x, y, w, h] in section.regions() {
+				assert!(w > 0.0 && h > 0.0);
+				assert!(x >= 0.0 && y >= 0.0 && x + w <= 1.0 && y + h <= 1.0);
+			}
+		}
+		let front = Section::Torso.regions()[NormalId::Front as usize];
+		assert_eq!(
+			front,
+			[231.0 / 585.0, 74.0 / 559.0, 128.0 / 585.0, 128.0 / 559.0]
+		);
+		// the shirt's right arm and the pants' right leg share one layout,
+		// the left ones another
+		assert_eq!(Section::RightArm.regions(), Section::RightLeg.regions());
+		assert_ne!(Section::RightArm.regions(), Section::LeftArm.regions());
+	}
+}

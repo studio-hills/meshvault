@@ -801,8 +801,48 @@ mod tests {
 	use super::fixtures::placed_part;
 	use super::*;
 
+	/// Poses every playable clip of `view` at 21 times, checking that each
+	/// pose is finite and the draw count adds up. Returns the poses solved.
+	fn play_every_clip(view: &mut ModelView) -> usize {
+		let mut frames = 0;
+		for c in 0..view.clips.len() {
+			if view.clips[c].clip.is_err() {
+				continue;
+			}
+			view.select(Some(c));
+			let duration = view.duration();
+			for step in 0..=20 {
+				view.set_time(duration * step as f32 / 20.0);
+				let n = view.scene_parts(None).len();
+				frames += 1;
+				for (k, cf) in view.posed.parts.iter().enumerate() {
+					assert!(
+						cf.pos
+							.iter()
+							.chain(cf.rot.iter().flatten())
+							.all(|v| v.is_finite()),
+						"{} clip {} part {k} is not finite",
+						view.path,
+						view.clips[c].name
+					);
+				}
+				// a visible part draws once, plus once for each decal,
+				// clothing layer and MaterialVariant over it
+				let most: usize = view
+					.parts
+					.iter()
+					.filter(|p| p.visible)
+					.map(|p| 1 + p.decals.len())
+					.sum();
+				assert!(n <= most, "{n} draws for at most {most}");
+			}
+		}
+		frames
+	}
+
 	/// Plays every clip of every model in a real export (without meshes):
 	/// `MESHVAULT_EXPORT=path cargo test -p meshvault --release -- --ignored plays_real_export --nocapture`
+	/// (`RBX_V1_EXPORT` is still read when `MESHVAULT_EXPORT` is not set).
 	#[test]
 	#[ignore]
 	fn plays_real_export() {
@@ -813,38 +853,7 @@ mod tests {
 		let mut frames = 0;
 		for (i, model) in export.models.iter().enumerate() {
 			let mut view = ModelView::load(&ctx, i, model, &HashMap::new(), &HashMap::new());
-			for c in 0..view.clips.len() {
-				if view.clips[c].clip.is_err() {
-					continue;
-				}
-				view.select(Some(c));
-				let duration = view.duration();
-				for step in 0..=20 {
-					view.set_time(duration * step as f32 / 20.0);
-					let n = view.scene_parts(None).len();
-					frames += 1;
-					for (k, cf) in view.posed.parts.iter().enumerate() {
-						assert!(
-							cf.pos
-								.iter()
-								.chain(cf.rot.iter().flatten())
-								.all(|v| v.is_finite()),
-							"{} clip {} part {k} is not finite",
-							model.path,
-							view.clips[c].name
-						);
-					}
-					// a visible part draws once, plus once for each decal,
-					// clothing layer and MaterialVariant over it
-					let most: usize = view
-						.parts
-						.iter()
-						.filter(|p| p.visible)
-						.map(|p| 1 + p.decals.len())
-						.sum();
-					assert!(n <= most, "{n} draws for at most {most}");
-				}
-			}
+			frames += play_every_clip(&mut view);
 			println!(
 				"{}: {} parts, {} clips, {} warnings",
 				model.path,
@@ -854,6 +863,132 @@ mod tests {
 			);
 		}
 		println!("{frames} poses solved");
+	}
+
+	/// Opens every model of a real workspace as the app does, with its
+	/// downloaded meshes, maps and images, so clothing, decals and
+	/// MaterialVariants draw; plays every clip and prints each model's
+	/// warnings and layer counts. Reads the workspace, never writes it:
+	/// `MESHVAULT_WS=<workspace folder> cargo test -p meshvault --release -- --ignored plays_workspace_models --nocapture`
+	#[test]
+	#[ignore]
+	fn plays_workspace_models() {
+		let root = std::env::var("MESHVAULT_WS").expect("set MESHVAULT_WS to a workspace folder");
+		let ws = crate::workspace::Workspace::open(std::path::Path::new(&root)).unwrap();
+		let ctx = egui::Context::default();
+		let mut frames = 0;
+		for i in 0..ws.models().len() {
+			let load = crate::workspace::view_loader::model_loader(&ws, i).unwrap();
+			let mut view = match load(&ctx) {
+				Ok(view) => view,
+				Err(e) => {
+					println!("{}: {e}", ws.models()[i].name);
+					continue;
+				}
+			};
+			frames += play_every_clip(&mut view);
+			let layers: usize = view.parts.iter().map(|p| p.decals.len()).sum();
+			println!(
+				"{}: {} parts, {} layers, {} clips",
+				view.path,
+				view.parts.len(),
+				layers,
+				view.clips.len()
+			);
+			for w in &view.warnings {
+				println!("  {w}");
+			}
+		}
+		println!("{frames} poses solved");
+	}
+
+	/// A part and one clip of `duration` seconds, playing from the start.
+	fn view_with_clip(duration: f32, looped: bool) -> ModelView {
+		use crate::anim::rig::Binding;
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![placed_part(Some("Part"), Some("Block"), "Torso", [0.0; 3])],
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		assert!(!view.playing && view.current.is_none(), "no clips yet");
+		view.clips.push(ClipSlot {
+			name: "Clip".into(),
+			status: ClipStatus::KeyframeSequence,
+			priority: String::new(),
+			animation_id: String::new(),
+			clip: Ok(Clip {
+				duration,
+				looped,
+				tracks: Vec::new(),
+				markers: Vec::new(),
+				skipped_curves: 0,
+				face: Vec::new(),
+			}),
+			binding: Binding::default(),
+			mesh_bone_tracks: 0,
+		});
+		view.select(Some(0));
+		view.playing = true;
+		view
+	}
+
+	/// A looping clip wraps round at its end, at any speed.
+	#[test]
+	fn looping_clips_wrap_round() {
+		let mut view = view_with_clip(2.0, true);
+		assert!(view.looping, "select takes the clip's looping");
+		assert!(view.tick(0.5));
+		assert_eq!(view.time, 0.5);
+		assert!(view.tick(2.0));
+		assert_eq!(view.time, 0.5);
+		view.speed = 2.0;
+		assert!(view.tick(1.0));
+		assert_eq!(view.time, 0.5);
+		// paused, time stands still
+		view.toggle_play();
+		assert!(!view.tick(1.0));
+		assert_eq!(view.time, 0.5);
+		view.toggle_play();
+		assert!(view.playing && view.time == 0.5, "resumes where it was");
+	}
+
+	/// A one-shot clip stops on its last frame; playing it again from
+	/// there starts it over, but playing it after a pause does not.
+	#[test]
+	fn one_shot_clips_stop_at_the_end_and_restart() {
+		let mut view = view_with_clip(2.0, false);
+		assert!(view.tick(1.5));
+		assert_eq!(view.time, 1.5);
+		assert!(!view.tick(1.0));
+		assert_eq!((view.time, view.playing), (2.0, false));
+		assert!(!view.tick(1.0), "a stopped clip does not move");
+		assert_eq!(view.time, 2.0);
+		view.toggle_play();
+		assert_eq!((view.time, view.playing), (0.0, true));
+		view.tick(0.5);
+		view.toggle_play();
+		view.toggle_play();
+		assert_eq!((view.time, view.playing), (0.5, true));
+		// the rest pose plays nothing
+		view.reset();
+		assert!(!view.playing && view.current.is_none());
+		view.toggle_play();
+		assert!(!view.playing && !view.tick(1.0));
+	}
+
+	/// A clip of no length stays at time 0. Pinned as it is today: even a
+	/// one-shot one keeps playing, so tick keeps asking for frames (bug
+	/// B24). The fix flips the one-shot half of this test.
+	#[test]
+	fn zero_length_clips_stay_at_the_start_and_keep_playing() {
+		for looped in [true, false] {
+			let mut view = view_with_clip(0.0, looped);
+			assert!(view.tick(0.1), "looped {looped}");
+			assert_eq!((view.time, view.playing), (0.0, true), "looped {looped}");
+		}
 	}
 
 	// ---------------------------------------------- characterisation (SCN-11a)

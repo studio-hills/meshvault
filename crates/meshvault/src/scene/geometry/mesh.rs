@@ -309,6 +309,32 @@ mod tests {
 		}
 	}
 
+	/// LOD values mark where each level starts; values past the last face
+	/// are clamped, empty levels dropped, and a table with no usable level
+	/// gives one group of every face.
+	#[test]
+	fn lod_tables_become_face_ranges() {
+		use super::lod_groups;
+		use crate::scene::geometry::single_group;
+		use rbx_mesh::mesh::Lod3;
+		let all = single_group(6);
+		assert_eq!((all.len(), all[0].clone()), (1, 0..6));
+		let lods = |v: &[u32]| v.iter().map(|&x| Lod3(x)).collect::<Vec<_>>();
+		assert_eq!(lod_groups(&lods(&[0, 4, 6]), 6), [0..4, 4..6]);
+		assert_eq!(lod_groups(&lods(&[0, 4, 4, 9]), 6), [0..4, 4..6]);
+		assert_eq!(lod_groups(&[], 6), single_group(6));
+		assert_eq!(lod_groups(&lods(&[0]), 6), single_group(6));
+		assert_eq!(lod_groups(&lods(&[7, 9]), 6), single_group(6));
+		assert_eq!(lod_groups(&[], 0), single_group(0));
+	}
+
+	/// The info panel lists names on one line.
+	#[test]
+	fn name_lists_are_comma_separated() {
+		assert_eq!(super::name_list(b"Root\0Neck\0\0Head"), "Root, Neck, Head");
+		assert_eq!(super::name_list(b""), "");
+	}
+
 	/// Formats that store texture coordinates should expose one per vertex.
 	#[test]
 	fn textured_formats_have_uvs() {

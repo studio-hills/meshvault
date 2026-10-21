@@ -239,6 +239,102 @@ mod tests {
 		);
 	}
 
+	/// A mesh UV is clamped to the image and kept out of the white rows.
+	#[test]
+	fn uvs_map_into_the_image_above_the_white_rows() {
+		let info = TextureInfo {
+			id: egui::TextureId::default(),
+			v_scale: 0.75,
+			white_uv: Pos2::ZERO,
+		};
+		assert_eq!(info.map([0.5, 1.0]), Pos2::new(0.5, 0.75));
+		assert_eq!(info.map([-1.0, 2.0]), Pos2::new(0.0, 0.75));
+		assert_eq!(info.map([3.0, -0.5]), Pos2::new(1.0, 0.0));
+	}
+
+	/// Every change to a material bumps its generation, except removing a
+	/// map that is not there. A slot switched off hides its map, stays off
+	/// when the map is removed, and comes back on when a map is set.
+	#[test]
+	fn material_maps_switch_on_and_off() {
+		let dir = TempDir::new("texture_material");
+		let ctx = egui::Context::default();
+		let texture = load_file(&ctx, &png(&dir, "base.png")).unwrap();
+		let mut m = Material::default();
+		m.set(Slot::Base, texture.clone());
+		assert!(m.active(Slot::Base).is_some());
+		assert_eq!(m.generation, 1);
+		m.toggle(Slot::Base, false);
+		m.toggle(Slot::Base, false);
+		assert!(m.active(Slot::Base).is_none());
+		assert!(m.maps.contains_key(&Slot::Base));
+		assert_eq!(
+			(m.disabled.as_slice(), m.generation),
+			(&[Slot::Base][..], 3)
+		);
+		m.remove(Slot::Base);
+		assert_eq!(
+			(m.disabled.as_slice(), m.generation),
+			(&[Slot::Base][..], 4)
+		);
+		m.remove(Slot::Base);
+		assert_eq!(m.generation, 4, "nothing to remove");
+		// a slot can be switched off with no map in it
+		m.toggle(Slot::Normal, false);
+		assert_eq!(m.disabled, [Slot::Base, Slot::Normal]);
+		m.set(Slot::Base, texture);
+		assert!(m.active(Slot::Base).is_some());
+		assert_eq!(
+			(m.disabled.as_slice(), m.generation),
+			(&[Slot::Normal][..], 6)
+		);
+		m.toggle(Slot::Normal, true);
+		assert!(m.disabled.is_empty());
+	}
+
+	/// Maps next to a mesh are found by name (any case), ColorMap before
+	/// the texture; a lone image is the base colour unless it is already
+	/// another map; an unreadable folder has none.
+	#[test]
+	fn sibling_maps_are_found_by_name_or_alone() {
+		let found = |files: &[&str]| {
+			let dir = TempDir::new("texture_siblings");
+			for f in files {
+				std::fs::write(dir.join(f), b"").unwrap();
+			}
+			let names = |m: BTreeMap<Slot, PathBuf>| -> Vec<(Slot, String)> {
+				m.into_iter()
+					.map(|(s, p)| (s, p.file_name().unwrap().to_string_lossy().into_owned()))
+					.collect()
+			};
+			names(find_siblings(&dir.join("Hat.mesh")))
+		};
+		assert_eq!(
+			found(&[
+				"Hat.mesh",
+				"Hat.png",
+				"Hat.color.png",
+				"hat.NORMAL.PNG",
+				"Other.roughness.png"
+			]),
+			[
+				(Slot::Base, "Hat.color.png".into()),
+				(Slot::Normal, "hat.NORMAL.PNG".into())
+			]
+		);
+		assert_eq!(found(&["Hat.png"]), [(Slot::Base, "Hat.png".into())]);
+		assert_eq!(
+			found(&["Hat.mesh", "anything.jpg"]),
+			[(Slot::Base, "anything.jpg".into())]
+		);
+		assert_eq!(
+			found(&["Hat.mesh", "Hat.metalness.png"]),
+			[(Slot::Metalness, "Hat.metalness.png".into())]
+		);
+		assert!(found(&["Hat.mesh", "a.png", "b.png", "notes.txt"]).is_empty());
+		assert!(find_siblings(Path::new("no such folder/Hat.mesh")).is_empty());
+	}
+
 	/// Maps load in order, a later one for a slot wins, and maps that are
 	/// missing or do not decode are skipped.
 	#[test]

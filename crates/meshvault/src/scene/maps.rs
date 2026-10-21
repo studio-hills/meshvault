@@ -96,3 +96,25 @@ impl Slot {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The base colour takes the ColorMap before the TextureID; every other
+	/// slot has one map, and every map feeds exactly one slot.
+	#[test]
+	fn each_map_feeds_one_slot_in_priority_order() {
+		assert_eq!(Slot::Base.sources(), [MapKind::Color, MapKind::Texture]);
+		assert_eq!(Slot::Normal.sources(), [MapKind::Normal]);
+		assert_eq!(Slot::Roughness.sources(), [MapKind::Roughness]);
+		assert_eq!(Slot::Metalness.sources(), [MapKind::Metalness]);
+		for kind in MapKind::ALL {
+			let slots = Slot::ALL.iter().filter(|s| s.sources().contains(&kind));
+			assert_eq!(slots.count(), 1, "{kind:?}");
+		}
+		// only the base colour is sRGB
+		let srgb: Vec<Slot> = Slot::ALL.into_iter().filter(|s| s.is_srgb()).collect();
+		assert_eq!(srgb, [Slot::Base]);
+	}
+}

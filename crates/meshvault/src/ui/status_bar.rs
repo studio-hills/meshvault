@@ -4,8 +4,9 @@
 use eframe::egui::{self, Align, Align2, Color32, Layout, RichText, Sense};
 
 use super::theme::{CAPTION, palette};
-use super::{icons, widgets};
+use super::{icons, unavailable_text, widgets};
 use crate::app::App;
+use crate::studio::link::{self, Status};
 
 impl App {
 	pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -31,38 +32,29 @@ impl App {
 			let receiving = self
 				.studio_progress
 				.filter(|(_, _, at)| at.elapsed().as_secs() < 60);
-			let studio = match (&self.studio_link.status, receiving) {
-				(crate::studio::link::Status::Listening, Some((done, count, _))) => ui
-					.add(
-						egui::Label::new(small(
-							format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
-							p.accent,
-						))
-						.sense(Sense::click()),
-					)
-					.on_hover_text("An export is arriving from Roblox Studio"),
-				(crate::studio::link::Status::Listening, None) => ui
-					.add(
-						egui::Label::new(small(
-							format!("{}  Studio link", icons::CIRCLE),
-							p.success,
-						))
-						.sense(Sense::click()),
-					)
-					.on_hover_text(format!(
+			let (text, colour, hover) = match (&self.studio_link.status, receiving) {
+				(Status::Listening, Some((done, count, _))) => (
+					format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
+					p.accent,
+					"An export is arriving from Roblox Studio".to_owned(),
+				),
+				(Status::Listening, None) => (
+					format!("{}  Studio link", icons::CIRCLE),
+					p.success,
+					format!(
 						"Listening on localhost:{} for exports from Roblox Studio. Click for the Command Bar line.",
-						crate::studio::link::PORT
-					)),
-				(crate::studio::link::Status::Unavailable(why), _) => ui
-					.add(
-						egui::Label::new(small(
-							format!("{}  Studio link unavailable", icons::CIRCLE),
-							p.warning,
-						))
-						.sense(Sense::click()),
-					)
-					.on_hover_text(crate::ui::unavailable_text(why)),
+						link::PORT
+					),
+				),
+				(Status::Unavailable(why), _) => (
+					format!("{}  Studio link unavailable", icons::CIRCLE),
+					p.warning,
+					unavailable_text(why),
+				),
 			};
+			let studio = ui
+				.add(egui::Label::new(small(text, colour)).sense(Sense::click()))
+				.on_hover_text(hover);
 			if widgets::pointer(studio).clicked() {
 				self.show_studio_dialog();
 			}

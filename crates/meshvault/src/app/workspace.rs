@@ -257,6 +257,14 @@ impl App {
 		self.save_workspace();
 	}
 
+	/// Shows `path` in the system file browser, or says why it could not.
+	pub fn reveal(&mut self, path: &Path) {
+		if let Err(e) = platform::reveal(path) {
+			self.toasts
+				.error(format!("Could not open the file browser: {e}"));
+		}
+	}
+
 	pub fn handle_browser(&mut self, actions: Vec<ui::library::Action>) {
 		for action in actions {
 			match action {
@@ -275,10 +283,7 @@ impl App {
 				ui::library::Action::RemoveItems(items) => {
 					self.ask(ConfirmAction::RemoveItems(items))
 				}
-				ui::library::Action::Reveal(path) => {
-					// a failure to start the file browser is not shown yet
-					let _ = platform::reveal(&path);
-				}
+				ui::library::Action::Reveal(path) => self.reveal(&path),
 				ui::library::Action::RemoveSelection { items, models } => {
 					self.ask(ConfirmAction::RemoveSelection { items, models })
 				}

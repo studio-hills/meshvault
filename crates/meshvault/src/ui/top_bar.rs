@@ -191,9 +191,8 @@ impl App {
 					.clicked()
 				{
 					ui.close();
-					if let Some(ws) = &self.workspace {
-						// a failure to start the file browser is not shown yet
-						let _ = crate::platform::reveal(&ws.root);
+					if let Some(root) = self.workspace.as_ref().map(|ws| ws.root.clone()) {
+						self.reveal(&root);
 					}
 				}
 				ui.separator();

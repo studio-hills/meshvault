@@ -62,6 +62,32 @@ fn colour(p: &Palette, kind: Kind) -> Color32 {
 	}
 }
 
+/// The level of a long bracket (`[[`, `[=[`, ..) opening at `i`: how many
+/// `=` it has.
+fn long_bracket(bytes: &[u8], i: usize) -> Option<usize> {
+	if bytes.get(i) != Some(&b'[') {
+		return None;
+	}
+	let level = bytes[i + 1..].iter().take_while(|&&b| b == b'=').count();
+	(bytes.get(i + 1 + level) == Some(&b'[')).then_some(level)
+}
+
+/// Where a long string or comment whose text starts at `from` ends: just
+/// after its closing bracket of the same level, or the end of the code.
+fn long_bracket_end(bytes: &[u8], from: usize, level: usize) -> usize {
+	let mut i = from;
+	while i < bytes.len() {
+		if bytes[i] == b']' {
+			let equals = bytes[i + 1..].iter().take_while(|&&b| b == b'=').count();
+			if equals == level && bytes.get(i + 1 + level) == Some(&b']') {
+				return i + level + 2;
+			}
+		}
+		i += 1;
+	}
+	bytes.len()
+}
+
 /// Splits Luau source into runs of one kind each.
 fn tokens(code: &str) -> Vec<(Kind, &str)> {
 	let bytes = code.as_bytes();
@@ -79,11 +105,20 @@ fn tokens(code: &str) -> Vec<(Kind, &str)> {
 		let c = bytes[i];
 		let start = i;
 		if c == b'-' && bytes.get(i + 1) == Some(&b'-') {
-			// a comment, to the end of the line
-			while i < bytes.len() && bytes[i] != b'\n' {
-				i += 1;
+			if let Some(level) = long_bracket(bytes, i + 2) {
+				// a block comment, `--[[ .. ]]`, over as many lines as it takes
+				i = long_bracket_end(bytes, i + level + 4, level);
+			} else {
+				// a comment, to the end of the line
+				while i < bytes.len() && bytes[i] != b'\n' {
+					i += 1;
+				}
 			}
 			push(Kind::Comment, start, i);
+		} else if let Some(level) = long_bracket(bytes, i) {
+			// a long string, `[[ .. ]]`
+			i = long_bracket_end(bytes, i + level + 2, level);
+			push(Kind::String, start, i);
 		} else if c == b'"' || c == b'\'' {
 			i += 1;
 			while i < bytes.len() && bytes[i] != c && bytes[i] != b'\n' {
@@ -95,7 +130,15 @@ fn tokens(code: &str) -> Vec<(Kind, &str)> {
 			i = (i + 1).min(bytes.len());
 			push(Kind::String, start, i);
 		} else if c.is_ascii_digit() {
-			while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.') {
+			// a decimal exponent may have a sign (`1e-3`); in hex, E is a digit
+			let hex = matches!(bytes.get(i + 1), Some(b'x' | b'X')) && c == b'0';
+			while i < bytes.len() {
+				let b = bytes[i];
+				let signed =
+					matches!(b, b'+' | b'-') && !hex && matches!(bytes[i - 1], b'e' | b'E');
+				if !(b.is_ascii_alphanumeric() || b == b'.' || signed) {
+					break;
+				}
 				i += 1;
 			}
 			push(Kind::Number, start, i);
@@ -174,8 +217,7 @@ mod tests {
 	}
 
 	/// Today's output for escapes, non-ASCII text and numbers, pinned so a
-	/// change to the lexer shows up here. `1e-3` splitting at the minus is
-	/// a known fault (bug B47), recorded as it is.
+	/// change to the lexer shows up here. An exponent keeps its sign.
 	#[test]
 	fn pins_escapes_unicode_and_numbers() {
 		assert_eq!(
@@ -195,11 +237,24 @@ mod tests {
 		);
 		assert_eq!(
 			tokens("x = 1e-3"),
+			[(Kind::Plain, "x = "), (Kind::Number, "1e-3")]
+		);
+		assert_eq!(
+			tokens("x = 2.5E+10-1"),
 			[
 				(Kind::Plain, "x = "),
-				(Kind::Number, "1e"),
+				(Kind::Number, "2.5E+10"),
 				(Kind::Plain, "-"),
-				(Kind::Number, "3"),
+				(Kind::Number, "1"),
+			]
+		);
+		// in hex, E is a digit: the minus is a subtraction
+		assert_eq!(
+			tokens("0xE-1"),
+			[
+				(Kind::Number, "0xE"),
+				(Kind::Plain, "-"),
+				(Kind::Number, "1"),
 			]
 		);
 		assert_eq!(
@@ -209,6 +264,54 @@ mod tests {
 				(Kind::Number, "0xFF"),
 				(Kind::Plain, " + "),
 				(Kind::Number, "1.5"),
+			]
+		);
+	}
+
+	/// Block comments and long strings run over lines to their closing
+	/// bracket of the same level (or the end of the code).
+	#[test]
+	fn block_comments_and_long_strings_span_lines() {
+		assert_eq!(
+			tokens("--[[ one\ntwo ]] x"),
+			[(Kind::Comment, "--[[ one\ntwo ]]"), (Kind::Plain, " x")]
+		);
+		assert_eq!(
+			tokens("--[==[ a ]] ]=] b\n]==]local"),
+			[
+				(Kind::Comment, "--[==[ a ]] ]=] b\n]==]"),
+				(Kind::Keyword, "local"),
+			]
+		);
+		assert_eq!(
+			tokens("s = [[a\n\"b\"]] .. [=[c]=]"),
+			[
+				(Kind::Plain, "s = "),
+				(Kind::String, "[[a\n\"b\"]]"),
+				(Kind::Plain, " .. "),
+				(Kind::String, "[=[c]=]"),
+			]
+		);
+		// never closed: to the end
+		assert_eq!(
+			tokens("--[[ open\nend"),
+			[(Kind::Comment, "--[[ open\nend")]
+		);
+		// not long brackets: a line comment, and indexing
+		assert_eq!(
+			tokens("--[ x\nt[i]"),
+			[(Kind::Comment, "--[ x"), (Kind::Plain, "\nt[i]")]
+		);
+		assert_eq!(
+			tokens("--[= x\n"),
+			[(Kind::Comment, "--[= x"), (Kind::Plain, "\n")]
+		);
+		assert_eq!(
+			tokens("t[ [[k]] ]"),
+			[
+				(Kind::Plain, "t[ "),
+				(Kind::String, "[[k]]"),
+				(Kind::Plain, " ]"),
 			]
 		);
 	}

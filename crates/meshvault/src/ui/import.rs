@@ -13,6 +13,7 @@ use eframe::egui::{self, Align, Layout, RichText};
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
 use crate::studio::export_file::{Entry, Export};
+use crate::ui::format::plural;
 use crate::ui::icons;
 use crate::ui::theme::{ROW, dialog_frame, display, palette};
 use crate::ui::tree::FolderTree;
@@ -75,10 +76,6 @@ pub enum Outcome {
 		models: Vec<AnimatedModel>,
 		download_now: bool,
 	},
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-	format!("{n} {}", if n == 1 { one } else { many })
 }
 
 impl ImportDialog {

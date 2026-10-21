@@ -5,6 +5,7 @@
 
 mod code;
 mod dialogs;
+pub(crate) mod format;
 pub mod icons;
 pub mod import;
 mod inspector;

@@ -16,6 +16,7 @@ use crate::scene::maps::Slot;
 use crate::scene::model_view::{MeshSource, ModelView};
 use crate::scene::texture::{self, Material};
 use crate::studio::export_file;
+use crate::ui::format::{format_bytes, plural};
 use crate::ui::import::{self, ImportDialog};
 use crate::ui::settings::{self, SettingsDialog};
 use crate::ui::theme;
@@ -900,7 +901,7 @@ impl App {
 		}
 		self.in_background(move |ctx| {
 			let report = crate::export::obj::export(ctx, &dir, meshes, models, format);
-			let written = plural(report.written, "model");
+			let written = plural(report.written, "model", "models");
 			if report.failed.is_empty() {
 				Ok(format!(
 					"Exported {written} {what} to {}",
@@ -989,7 +990,8 @@ impl App {
 					"Exported {name} with {} for Blender to {}. In Blender: File › Import › glTF 2.0.",
 					plural(
 						model.clips.iter().filter(|c| c.clip.is_ok()).count(),
-						"clip"
+						"clip",
+						"clips"
 					),
 					path.display()
 				))
@@ -1331,22 +1333,6 @@ pub fn slot_for_image(path: &Path) -> Slot {
 	Slot::Base
 }
 
-fn plural(n: usize, what: &str) -> String {
-	if n == 1 {
-		format!("1 {what}")
-	} else {
-		format!("{n} {what}s")
-	}
-}
-
-pub fn format_bytes(n: usize) -> String {
-	match n {
-		0..1024 => format!("{n} B"),
-		1024..1_048_576 => format!("{:.1} KiB", n as f64 / 1024.0),
-		_ => format!("{:.2} MiB", n as f64 / 1_048_576.0),
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -1363,17 +1349,6 @@ mod tests {
 		// the suffix needs its dot
 		assert_eq!(slot("normal.png"), Slot::Base);
 		assert_eq!(slot(""), Slot::Base);
-	}
-
-	#[test]
-	fn sizes_switch_unit_at_1024() {
-		assert_eq!(format_bytes(0), "0 B");
-		assert_eq!(format_bytes(1023), "1023 B");
-		assert_eq!(format_bytes(1024), "1.0 KiB");
-		assert_eq!(format_bytes(1536), "1.5 KiB");
-		assert_eq!(format_bytes(1_048_575), "1024.0 KiB");
-		assert_eq!(format_bytes(1_048_576), "1.00 MiB");
-		assert_eq!(format_bytes(5 * 1_048_576 + 1_048_576 / 4), "5.25 MiB");
 	}
 
 	fn rect(w: f32, h: f32) -> egui::Rect {

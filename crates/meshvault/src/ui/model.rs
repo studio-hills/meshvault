@@ -130,7 +130,7 @@ impl App {
 						(model.rig.motors.len().to_string(), "joints"),
 						(model.rig.bones.len().to_string(), "bones"),
 						(
-							super::inspector::format_count(model.triangle_count()),
+							super::format::format_count(model.triangle_count()),
 							"triangles",
 						),
 					],

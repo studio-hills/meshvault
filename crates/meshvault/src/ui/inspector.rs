@@ -3,9 +3,10 @@
 use crate::render::viewport::AlphaMode;
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
+use super::format::{format_bytes, format_count};
 use super::theme::{ROW, palette, semibold};
 use super::{icons, widgets};
-use crate::app::{App, format_bytes};
+use crate::app::App;
 use crate::scene::geometry::GroupKind;
 use crate::scene::maps::Slot;
 use crate::ui::ConfirmAction;
@@ -323,28 +324,4 @@ fn map_row(
 			});
 		});
 	ui.add_space(2.0);
-}
-
-/// 12345 -> "12,345"
-pub(super) fn format_count(n: usize) -> String {
-	let s = n.to_string();
-	let mut out = String::new();
-	for (i, c) in s.chars().enumerate() {
-		if i > 0 && (s.len() - i).is_multiple_of(3) {
-			out.push(',');
-		}
-		out.push(c);
-	}
-	out
-}
-
-#[cfg(test)]
-mod tests {
-	#[test]
-	fn formats_counts() {
-		assert_eq!(super::format_count(0), "0");
-		assert_eq!(super::format_count(999), "999");
-		assert_eq!(super::format_count(1000), "1,000");
-		assert_eq!(super::format_count(1234567), "1,234,567");
-	}
 }

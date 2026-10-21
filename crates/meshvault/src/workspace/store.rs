@@ -1,6 +1,7 @@
 //! Writing downloaded assets into the workspace layout: picking a file
 //! extension from the content, the raw cache of each asset, and the
-//! organised path of each target.
+//! organised path of each target (written beside the cache by the worker,
+//! then moved into place by the workspace).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,31 +64,62 @@ pub fn write_cache(root: &Path, asset_id: u64, bytes: &[u8]) {
 	}
 }
 
-/// One file written for a job: which item and use it was for, and where it went.
+/// One file written for a job, not yet in place: which item and use it is
+/// for, where it goes, and where it waits until the workspace takes it
+/// ([`Self::publish`]) or turns it down ([`Self::discard`]).
 pub struct Stored {
 	pub stem: String,
 	pub kind: AssetKind,
 	/// Relative to the workspace root.
 	pub path: String,
+	/// The written file, under the workspace's cache folder.
+	staged: PathBuf,
 }
 
-/// Writes a downloaded asset to each item's organized path.
-pub fn store(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String> {
-	let mut written = Vec::new();
-	for (stem, kind) in &job.targets {
-		let ext = sniff_extension(bytes, *kind);
-		let rel = format!("{stem}{}.{ext}", kind.file_suffix());
-		let path = root.join(&rel);
+impl Stored {
+	/// Moves the file into place under `root`, replacing any file there.
+	pub fn publish(&self, root: &Path) -> Result<(), String> {
+		let path = root.join(&self.path);
 		if let Some(parent) = path.parent() {
 			std::fs::create_dir_all(parent)
 				.map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
 		}
-		std::fs::write(&path, bytes)
-			.map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+		std::fs::rename(&self.staged, &path).map_err(|e| {
+			self.discard();
+			format!("Could not write {}: {e}", path.display())
+		})
+	}
+
+	/// Deletes the file, for a target nothing wants any more.
+	pub fn discard(&self) {
+		let _ = std::fs::remove_file(&self.staged);
+	}
+}
+
+/// Writes a downloaded asset once for each target of the job, beside the
+/// cache, ready to move to each item's organised path. Nothing in the
+/// organised folders changes until the workspace publishes them, so a job
+/// that finishes after its item was removed (and its stem perhaps reused)
+/// cannot touch another item's files.
+pub fn stage(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String> {
+	let mut written: Vec<Stored> = Vec::new();
+	for (stem, kind) in &job.targets {
+		let ext = sniff_extension(bytes, *kind);
+		let staged = temp_beside(&cache_path(root, job.asset_id));
+		let result = staged
+			.parent()
+			.map_or(Ok(()), std::fs::create_dir_all)
+			.and_then(|()| std::fs::write(&staged, bytes));
+		if let Err(e) = result {
+			let _ = std::fs::remove_file(&staged);
+			written.iter().for_each(Stored::discard);
+			return Err(format!("Could not write {}: {e}", staged.display()));
+		}
 		written.push(Stored {
 			stem: stem.clone(),
 			kind: *kind,
-			path: rel,
+			path: format!("{stem}{}.{ext}", kind.file_suffix()),
+			staged,
 		});
 	}
 	Ok(written)

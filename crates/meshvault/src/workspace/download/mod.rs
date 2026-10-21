@@ -252,6 +252,14 @@ impl Downloader {
 	fn accept(&mut self, Message { run, event }: Message, root: Option<&Path>) -> Option<Event> {
 		self.settle();
 		if root != Some(run.root.as_path()) {
+			// nothing will publish these files
+			if let Event::Finished {
+				result: Ok(written),
+				..
+			} = &event
+			{
+				written.iter().for_each(Stored::discard);
+			}
 			return None;
 		}
 		let latest = self.run.as_ref().is_some_and(|r| Arc::ptr_eq(r, &run));
@@ -337,7 +345,7 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 				}
 			}
 		};
-		let result = bytes.and_then(|bytes| store::store(root, &job, &bytes));
+		let result = bytes.and_then(|bytes| store::stage(root, &job, &bytes));
 		send(Event::Finished { job, result });
 	}
 }
@@ -805,6 +813,22 @@ mod tests {
 		}
 	}
 
+	/// Moves every file the events wrote into place under `root`, as the
+	/// workspace does for targets it still has.
+	fn publish(events: &[Event], root: &Path) {
+		for event in events {
+			if let Event::Finished {
+				result: Ok(written),
+				..
+			} = event
+			{
+				for w in written {
+					w.publish(root).unwrap();
+				}
+			}
+		}
+	}
+
 	/// Waits for the latest run to stop, returning every event polled for
 	/// `root` until then, without the final [`Event::Stopped`].
 	fn run_to_end(downloader: &mut Downloader, root: &Path) -> Vec<Event> {
@@ -846,6 +870,7 @@ mod tests {
 		let jobs = vec![mesh_job(9, "Models/Nine")];
 		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
 		let events = run_to_end(&mut downloader, &dir);
+		publish(&events, &dir);
 		assert_eq!(assets.requests(9), 1);
 		assert!(matches!(
 			&events[..],
@@ -866,7 +891,7 @@ mod tests {
 		let mut downloader = Downloader::default();
 		let jobs = vec![mesh_job(8, "Models/Eight")];
 		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
-		run_to_end(&mut downloader, &dir);
+		publish(&run_to_end(&mut downloader, &dir), &dir);
 		let cache_dir = dir.join(crate::workspace::CACHE_DIR);
 		let names: Vec<_> = std::fs::read_dir(&cache_dir)
 			.unwrap()
@@ -919,7 +944,7 @@ mod tests {
 			1,
 		);
 		drop(go);
-		run_to_end(&mut downloader, &dir);
+		publish(&run_to_end(&mut downloader, &dir), &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());
 	}
@@ -952,7 +977,7 @@ mod tests {
 		);
 		assert_eq!(downloader.total, 1);
 		gate.release();
-		run_to_end(&mut downloader, &dir);
+		publish(&run_to_end(&mut downloader, &dir), &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());
 	}
@@ -977,6 +1002,7 @@ mod tests {
 		downloader.start(&ctx, new.to_path_buf(), assets.client(), jobs, 1);
 		gate.release();
 		let events = run_to_end(&mut downloader, &new);
+		publish(&events, &new);
 		assert!(new.join("Models/Two.mesh").is_file());
 		assert!(!old.join("Models/Two.mesh").exists());
 		// the old workspace's job is not reported to the new one
@@ -1162,5 +1188,89 @@ mod tests {
 			[Event::Stopped { auth_failed: false }]
 		));
 		assert_eq!((downloader.total, downloader.completed), (0, 0));
+	}
+
+	/// An export entry for mesh `mesh_id` named `name`, at the top level.
+	fn top_entry(name: &str, mesh_id: u64) -> crate::studio::export_file::Entry {
+		crate::studio::export_file::Entry {
+			name: name.into(),
+			folder: Vec::new(),
+			mesh_id,
+			maps: Default::default(),
+			source_id: None,
+		}
+	}
+
+	/// The names in the workspace's cache folder that are not assets.
+	fn cache_leftovers(root: &Path) -> Vec<String> {
+		std::fs::read_dir(root.join(crate::workspace::CACHE_DIR))
+			.map(|dir| {
+				dir.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+					.filter(|name| name.parse::<u64>().is_err())
+					.collect()
+			})
+			.unwrap_or_default()
+	}
+
+	/// A download that finishes after its item was removed, and the stem
+	/// reused by a new item with another mesh, leaves the new item and its
+	/// file alone (B02).
+	#[test]
+	fn a_late_job_leaves_an_item_that_reused_its_stem_alone() {
+		use crate::workspace::{AssetState, Workspace};
+		let dir = TempDir::new("download_reused_stem");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let assets = Assets::new(&[(1, b"version 4.00\nOLD")]);
+		let gate = assets.api.gate("/oc/1");
+		ws.add([top_entry("Body", 1)]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		downloader.start(
+			&ctx,
+			dir.to_path_buf(),
+			assets.client(),
+			ws.pending_jobs(),
+			1,
+		);
+		gate.wait_for_request();
+		ws.remove(&[0]);
+		ws.add([top_entry("Body", 2)]);
+		assert_eq!(ws.items()[0].stem, "Models/Body");
+		gate.release();
+		for event in run_to_end(&mut downloader, &dir) {
+			if let Event::Finished { job, result } = event {
+				ws.record_download(&job, result);
+			}
+		}
+		assert_eq!(ws.items()[0].mesh, AssetState::Pending);
+		assert!(!dir.join("Models/Body.mesh").exists());
+		assert_eq!(cache_leftovers(&dir), Vec::<String>::new());
+	}
+
+	/// Results for a workspace that is no longer open are dropped, and the
+	/// files they wrote deleted (B01, B02).
+	#[test]
+	fn results_for_a_closed_workspace_leave_no_files() {
+		let (old, new) = (
+			TempDir::new("download_closed_ws"),
+			TempDir::new("download_open_ws"),
+		);
+		let assets = Assets::new(&[(1, b"version 4.00\nONE")]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let jobs = vec![mesh_job(1, "Models/One")];
+		downloader.start(&ctx, old.to_path_buf(), assets.client(), jobs, 1);
+		// with the other workspace open, every message of the run is dropped
+		loop {
+			let message = downloader.rx.recv_timeout(test_server::WATCHDOG).unwrap();
+			let stopped = matches!(message.event, Event::Stopped { .. });
+			assert!(downloader.accept(message, Some(&new)).is_none());
+			if stopped {
+				break;
+			}
+		}
+		assert_eq!(cache_leftovers(&old), Vec::<String>::new());
+		assert!(!old.join("Models/One.mesh").exists());
+		assert!(!new.join("Models/One.mesh").exists());
 	}
 }

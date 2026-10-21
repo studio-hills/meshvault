@@ -493,17 +493,31 @@ impl Workspace {
 		self.dirty = true;
 	}
 
-	/// Records a finished download: the files it wrote become `Done`, or
-	/// every target of the job becomes `Failed` with the error.
+	/// Records a finished download: the files it wrote are moved into place
+	/// and become `Done`, or every target of the job becomes `Failed` with
+	/// the error. Targets whose item no longer uses the job's asset (it was
+	/// removed while the download ran, and its stem perhaps reused) are
+	/// left alone, and their files deleted.
 	pub fn record_download(&mut self, job: &Job, result: Result<Vec<store::Stored>, String>) {
 		match result {
 			Ok(written) => {
 				for w in written {
-					self.set_state(&w.stem, w.kind, AssetState::Done { path: w.path });
+					if !self.uses(&w.stem, w.kind, job.asset_id) {
+						w.discard();
+						continue;
+					}
+					let state = match w.publish(&self.root) {
+						Ok(()) => AssetState::Done { path: w.path },
+						Err(error) => AssetState::Failed { error },
+					};
+					self.set_state(&w.stem, w.kind, state);
 				}
 			}
 			Err(error) => {
 				for (stem, kind) in &job.targets {
+					if !self.uses(stem, *kind, job.asset_id) {
+						continue;
+					}
 					self.set_state(
 						stem,
 						*kind,
@@ -512,6 +526,28 @@ impl Workspace {
 						},
 					);
 				}
+			}
+		}
+	}
+
+	/// Whether the item with `stem` (for an image, any model) still uses
+	/// asset `asset_id` as `kind`.
+	fn uses(&self, stem: &str, kind: AssetKind, asset_id: u64) -> bool {
+		let items = &self.manifest.items;
+		match kind {
+			AssetKind::Mesh => items
+				.iter()
+				.any(|i| i.stem == stem && i.mesh_id == asset_id),
+			AssetKind::Map(k) => items
+				.iter()
+				.any(|i| i.stem == stem && i.maps.get(&k).is_some_and(|m| m.id == asset_id)),
+			AssetKind::Image => {
+				image_id(stem) == Some(asset_id)
+					&& self
+						.manifest
+						.models
+						.iter()
+						.any(|m| m.images.contains_key(&asset_id))
 			}
 		}
 	}

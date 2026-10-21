@@ -8,7 +8,7 @@
 //! rebuilt from the bind pose stored in the mesh file. Each vertex then
 //! follows `world now * world at rest⁻¹` of its bones.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -166,6 +166,295 @@ fn load_asset(ctx: &egui::Context, source: &MeshSource) -> Result<MeshAsset, Str
 	})
 }
 
+/// What `load` counted while building the parts, for its summary warnings.
+#[derive(Default)]
+struct LoadCounts {
+	/// Parts not drawn: no mesh, or one that did not load.
+	missing_parts: usize,
+	/// Decals whose images did not load.
+	missing_decals: usize,
+	/// MaterialVariants drawn without some of their maps.
+	partial_variants: usize,
+	/// MaterialVariants drawn over mesh parts.
+	variants_on_meshes: usize,
+}
+
+/// Why the rest pose is not quite the saved one, when the joints place
+/// parts more than 0.01 studs from where they were.
+fn rest_pose_warning(model: &AnimatedModel, rest_error: f32) -> Option<String> {
+	// schema 2 records each joint's pose, so a difference left over is in
+	// the saved scene itself
+	(rest_error > 0.01).then(|| {
+		if model.joints.iter().any(|j| j.transform.is_some()) {
+			format!(
+				"The joints place parts up to {rest_error:.2} studs from where they were saved: the parts and their joints do not quite meet in the place (common with AnimationConstraint avatars, which Roblox pulls together once the game runs). Meshvault places them by the joints, as the running game does."
+			)
+		} else {
+			format!(
+				"The joints place parts up to {rest_error:.2} studs from where they were exported, so the model was probably captured mid-animation. Clips play from the joints' rest pose."
+			)
+		}
+	})
+}
+
+/// What a part is drawn with. Each mesh is loaded once for every part that
+/// uses it, and one that fails stays failed; `missing` counts each part not
+/// drawn.
+fn part_shape(
+	ctx: &egui::Context,
+	look: &Look,
+	mesh_ref: u32,
+	sources: &HashMap<u32, MeshSource>,
+	assets: &mut HashMap<u32, Result<Arc<MeshAsset>, String>>,
+	missing: &mut usize,
+) -> PartShape {
+	match look {
+		Look::Primitive { kind, .. } => PartShape::Primitive(*kind),
+		Look::Missing(why) => {
+			*missing += 1;
+			PartShape::Missing(why.clone())
+		}
+		Look::Mesh { .. } => {
+			let asset = assets
+				.entry(mesh_ref)
+				.or_insert_with(|| match sources.get(&mesh_ref) {
+					Some(source) => load_asset(ctx, source)
+						.map(Arc::new)
+						.map_err(|e| format!("{}: {e}", source.name)),
+					None => Err("its mesh is not in this workspace".into()),
+				});
+			match asset {
+				Ok(asset) => PartShape::Mesh(asset.clone()),
+				Err(e) => {
+					*missing += 1;
+					PartShape::Missing(e.clone())
+				}
+			}
+		}
+	}
+}
+
+/// The centre and per-axis scale fitting a part's shape to its `size`,
+/// then an offset in the part's space.
+fn fit(shape: &PartShape, look: &Look, size: V3) -> (V3, V3, V3) {
+	match (shape, look) {
+		(_, Look::Primitive { size, offset, .. }) => ([0.0; 3], *size, *offset),
+		// a SpecialMesh scales the mesh's own units instead of fitting it
+		(
+			PartShape::Mesh(_),
+			Look::Mesh {
+				special: Some((scale, offset)),
+			},
+		) => ([0.0; 3], *scale, *offset),
+		(PartShape::Mesh(asset), _) => match asset.geometry.bounds() {
+			Some((lo, hi)) => {
+				let mut centre = [0.0; 3];
+				let mut scale = [1.0; 3];
+				for k in 0..3 {
+					centre[k] = (lo[k] + hi[k]) * 0.5;
+					let extent = hi[k] - lo[k];
+					if extent > 1e-6 {
+						scale[k] = size[k] / extent;
+					}
+				}
+				(centre, scale, [0.0; 3])
+			}
+			None => ([0.0; 3], [1.0; 3], [0.0; 3]),
+		},
+		_ => ([0.0; 3], size, [0.0; 3]),
+	}
+}
+
+/// The summary warnings about the parts, in a fixed order.
+fn load_warnings(warnings: &mut Vec<String>, counts: &LoadCounts, parts: &[PartView]) {
+	let variants_on_meshes = counts.variants_on_meshes;
+	if variants_on_meshes > 0 {
+		warnings.push(format!(
+			"{variants_on_meshes} mesh parts have a MaterialVariant, drawn tiled over the part's box faces as on ordinary parts; Studio lays it out differently on meshes."
+		));
+	}
+	let variants_missing = counts.partial_variants;
+	if variants_missing > 0 {
+		warnings.push(format!(
+			"{variants_missing} parts show their MaterialVariant without some of its maps: they are not downloaded yet."
+		));
+	}
+	let decals_missing = counts.missing_decals;
+	if decals_missing > 0 {
+		warnings.push(format!(
+			"{decals_missing} decals are not drawn: their images are not downloaded yet."
+		));
+	}
+	let approximated: Vec<&str> = parts
+		.iter()
+		.filter(|p| p.visible)
+		.filter_map(|p| p.approximate.as_deref())
+		.collect();
+	if !approximated.is_empty() {
+		let mut kinds = approximated.clone();
+		kinds.sort_unstable();
+		kinds.dedup();
+		warnings.push(format!(
+			"{} parts are drawn approximately because Meshvault has no geometry for their shape: {}.",
+			approximated.len(),
+			kinds.join(", ")
+		));
+	}
+	let missing = counts.missing_parts;
+	if missing > 0 {
+		warnings.push(format!(
+			"{missing} parts are not shown because their meshes are not downloaded or could not be read. Hover them in the part list for details."
+		));
+	}
+	let unbound: usize = parts
+		.iter()
+		.filter_map(|p| p.skin.as_ref())
+		.map(|s| s.bones - s.matched)
+		.sum();
+	if unbound > 0 {
+		warnings.push(format!(
+			"{unbound} bones inside skinned meshes (such as face bones) are not in the model. They hold their bind pose unless a clip animates them by name; facial animation (FACS) is not exported."
+		));
+	}
+}
+
+/// The model's clips, each bound to the rig or with why it cannot play.
+fn clip_slots(model: &AnimatedModel, rig: &Rig, parts: &[PartView]) -> Vec<ClipSlot> {
+	model
+		.animations
+		.iter()
+		.map(|record| {
+			let clip = if record.status.is_playable() {
+				Clip::from_record(record)
+			} else {
+				Err(match record.status {
+					ClipStatus::Unavailable => "The exporter could not read this animation (it may be private or not owned by the game).".into(),
+					ClipStatus::CurveAnimationExportFailed => "The curve animation could not be exported.".into(),
+					ClipStatus::UnsupportedClipType => "This clip type is not supported by the exporter.".into(),
+					_ => format!("Status {:?} has no motion data.", record.status),
+				})
+			};
+			let binding = clip.as_ref().map(|c| rig.bind(c)).unwrap_or_default();
+			let mesh_names: HashSet<&str> = parts
+				.iter()
+				.filter_map(|p| p.skin.as_ref())
+				.flat_map(|s| s.drivers.iter())
+				.filter_map(|d| match d {
+					Driver::Mesh { name, .. } => Some(name.as_str()),
+					_ => None,
+				})
+				.collect();
+			let mesh_bone_tracks = binding
+				.unmatched
+				.iter()
+				.filter(|n| mesh_names.contains(n.as_str()))
+				.count();
+			ClipSlot {
+				name: record.name.clone(),
+				status: record.status,
+				priority: record.priority.clone(),
+				animation_id: record.animation_id.clone(),
+				clip,
+				binding,
+				mesh_bone_tracks,
+			}
+		})
+		.collect()
+}
+
+/// The scales applied to clip translations of each joint and each Bone
+/// (see [`scale_translation`]). With a model scale, also sets every skin's.
+fn translation_scales(
+	model: &AnimatedModel,
+	rig: &Rig,
+	parts: &mut [PartView],
+) -> (Vec<f32>, Vec<f32>) {
+	// bones under a resized skinned mesh move in the mesh's own units
+	let part_scale: HashMap<usize, f32> = parts
+		.iter()
+		.filter(|p| matches!(p.shape, PartShape::Mesh(_)))
+		.map(|p| (p.index, mean(p.scale)))
+		.collect();
+	// Schema 2 records Model:GetScale(), which Roblox applies to every
+	// animated translation. Schema 1 did not, so for bones it is inferred
+	// from the mesh they deform, and joints are left as they are.
+	let model_scale = model.scale.filter(|s| s.is_finite() && *s > 0.0);
+	let motor_scale = vec![model_scale.unwrap_or(1.0); rig.motors.len()];
+	if let Some(s) = model_scale {
+		for skin in parts.iter_mut().filter_map(|p| p.skin.as_mut()) {
+			skin.unit_scale = s;
+		}
+	}
+	let bone_scale = (0..rig.bones.len())
+		.map(|mut b| {
+			if let Some(s) = model_scale {
+				return s;
+			}
+			for _ in 0..=rig.bones.len() {
+				match rig.bones[b].parent {
+					BoneParent::Part(p) => return part_scale.get(&p).copied().unwrap_or(1.0),
+					BoneParent::Bone(q) => b = q,
+					BoneParent::None => break,
+				}
+			}
+			1.0
+		})
+		.collect();
+	(motor_scale, bone_scale)
+}
+
+/// A warning when clips move parts no exported joint connects (the
+/// exporters do read AnimationConstraints, so these are other or broken
+/// joints).
+fn stranded_warning(rig: &Rig, clips: &[ClipSlot]) -> Option<String> {
+	let joined: HashSet<usize> = rig.motors.iter().flat_map(|m| [m.part0, m.part1]).collect();
+	let loose: HashSet<&str> = rig
+		.parts
+		.iter()
+		.enumerate()
+		.filter(|(i, _)| !joined.contains(i))
+		.map(|(_, p)| p.name.as_str())
+		.collect();
+	let stranded = clips
+		.iter()
+		.flat_map(|c| c.binding.unmatched.iter())
+		.filter(|n| loose.contains(n.as_str()))
+		.collect::<BTreeSet<_>>();
+	(!stranded.is_empty()).then(|| {
+		format!(
+			"Its clips animate {} parts that no exported joint connects, so they stay still. Rigs built with AnimationConstraints (newer avatars) or other joint types are not in the export.",
+			stranded.len()
+		)
+	})
+}
+
+/// Bounds of the visible parts' boxes at rest, for framing.
+fn rest_bounds(parts: &[PartView], rig: &Rig, rest: &Posed) -> Option<(V3, V3)> {
+	let mut bounds: Option<(V3, V3)> = None;
+	for part in parts {
+		if !part.visible || matches!(part.shape, PartShape::Missing(_)) {
+			continue;
+		}
+		let rp = &rig.parts[part.index];
+		let rest = rest.parts[part.index];
+		let h = [rp.size[0] * 0.5, rp.size[1] * 0.5, rp.size[2] * 0.5];
+		for corner in 0..8 {
+			let local = [
+				if corner & 1 == 0 { -h[0] } else { h[0] },
+				if corner & 2 == 0 { -h[1] } else { h[1] },
+				if corner & 4 == 0 { -h[2] } else { h[2] },
+			];
+			let p = rest.point(local);
+			let (lo, hi) = bounds.get_or_insert((p, p));
+			for k in 0..3 {
+				lo[k] = lo[k].min(p[k]);
+				hi[k] = hi[k].max(p[k]);
+			}
+		}
+	}
+	bounds
+}
+
 impl ModelView {
 	/// Builds the view, reading and decoding every mesh and map. Slow for
 	/// big models, so it runs on a background thread.
@@ -180,24 +469,11 @@ impl ModelView {
 		let rig = Rig::build(model);
 		warnings.extend(rig.warnings.iter().cloned());
 		let rest = rig.rest();
-		let rest_error = rig.rest_error();
-		if rest_error > 0.01 {
-			// schema 2 records each joint's pose, so a difference left over is in
-			// the saved scene itself
-			warnings.push(if model.joints.iter().any(|j| j.transform.is_some()) {
-				format!(
-					"The joints place parts up to {rest_error:.2} studs from where they were saved: the parts and their joints do not quite meet in the place (common with AnimationConstraint avatars, which Roblox pulls together once the game runs). Meshvault places them by the joints, as the running game does."
-				)
-			} else {
-				format!(
-					"The joints place parts up to {rest_error:.2} studs from where they were exported, so the model was probably captured mid-animation. Clips play from the joints' rest pose."
-				)
-			});
-		}
+		warnings.extend(rest_pose_warning(model, rig.rest_error()));
 
-		let mut assets: HashMap<u32, Result<Arc<MeshAsset>, String>> = HashMap::new();
+		let mut assets = HashMap::new();
 		let mut images = ImageCache::new(ctx, images);
-		let mut decals_missing = 0;
+		let mut counts = LoadCounts::default();
 		// classic clothing: the images over each body section, and each
 		// section's box in the joints' rest pose
 		let (clothing, sections) = match &model.clothing {
@@ -207,62 +483,20 @@ impl ModelView {
 			),
 			None => (Vec::new(), HashMap::new()),
 		};
-		let mut variants_missing = 0;
-		let mut variants_on_meshes = 0;
 		let mut parts = Vec::with_capacity(rig.parts.len());
-		let mut missing = 0;
 		for (i, part) in rig.parts.iter().enumerate() {
 			// the rig keeps the parts in the record's order
 			let record = &model.parts[i];
 			let look = look(record);
-			let shape = if let Look::Primitive { kind, .. } = look {
-				PartShape::Primitive(kind)
-			} else if let Look::Missing(why) = &look {
-				missing += 1;
-				PartShape::Missing(why.clone())
-			} else {
-				let asset = assets.entry(part.mesh_ref).or_insert_with(|| {
-					match sources.get(&part.mesh_ref) {
-						Some(source) => load_asset(ctx, source)
-							.map(Arc::new)
-							.map_err(|e| format!("{}: {e}", source.name)),
-						None => Err("its mesh is not in this workspace".into()),
-					}
-				});
-				match asset {
-					Ok(asset) => PartShape::Mesh(asset.clone()),
-					Err(e) => {
-						missing += 1;
-						PartShape::Missing(e.clone())
-					}
-				}
-			};
-			let (centre, scale, offset) = match (&shape, &look) {
-				(_, Look::Primitive { size, offset, .. }) => ([0.0; 3], *size, *offset),
-				// a SpecialMesh scales the mesh's own units instead of fitting it
-				(
-					PartShape::Mesh(_),
-					Look::Mesh {
-						special: Some((scale, offset)),
-					},
-				) => ([0.0; 3], *scale, *offset),
-				(PartShape::Mesh(asset), _) => match asset.geometry.bounds() {
-					Some((lo, hi)) => {
-						let mut centre = [0.0; 3];
-						let mut scale = [1.0; 3];
-						for k in 0..3 {
-							centre[k] = (lo[k] + hi[k]) * 0.5;
-							let extent = hi[k] - lo[k];
-							if extent > 1e-6 {
-								scale[k] = part.size[k] / extent;
-							}
-						}
-						(centre, scale, [0.0; 3])
-					}
-					None => ([0.0; 3], [1.0; 3], [0.0; 3]),
-				},
-				_ => ([0.0; 3], part.size, [0.0; 3]),
-			};
+			let shape = part_shape(
+				ctx,
+				&look,
+				part.mesh_ref,
+				sources,
+				&mut assets,
+				&mut counts.missing_parts,
+			);
+			let (centre, scale, offset) = fit(&shape, &look, part.size);
 			let approximate = match &look {
 				Look::Primitive { approximate, .. } => approximate.clone(),
 				_ => None,
@@ -284,13 +518,13 @@ impl ModelView {
 				},
 				_ => None,
 			};
-			let mut decals = part_decals(record, &mut images, &mut decals_missing);
+			let mut decals = part_decals(record, &mut images, &mut counts.missing_decals);
 			// a MaterialVariant covers the part, under its decals
 			if let Some(v) = &record.material_variant
-				&& let Some(layer) = variant_layer(v, &mut images, &mut variants_missing)
+				&& let Some(layer) = variant_layer(v, &mut images, &mut counts.partial_variants)
 			{
 				if matches!(shape, PartShape::Mesh(_)) {
-					variants_on_meshes += 1;
+					counts.variants_on_meshes += 1;
 				}
 				decals.insert(0, (i32::MIN, layer));
 			}
@@ -320,146 +554,12 @@ impl ModelView {
 					.collect(),
 			});
 		}
-		if variants_on_meshes > 0 {
-			warnings.push(format!(
-				"{variants_on_meshes} mesh parts have a MaterialVariant, drawn tiled over the part's box faces as on ordinary parts; Studio lays it out differently on meshes."
-			));
-		}
-		if variants_missing > 0 {
-			warnings.push(format!(
-				"{variants_missing} parts show their MaterialVariant without some of its maps: they are not downloaded yet."
-			));
-		}
-		if decals_missing > 0 {
-			warnings.push(format!(
-				"{decals_missing} decals are not drawn: their images are not downloaded yet."
-			));
-		}
-		let approximated: Vec<&str> = parts
-			.iter()
-			.filter(|p| p.visible)
-			.filter_map(|p| p.approximate.as_deref())
-			.collect();
-		if !approximated.is_empty() {
-			let mut kinds = approximated.clone();
-			kinds.sort_unstable();
-			kinds.dedup();
-			warnings.push(format!(
-				"{} parts are drawn approximately because Meshvault has no geometry for their shape: {}.",
-				approximated.len(),
-				kinds.join(", ")
-			));
-		}
-		if missing > 0 {
-			warnings.push(format!(
-				"{missing} parts are not shown because their meshes are not downloaded or could not be read. Hover them in the part list for details."
-			));
-		}
-		let unbound: usize = parts
-			.iter()
-			.filter_map(|p| p.skin.as_ref())
-			.map(|s| s.bones - s.matched)
-			.sum();
-		if unbound > 0 {
-			log_unbound(&mut warnings, unbound);
-		}
+		load_warnings(&mut warnings, &counts, &parts);
+		let clips = clip_slots(model, &rig, &parts);
+		let (motor_scale, bone_scale) = translation_scales(model, &rig, &mut parts);
+		warnings.extend(stranded_warning(&rig, &clips));
 
-		let clips: Vec<ClipSlot> = model
-			.animations
-			.iter()
-			.map(|record| {
-				let clip = if record.status.is_playable() {
-					Clip::from_record(record)
-				} else {
-					Err(match record.status {
-						ClipStatus::Unavailable => "The exporter could not read this animation (it may be private or not owned by the game).".into(),
-						ClipStatus::CurveAnimationExportFailed => "The curve animation could not be exported.".into(),
-						ClipStatus::UnsupportedClipType => "This clip type is not supported by the exporter.".into(),
-						_ => format!("Status {:?} has no motion data.", record.status),
-					})
-				};
-				let binding = clip.as_ref().map(|c| rig.bind(c)).unwrap_or_default();
-				let mesh_names: std::collections::HashSet<&str> = parts
-					.iter()
-					.filter_map(|p| p.skin.as_ref())
-					.flat_map(|s| s.drivers.iter())
-					.filter_map(|d| match d {
-						Driver::Mesh { name, .. } => Some(name.as_str()),
-						_ => None,
-					})
-					.collect();
-				let mesh_bone_tracks = binding
-					.unmatched
-					.iter()
-					.filter(|n| mesh_names.contains(n.as_str()))
-					.count();
-				ClipSlot {
-					name: record.name.clone(),
-					status: record.status,
-					priority: record.priority.clone(),
-					animation_id: record.animation_id.clone(),
-					clip,
-					binding,
-					mesh_bone_tracks,
-				}
-			})
-			.collect();
-
-		// bones under a resized skinned mesh move in the mesh's own units
-		let part_scale: HashMap<usize, f32> = parts
-			.iter()
-			.filter(|p| matches!(p.shape, PartShape::Mesh(_)))
-			.map(|p| (p.index, mean(p.scale)))
-			.collect();
-		// Schema 2 records Model:GetScale(), which Roblox applies to every
-		// animated translation. Schema 1 did not, so for bones it is inferred
-		// from the mesh they deform, and joints are left as they are.
-		let model_scale = model.scale.filter(|s| s.is_finite() && *s > 0.0);
-		let motor_scale = vec![model_scale.unwrap_or(1.0); rig.motors.len()];
-		if let Some(s) = model_scale {
-			for skin in parts.iter_mut().filter_map(|p| p.skin.as_mut()) {
-				skin.unit_scale = s;
-			}
-		}
-		let bone_scale = (0..rig.bones.len())
-			.map(|mut b| {
-				if let Some(s) = model_scale {
-					return s;
-				}
-				for _ in 0..=rig.bones.len() {
-					match rig.bones[b].parent {
-						BoneParent::Part(p) => return part_scale.get(&p).copied().unwrap_or(1.0),
-						BoneParent::Bone(q) => b = q,
-						BoneParent::None => break,
-					}
-				}
-				1.0
-			})
-			.collect();
-
-		// clips that move parts no exported joint connects (the exporters do
-		// read AnimationConstraints, so these are other or broken joints)
-		let joined: std::collections::HashSet<usize> =
-			rig.motors.iter().flat_map(|m| [m.part0, m.part1]).collect();
-		let loose: std::collections::HashSet<&str> = rig
-			.parts
-			.iter()
-			.enumerate()
-			.filter(|(i, _)| !joined.contains(i))
-			.map(|(_, p)| p.name.as_str())
-			.collect();
-		let stranded = clips
-			.iter()
-			.flat_map(|c| c.binding.unmatched.iter())
-			.filter(|n| loose.contains(n.as_str()))
-			.collect::<std::collections::BTreeSet<_>>();
-		if !stranded.is_empty() {
-			warnings.push(format!(
-				"Its clips animate {} parts that no exported joint connects, so they stay still. Rigs built with AnimationConstraints (newer avatars) or other joint types are not in the export.",
-				stranded.len()
-			));
-		}
-
+		let bounds = rest_bounds(&parts, &rig, &rest);
 		let mut view = Self {
 			motor_scale,
 			bone_scale,
@@ -474,8 +574,8 @@ impl ModelView {
 			playing: false,
 			looping: true,
 			speed: 1.0,
-			camera: Camera::framing_bounds(None),
-			bounds: None,
+			camera: Camera::framing_bounds(bounds),
+			bounds,
 			warnings,
 			show_blocks: true,
 			scale: model.scale,
@@ -485,41 +585,12 @@ impl ModelView {
 			clips,
 			parts,
 		};
-		view.bounds = view.rest_bounds();
-		view.camera = Camera::framing_bounds(view.bounds);
 		// start playing the first clip that can play
 		if let Some(first) = view.clips.iter().position(|c| c.clip.is_ok()) {
 			view.select(Some(first));
 			view.playing = true;
 		}
 		view
-	}
-
-	/// Bounds of the visible parts at rest, for framing.
-	fn rest_bounds(&self) -> Option<(V3, V3)> {
-		let mut bounds: Option<(V3, V3)> = None;
-		for part in &self.parts {
-			if !part.visible || matches!(part.shape, PartShape::Missing(_)) {
-				continue;
-			}
-			let rp = &self.rig.parts[part.index];
-			let rest = self.rest.parts[part.index];
-			let h = [rp.size[0] * 0.5, rp.size[1] * 0.5, rp.size[2] * 0.5];
-			for corner in 0..8 {
-				let local = [
-					if corner & 1 == 0 { -h[0] } else { h[0] },
-					if corner & 2 == 0 { -h[1] } else { h[1] },
-					if corner & 4 == 0 { -h[2] } else { h[2] },
-				];
-				let p = rest.point(local);
-				let (lo, hi) = bounds.get_or_insert((p, p));
-				for k in 0..3 {
-					lo[k] = lo[k].min(p[k]);
-					hi[k] = hi[k].max(p[k]);
-				}
-			}
-		}
-		bounds
 	}
 
 	pub fn home(&self) -> Camera {
@@ -670,12 +741,6 @@ impl ModelView {
 			})
 			.sum()
 	}
-}
-
-fn log_unbound(warnings: &mut Vec<String>, unbound: usize) {
-	warnings.push(format!(
-		"{unbound} bones inside skinned meshes (such as face bones) are not in the model. They hold their bind pose unless a clip animates them by name; facial animation (FACS) is not exported."
-	));
 }
 
 /// Test fixtures shared by the model view's test modules.

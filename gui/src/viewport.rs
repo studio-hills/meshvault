@@ -5,7 +5,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::geometry::Geometry;
-use crate::gpu::{GpuRenderer, GpuScene, Uniforms, linear_rgb};
+use crate::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms, linear_rgb};
 use crate::maps::Slot;
 use crate::texture::Material;
 
@@ -504,6 +504,36 @@ fn draw_gpu(
 	settings: &ViewSettings,
 	renderer: &GpuRenderer,
 ) {
+	let aspect = rect.width() / rect.height().max(1.0);
+	let callback = mesh_callback(parts, camera, settings, renderer, aspect);
+	painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+		rect, callback,
+	));
+}
+
+/// Draws `parts` off screen into a `size` image with a transparent
+/// background (no grid or axes).
+pub fn render_image(
+	parts: &mut [ScenePart],
+	camera: &Camera,
+	settings: &ViewSettings,
+	renderer: &GpuRenderer,
+	size: [u32; 2],
+) -> image::RgbaImage {
+	let aspect = size[0] as f32 / size[1].max(1) as f32;
+	let callback = mesh_callback(parts, camera, settings, renderer, aspect);
+	renderer.render_image(&callback, size)
+}
+
+/// Uploads what `parts` need to the GPU and builds the draw for a view
+/// `aspect` times wider than it is tall.
+fn mesh_callback(
+	parts: &mut [ScenePart],
+	camera: &Camera,
+	settings: &ViewSettings,
+	renderer: &GpuRenderer,
+	aspect: f32,
+) -> MeshCallback {
 	for part in parts.iter_mut() {
 		let geometry = part.geometry;
 		let colours = || -> Vec<[f32; 3]> {
@@ -539,7 +569,6 @@ fn draw_gpu(
 	];
 	// perspective with a 70° vertical field of view, depth mapped to 0..1
 	let f = 1.0 / 35f32.to_radians().tan();
-	let aspect = rect.width() / rect.height().max(1.0);
 	let near = camera.radius * 0.01;
 	let far = camera.distance + camera.radius * 4.0;
 	let proj = [
@@ -658,10 +687,7 @@ fn draw_gpu(
 		};
 		Some((scene, part.groups, uniforms))
 	});
-	let callback = renderer.callback(draws, settings.cull_backfaces);
-	painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
-		rect, callback,
-	));
+	renderer.callback(draws, settings.cull_backfaces)
 }
 
 /// Software fallback: flat shading, triangles sorted back to front.

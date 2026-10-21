@@ -10,6 +10,8 @@
 //!   Models/<Folder>/<Name>.normal.png   SurfaceAppearance maps (.color, .normal, ...)
 //!   Rigs/<Path>.rig.json           animated models: a schema 1 export holding one model
 //!   .cache/<asset id>              one raw copy per asset id, so duplicates download once
+//!   .cache/thumbnails/<hash>.png   the library's pictures of models (see `thumbnails`)
+//!   .cache/facts.json              what the library filters on, per mesh (see `facts`)
 //! ```
 
 use std::collections::{BTreeMap, HashMap, HashSet};

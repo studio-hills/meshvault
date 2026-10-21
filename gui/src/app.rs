@@ -115,6 +115,8 @@ pub struct App {
 	pub studio_dialog: Option<StudioDialog>,
 	/// Pieces of an export from Studio received so far, out of how many, and when.
 	pub studio_progress: Option<(usize, usize, Instant)>,
+	/// Library models being exported as OBJ on a background thread.
+	exporting: Option<std::sync::mpsc::Receiver<crate::obj_export::Report>>,
 	last_save: Instant,
 }
 
@@ -160,6 +162,7 @@ impl App {
 			studio_link,
 			studio_dialog: None,
 			studio_progress: None,
+			exporting: None,
 			last_save: Instant::now(),
 		};
 		if let crate::studio_link::Status::Unavailable(why) = &app.studio_link.status {
@@ -632,58 +635,12 @@ impl App {
 		let Some(item) = ws.models().get(index) else {
 			return;
 		};
-		let sources: HashMap<u32, MeshSource> = item
-			.meshes
-			.iter()
-			.map(|(&mesh_ref, stem)| {
-				let found = ws.items().iter().find(|i| &i.stem == stem);
-				let source = match found {
-					Some(i) => MeshSource {
-						name: i.name.clone(),
-						mesh: match &i.mesh {
-							AssetState::Done { path } => Ok(ws.root.join(path)),
-							AssetState::Pending => Err("not downloaded yet".into()),
-							AssetState::Failed { error } => {
-								Err(format!("download failed: {error}"))
-							}
-						},
-						maps: item_maps(&ws.root, i),
-					},
-					None => MeshSource {
-						name: stem.clone(),
-						mesh: Err("removed from the workspace".into()),
-						maps: Vec::new(),
-					},
-				};
-				(mesh_ref, source)
-			})
-			.collect();
-		// decal images that are downloaded
-		let images: HashMap<u64, PathBuf> = item
-			.images
-			.iter()
-			.filter_map(|(&id, state)| match state {
-				AssetState::Done { path } => Some((id, ws.root.join(path))),
-				_ => None,
-			})
-			.collect();
-		let file = ws.root.join(&item.file);
+		let load = model_loader(ws, index);
 		let name = item.name.clone();
 		let (tx, rx) = std::sync::mpsc::channel();
 		let ctx = self.ctx.clone();
 		std::thread::spawn(move || {
-			let result = std::fs::read_to_string(&file)
-				.map_err(|e| format!("Could not read {}: {e}", file.display()))
-				.and_then(|text| export::parse(&text))
-				.and_then(|export| {
-					export
-						.models
-						.into_iter()
-						.next()
-						.ok_or_else(|| format!("{} holds no model", file.display()))
-				})
-				.map(|model| ModelView::load(&ctx, index, &model, &sources, &images));
-			let _ = tx.send(result);
+			let _ = tx.send(load(&ctx));
 			ctx.request_repaint();
 		});
 		self.loading_model = Some(LoadingModel {
@@ -827,6 +784,12 @@ impl App {
 				// deletes files, so it is confirmed first
 				workspace_ui::Action::Remove(items) => self.ask(ConfirmAction::RemoveItems(items)),
 				workspace_ui::Action::Reveal(path) => workspace_ui::reveal(&path),
+				workspace_ui::Action::RemoveSelection { items, models } => {
+					self.ask(ConfirmAction::RemoveSelection { items, models })
+				}
+				workspace_ui::Action::Export { items, models } => {
+					self.export_library(&items, &models)
+				}
 			}
 		}
 	}
@@ -887,6 +850,91 @@ impl App {
 		}
 	}
 
+	/// Exports library meshes and animated models as OBJ files into a
+	/// folder the user picks, on a background thread.
+	pub fn export_library(&mut self, items: &[usize], models: &[usize]) {
+		use crate::obj_export::{MeshJob, ModelJob};
+		if self.exporting.is_some() {
+			self.toasts.info("An export is already running.");
+			return;
+		}
+		let Some(ws) = &self.workspace else { return };
+		let meshes: Vec<MeshJob> = items
+			.iter()
+			.filter_map(|&i| {
+				let item = ws.items().get(i)?;
+				let AssetState::Done { path } = &item.mesh else {
+					return None;
+				};
+				Some(MeshJob {
+					name: item.name.clone(),
+					mesh: ws.root.join(path),
+					maps: item_maps(&ws.root, item),
+				})
+			})
+			.collect();
+		let skipped = items.len() - meshes.len();
+		let models: Vec<ModelJob> = models
+			.iter()
+			.filter(|&&i| i < ws.models().len())
+			.map(|&i| ModelJob {
+				name: ws.models()[i].name.clone(),
+				load: Box::new(model_loader(ws, i)),
+			})
+			.collect();
+		if meshes.is_empty() && models.is_empty() {
+			self.toasts
+				.info("Nothing to export: the selected meshes are not downloaded yet.");
+			return;
+		}
+		let Some(dir) = rfd::FileDialog::new()
+			.set_title("Export as OBJ into")
+			.pick_folder()
+		else {
+			return;
+		};
+		if skipped > 0 {
+			self.toasts.info(format!(
+				"{skipped} selected meshes are not downloaded yet and are skipped."
+			));
+		}
+		let (tx, rx) = std::sync::mpsc::channel();
+		let ctx = self.ctx.clone();
+		std::thread::spawn(move || {
+			let _ = tx.send(crate::obj_export::export(&ctx, &dir, meshes, models));
+			ctx.request_repaint();
+		});
+		self.exporting = Some(rx);
+	}
+
+	pub fn poll_export(&mut self) {
+		let Some(rx) = &self.exporting else { return };
+		let report = match rx.try_recv() {
+			Ok(report) => report,
+			Err(std::sync::mpsc::TryRecvError::Empty) => return,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+				self.exporting = None;
+				self.toasts.error("The export stopped unexpectedly.");
+				return;
+			}
+		};
+		self.exporting = None;
+		if report.failed.is_empty() {
+			self.toasts.success(format!(
+				"Exported {} as OBJ to {}",
+				plural(report.written, "model"),
+				report.dir.display()
+			));
+		} else {
+			self.toasts.error(format!(
+				"Exported {}; {} failed:\n{}",
+				plural(report.written, "model"),
+				report.failed.len(),
+				report.failed.join("\n")
+			));
+		}
+	}
+
 	pub fn export_obj(&mut self) {
 		let Some(doc) = &self.doc else { return };
 		let stem = doc
@@ -910,9 +958,66 @@ impl App {
 	}
 }
 
+/// Reads the workspace's model `index` with its downloaded meshes, maps
+/// and decal images. Slow, so the returned closure runs on a background
+/// thread.
+pub fn model_loader(
+	ws: &Workspace,
+	index: usize,
+) -> impl FnOnce(&egui::Context) -> Result<ModelView, String> + Send + 'static {
+	let item = &ws.models()[index];
+	let sources: HashMap<u32, MeshSource> = item
+		.meshes
+		.iter()
+		.map(|(&mesh_ref, stem)| {
+			let found = ws.items().iter().find(|i| &i.stem == stem);
+			let source = match found {
+				Some(i) => MeshSource {
+					name: i.name.clone(),
+					mesh: match &i.mesh {
+						AssetState::Done { path } => Ok(ws.root.join(path)),
+						AssetState::Pending => Err("not downloaded yet".into()),
+						AssetState::Failed { error } => Err(format!("download failed: {error}")),
+					},
+					maps: item_maps(&ws.root, i),
+				},
+				None => MeshSource {
+					name: stem.clone(),
+					mesh: Err("removed from the workspace".into()),
+					maps: Vec::new(),
+				},
+			};
+			(mesh_ref, source)
+		})
+		.collect();
+	// decal images that are downloaded
+	let images: HashMap<u64, PathBuf> = item
+		.images
+		.iter()
+		.filter_map(|(&id, state)| match state {
+			AssetState::Done { path } => Some((id, ws.root.join(path))),
+			_ => None,
+		})
+		.collect();
+	let file = ws.root.join(&item.file);
+	move |ctx: &egui::Context| {
+		std::fs::read_to_string(&file)
+			.map_err(|e| format!("Could not read {}: {e}", file.display()))
+			.and_then(|text| export::parse(&text))
+			.and_then(|export| {
+				export
+					.models
+					.into_iter()
+					.next()
+					.ok_or_else(|| format!("{} holds no model", file.display()))
+			})
+			.map(|model| ModelView::load(ctx, index, &model, &sources, &images))
+	}
+}
+
 /// Each material slot's downloaded map: the first that feeds it (ColorMap
 /// over TextureID).
-fn item_maps(root: &Path, item: &workspace::Item) -> Vec<(Slot, PathBuf)> {
+pub fn item_maps(root: &Path, item: &workspace::Item) -> Vec<(Slot, PathBuf)> {
 	Slot::ALL
 		.iter()
 		.filter_map(|&slot| {
@@ -942,6 +1047,14 @@ pub fn slot_for_image(path: &Path) -> Slot {
 		}
 	}
 	Slot::Base
+}
+
+fn plural(n: usize, what: &str) -> String {
+	if n == 1 {
+		format!("1 {what}")
+	} else {
+		format!("{n} {what}s")
+	}
 }
 
 pub fn format_bytes(n: usize) -> String {

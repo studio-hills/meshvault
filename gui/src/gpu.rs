@@ -74,6 +74,8 @@ pub struct GpuRenderer {
 	flat_normal: wgpu::TextureView,
 	/// egui renders to a non-sRGB target and expects gamma-encoded colour.
 	gamma_output: bool,
+	/// The format egui renders to, which the pipelines draw into.
+	target_format: wgpu::TextureFormat,
 }
 
 /// One uploaded mesh with its material, owned by the open document (or by
@@ -246,6 +248,7 @@ impl GpuRenderer {
 			white,
 			flat_normal,
 			gamma_output: !target_format.is_srgb(),
+			target_format,
 		})
 	}
 
@@ -400,6 +403,176 @@ impl GpuRenderer {
 	}
 }
 
+impl GpuRenderer {
+	/// Draws `callback` off screen into a `size` image whose background is
+	/// transparent. It is drawn twice, over black and over white: where the
+	/// two differ, the background shows through.
+	pub fn render_image(&self, callback: &MeshCallback, size: [u32; 2]) -> image::RgbaImage {
+		let black = self.render_over(callback, size, wgpu::Color::BLACK);
+		let white = self.render_over(callback, size, wgpu::Color::WHITE);
+		// an sRGB target blends in linear light and stores encoded values
+		let srgb = self.target_format.is_srgb();
+		let decode = |c: u8| {
+			if srgb {
+				srgb_to_linear(c)
+			} else {
+				c as f32 / 255.0
+			}
+		};
+		let encode = |v: f32| {
+			let v = v.clamp(0.0, 1.0);
+			let v = if srgb { linear_to_srgb(v) } else { v };
+			(v * 255.0).round() as u8
+		};
+		let mut out = image::RgbaImage::new(size[0], size[1]);
+		for ((o, b), w) in out.pixels_mut().zip(black.pixels()).zip(white.pixels()) {
+			let b = [0, 1, 2].map(|k| decode(b[k]));
+			let w = [0, 1, 2].map(|k| decode(w[k]));
+			// over black a surface leaves c·a, over white c·a + (1 − a)
+			let alpha = (1.0 - (0..3).map(|k| w[k] - b[k]).sum::<f32>() / 3.0).clamp(0.0, 1.0);
+			if alpha < 0.5 / 255.0 {
+				continue;
+			}
+			*o = image::Rgba([
+				encode(b[0] / alpha),
+				encode(b[1] / alpha),
+				encode(b[2] / alpha),
+				(alpha * 255.0).round() as u8,
+			]);
+		}
+		out
+	}
+
+	fn render_over(
+		&self,
+		callback: &MeshCallback,
+		[width, height]: [u32; 2],
+		clear: wgpu::Color,
+	) -> image::RgbaImage {
+		let extent = wgpu::Extent3d {
+			width,
+			height,
+			depth_or_array_layers: 1,
+		};
+		let texture = |samples, format, usage| {
+			self.device.create_texture(&wgpu::TextureDescriptor {
+				label: Some("rbx_mesh offscreen"),
+				size: extent,
+				mip_level_count: 1,
+				sample_count: samples,
+				dimension: wgpu::TextureDimension::D2,
+				format,
+				usage,
+				view_formats: &[],
+			})
+		};
+		let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
+		let msaa = texture(MSAA_SAMPLES, self.target_format, attachment);
+		let resolved = texture(
+			1,
+			self.target_format,
+			attachment | wgpu::TextureUsages::COPY_SRC,
+		);
+		let depth = texture(MSAA_SAMPLES, DEPTH_FORMAT, attachment);
+		let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+		let (msaa_view, resolved_view, depth_view) = (view(&msaa), view(&resolved), view(&depth));
+		for draw in &callback.draws {
+			self.queue
+				.write_buffer(&draw.uniform_buffer, 0, bytemuck::bytes_of(&draw.uniforms));
+		}
+		let mut encoder = self
+			.device
+			.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+		{
+			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+				label: Some("rbx_mesh offscreen"),
+				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+					view: &msaa_view,
+					depth_slice: None,
+					resolve_target: Some(&resolved_view),
+					ops: wgpu::Operations {
+						load: wgpu::LoadOp::Clear(clear),
+						store: wgpu::StoreOp::Discard,
+					},
+				})],
+				depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+					view: &depth_view,
+					depth_ops: Some(wgpu::Operations {
+						load: wgpu::LoadOp::Clear(1.0),
+						store: wgpu::StoreOp::Discard,
+					}),
+					stencil_ops: None,
+				}),
+				timestamp_writes: None,
+				occlusion_query_set: None,
+				multiview_mask: None,
+			});
+			callback.draw(&mut pass);
+		}
+		// rows of a buffer copy are aligned to 256 bytes
+		let row = (4 * width).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+			* wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+		let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("rbx_mesh offscreen readback"),
+			size: (row * height) as u64,
+			usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+			mapped_at_creation: false,
+		});
+		encoder.copy_texture_to_buffer(
+			wgpu::TexelCopyTextureInfo {
+				texture: &resolved,
+				mip_level: 0,
+				origin: wgpu::Origin3d::ZERO,
+				aspect: wgpu::TextureAspect::All,
+			},
+			wgpu::TexelCopyBufferInfo {
+				buffer: &buffer,
+				layout: wgpu::TexelCopyBufferLayout {
+					offset: 0,
+					bytes_per_row: Some(row),
+					rows_per_image: Some(height),
+				},
+			},
+			extent,
+		);
+		self.queue.submit([encoder.finish()]);
+		buffer.map_async(wgpu::MapMode::Read, .., |_| {});
+		let _ = self.device.poll(wgpu::PollType::Wait {
+			submission_index: None,
+			timeout: None,
+		});
+		let bgra = matches!(
+			self.target_format,
+			wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+		);
+		let mut image = image::RgbaImage::new(width, height);
+		// a failed readback leaves the image blank
+		if let Ok(data) = buffer.slice(..).get_mapped_range() {
+			for (y, line) in data.chunks(row as usize).take(height as usize).enumerate() {
+				for x in 0..width as usize {
+					let p = &line[x * 4..x * 4 + 4];
+					let rgba = if bgra {
+						[p[2], p[1], p[0], p[3]]
+					} else {
+						[p[0], p[1], p[2], p[3]]
+					};
+					image.put_pixel(x as u32, y as u32, image::Rgba(rgba));
+				}
+			}
+		}
+		buffer.unmap();
+		image
+	}
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+	if c <= 0.003_130_8 {
+		c * 12.92
+	} else {
+		1.055 * c.powf(1.0 / 2.4) - 0.055
+	}
+}
+
 fn build_vertices(geometry: &Geometry, colours: &[[f32; 3]]) -> (Vec<Vertex>, Vec<Range<u32>>) {
 	let mut vertices = Vec::with_capacity(geometry.triangles.len() * 3);
 	let mut groups = Vec::with_capacity(geometry.groups.len());
@@ -532,6 +705,12 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		render_pass: &mut wgpu::RenderPass<'static>,
 		_resources: &egui_wgpu::CallbackResources,
 	) {
+		self.draw(render_pass);
+	}
+}
+
+impl MeshCallback {
+	fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
 		for (pass, pipeline) in [(Pass::Opaque, 0), (Pass::Decal, 2), (Pass::SeeThrough, 1)] {
 			render_pass.set_pipeline(&self.pipelines[pipeline]);
 			for draw in self.draws.iter().filter(|d| d.pass == pass) {

@@ -19,6 +19,7 @@ impl eframe::App for App {
 		self.poll_downloads();
 		self.poll_parsing();
 		self.poll_model();
+		self.poll_export();
 		self.poll_studio_link();
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
@@ -419,9 +420,13 @@ impl App {
 	fn library(&mut self, ui: &mut egui::Ui) {
 		if let Some(ws) = &self.workspace {
 			let open_model = self.model.as_ref().map(|m| m.index);
-			let actions = self
-				.browser
-				.show(ui, ws, self.open_stem.as_deref(), open_model);
+			let actions = self.browser.show(
+				ui,
+				ws,
+				self.open_stem.as_deref(),
+				open_model,
+				self.gpu.as_deref(),
+			);
 			self.handle_browser(actions);
 		}
 	}

@@ -104,6 +104,10 @@ cargo run --release -p meshvault -- meshes/sphere.mesh
 ```
 
 - Three-pane layout: a library of workspace models, the 3D viewport with a floating toolbar, and an inspector for the model's stats, material and properties; both side panels can be hidden
+- The library shows the export's folder tree, or a grid of thumbnails grouped by folder (the button beside the title switches). Each model is drawn once, when it first scrolls into view, and its picture is kept in the workspace's `.cache/thumbnails`
+- Search by name, folder or asset id, narrow by download status, and filter (the funnel beside the search) to models with animations, skinned meshes (read once in the background and kept in `.cache/facts.json`), missing meshes, or a given map
+- Select several models with Ctrl-click and Shift-click (Ctrl+A selects everything shown, Esc clears), then retry their failed downloads, export them, or remove them at once from the bar over the library or the right-click menu
+- Export library models as Wavefront OBJ: a mesh with its colour and normal maps copied beside it and an MTL file, and an animated model as one OBJ of its parts in the pose it opens in, with each part's map or colour
 - A frameless window with Meshvault's own title bar: drag its empty space to move the window, double-click it to maximize, and use the minimize, maximize and close buttons at its right end; the edges resize it, and Windows 11 keeps its corners rounded
 - Dark and light themes, notifications for long-running work, and keyboard shortcuts (press `?` in the app for the list)
 - Open files with the Open button (Ctrl+O), drag and drop, or pass a path on the command line

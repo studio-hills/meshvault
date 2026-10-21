@@ -22,6 +22,11 @@ pub enum ConfirmAction {
 	RemoveItems(Vec<usize>),
 	/// Animated model indices; their rig files are deleted.
 	RemoveModels(Vec<usize>),
+	/// Both at once, from a selection in the library.
+	RemoveSelection {
+		items: Vec<usize>,
+		models: Vec<usize>,
+	},
 }
 
 pub struct Confirm {
@@ -188,6 +193,11 @@ impl App {
 					"Remove",
 				)
 			}
+			ConfirmAction::RemoveSelection { items, models } => (
+				format!("Remove {} models from the workspace?", items.len() + models.len()),
+				"Downloaded meshes and maps, and animated models' rigs, are deleted from the workspace folder. The download cache is kept, so importing them again is quick.".to_string(),
+				"Remove",
+			),
 		};
 		self.confirm = Some(Confirm {
 			title,
@@ -262,6 +272,11 @@ impl App {
 			ConfirmAction::RemoveAllMaps => self.remove_all_maps(),
 			ConfirmAction::RemoveItems(items) => self.remove_items(&items),
 			ConfirmAction::RemoveModels(models) => self.remove_models(&models),
+			ConfirmAction::RemoveSelection { items, models } => {
+				// models first: removing items does not move model indices
+				self.remove_models(&models);
+				self.remove_items(&items);
+			}
 		}
 	}
 

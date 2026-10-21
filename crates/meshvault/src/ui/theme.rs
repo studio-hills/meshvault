@@ -156,24 +156,24 @@ pub fn install_fonts(ctx: &egui::Context) {
 			.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
 	};
 	// Cal Sans Text UI for interface text, Cal Sans for display text
-	// (see assets/font/calsans-static-essentials/OFL.txt)
+	// (see assets/fonts/cal-sans/OFL.txt)
 	add(
 		"ui",
-		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-Regular.ttf"),
+		include_bytes!("../../assets/fonts/cal-sans/CalSansTextUI-Regular.ttf"),
 	);
 	add(
 		"ui-medium",
-		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-Medium.ttf"),
+		include_bytes!("../../assets/fonts/cal-sans/CalSansTextUI-Medium.ttf"),
 	);
 	add(
 		"ui-semibold",
-		include_bytes!("../../assets/font/calsans-static-essentials/CalSansTextUI-SemiBold.ttf"),
+		include_bytes!("../../assets/fonts/cal-sans/CalSansTextUI-SemiBold.ttf"),
 	);
 	add(
 		"display",
-		include_bytes!("../../assets/font/calsans-static-essentials/CalSans-SemiBold.ttf"),
+		include_bytes!("../../assets/fonts/cal-sans/CalSans-SemiBold.ttf"),
 	);
-	add("phosphor", include_bytes!("../../assets/Phosphor.ttf"));
+	add("phosphor", include_bytes!("../../assets/fonts/phosphor/Phosphor.ttf"));
 
 	// Phosphor first: it has only private-use icon codepoints, so it never
 	// replaces letters, and no text font can shadow an icon. Then the text

@@ -1,4 +1,4 @@
-//! Phosphor icon codepoints (see assets/PHOSPHOR-LICENSE.txt). Only the
+//! Phosphor icon codepoints (see assets/fonts/phosphor/LICENSE.txt). Only the
 //! icons this app uses are listed; add more from https://phosphoricons.com.
 
 pub const ARROWS_CLOCKWISE: &str = "\u{E094}";
@@ -60,7 +60,7 @@ pub const FILM_STRIP: &str = "\u{E792}";
 pub const WARNING: &str = "\u{E4E0}";
 pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
 
-/// Blender's logo (assets/blender.svg), drawn once at 64 pixels and kept.
+/// Blender's logo (assets/icons/blender.svg), drawn once at 64 pixels and kept.
 pub fn blender(ctx: &eframe::egui::Context) -> Option<eframe::egui::TextureHandle> {
 	use eframe::egui;
 	use resvg::{tiny_skia, usvg};
@@ -69,7 +69,7 @@ pub fn blender(ctx: &eframe::egui::Context) -> Option<eframe::egui::TextureHandl
 		return Some(texture);
 	}
 	const SIDE: u32 = 64;
-	let svg = include_bytes!("../../assets/blender.svg");
+	let svg = include_bytes!("../../assets/icons/blender.svg");
 	let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
 	let mut pixmap = tiny_skia::Pixmap::new(SIDE, SIDE)?;
 	let size = tree.size();

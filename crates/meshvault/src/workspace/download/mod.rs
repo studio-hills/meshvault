@@ -165,19 +165,12 @@ fn worker(
 		let Some(job) = shared.queue().pop_front() else {
 			return;
 		};
-		let cache = crate::workspace::cache_path(root, job.asset_id);
-		let bytes = match std::fs::read(&cache) {
-			Ok(bytes) => Ok(bytes),
-			Err(_) => {
+		let bytes = match store::read_cache(root, job.asset_id) {
+			Some(bytes) => Ok(bytes),
+			None => {
 				match client.fetch_with_retry(job.asset_id, job.wants_image(), &shared.cancel) {
 					Ok(bytes) => {
-						// best effort: the organised files are written from
-						// these bytes, so a failed cache write only means
-						// downloading again next time
-						if let Some(dir) = cache.parent() {
-							let _ = std::fs::create_dir_all(dir);
-						}
-						let _ = std::fs::write(&cache, &bytes);
+						store::write_cache(root, job.asset_id, &bytes);
 						Ok(bytes)
 					}
 					Err(FetchError::Auth(message)) => {
@@ -610,5 +603,118 @@ mod tests {
 		// cancelling again with nothing queued changes nothing
 		downloader.cancel();
 		assert_eq!(downloader.total, 2);
+	}
+
+	/// A job writing asset `asset_id` as the mesh of `stem`.
+	fn mesh_job(asset_id: u64, stem: &str) -> Job {
+		Job {
+			asset_id,
+			targets: vec![(stem.into(), crate::workspace::AssetKind::Mesh)],
+		}
+	}
+
+	/// The Open Cloud API and the CDN for some (asset id, content) pairs.
+	/// The API's requests for asset `id` are to `/oc/{id}`.
+	struct Assets {
+		api: test_server::Server,
+		_cdn: test_server::Server,
+	}
+
+	impl Assets {
+		fn new(assets: &[(u64, &[u8])]) -> Self {
+			let leak = |s: String| -> &'static str { s.leak() };
+			let cdn = serve(
+				assets
+					.iter()
+					.map(|&(id, content)| {
+						(leak(format!("/cdn/{id}")), 200, vec![], content.to_vec())
+					})
+					.collect(),
+			);
+			let api = serve(
+				assets
+					.iter()
+					.map(|&(id, _)| {
+						let location = format!(r#"{{"location":"{}/cdn/{id}"}}"#, cdn.base);
+						(
+							leak(format!("/oc/{id}")),
+							200,
+							vec![],
+							location.into_bytes(),
+						)
+					})
+					.collect(),
+			);
+			Self { api, _cdn: cdn }
+		}
+
+		fn client(&self) -> Arc<Client> {
+			Arc::new(client(&self.api.base, AuthMethod::ApiKey))
+		}
+
+		/// How many times the API was asked for asset `id`.
+		fn requests(&self, id: u64) -> usize {
+			self.api.count(&format!("GET /oc/{id} "))
+		}
+	}
+
+	/// Polls until the downloader has stopped, returning every event.
+	fn run_to_end(downloader: &mut Downloader) -> Vec<Event> {
+		let deadline = std::time::Instant::now() + test_server::WATCHDOG;
+		let mut events = Vec::new();
+		loop {
+			events.extend(downloader.poll());
+			if !downloader.is_running() {
+				events.extend(downloader.poll());
+				return events;
+			}
+			assert!(std::time::Instant::now() < deadline, "downloads timed out");
+			std::thread::sleep(Duration::from_millis(5));
+		}
+	}
+
+	/// An empty cache file, as a write cut short leaves it, is not taken
+	/// for the asset: it is downloaded again.
+	#[test]
+	fn an_empty_cache_file_is_downloaded_again() {
+		let dir = TempDir::new("download_empty_cache");
+		let cache = crate::workspace::cache_path(&dir, 9);
+		std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+		std::fs::write(&cache, b"").unwrap();
+		let assets = Assets::new(&[(9, b"version 4.00\nNINE")]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let jobs = vec![mesh_job(9, "Models/Nine")];
+		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
+		let events = run_to_end(&mut downloader);
+		assert_eq!(assets.requests(9), 1);
+		assert!(matches!(
+			&events[..],
+			[Event::Finished { result: Ok(_), .. }]
+		));
+		let written = std::fs::read(dir.join("Models/Nine.mesh")).unwrap();
+		assert_eq!(written, b"version 4.00\nNINE");
+		assert_eq!(std::fs::read(&cache).unwrap(), b"version 4.00\nNINE");
+	}
+
+	/// The cache is written whole under a temporary name, then renamed, so
+	/// it never holds part of an asset and no temporary file is left.
+	#[test]
+	fn the_cache_is_written_whole_without_leftovers() {
+		let dir = TempDir::new("download_cache_whole");
+		let assets = Assets::new(&[(8, b"version 4.00\nEIGHT")]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let jobs = vec![mesh_job(8, "Models/Eight")];
+		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
+		run_to_end(&mut downloader);
+		let cache_dir = dir.join(crate::workspace::CACHE_DIR);
+		let names: Vec<_> = std::fs::read_dir(&cache_dir)
+			.unwrap()
+			.map(|e| e.unwrap().file_name())
+			.collect();
+		assert_eq!(names, ["8"]);
+		let cached = std::fs::read(crate::workspace::cache_path(&dir, 8)).unwrap();
+		assert_eq!(cached, b"version 4.00\nEIGHT");
 	}
 }

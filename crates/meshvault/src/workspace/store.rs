@@ -1,9 +1,11 @@
 //! Writing downloaded assets into the workspace layout: picking a file
-//! extension from the content, and the organised path of each target.
+//! extension from the content, the raw cache of each asset, and the
+//! organised path of each target.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::workspace::{AssetKind, Job};
+use crate::workspace::{AssetKind, Job, cache_path};
 
 /// Picks a file extension from the content.
 pub fn sniff_extension(bytes: &[u8], kind: AssetKind) -> &'static str {
@@ -23,6 +25,41 @@ pub fn sniff_extension(bytes: &[u8], kind: AssetKind) -> &'static str {
 		"rbxmx"
 	} else {
 		"bin"
+	}
+}
+
+/// A name beside `path` for a file being written, unique within this run of
+/// the app and across apps (by process id), so writers never share one.
+fn temp_beside(path: &Path) -> PathBuf {
+	static NEXT: AtomicU64 = AtomicU64::new(0);
+	let n = NEXT.fetch_add(1, Ordering::Relaxed);
+	let name = path.file_name().unwrap_or_default().to_string_lossy();
+	path.with_file_name(format!("{name}.{}-{n}.tmp", std::process::id()))
+}
+
+/// The raw download of an asset, if it is cached. An empty file is not
+/// trusted: it is what a write cut short leaves behind.
+pub fn read_cache(root: &Path, asset_id: u64) -> Option<Vec<u8>> {
+	std::fs::read(cache_path(root, asset_id))
+		.ok()
+		.filter(|bytes| !bytes.is_empty())
+}
+
+/// Caches the raw download of an asset, best effort: the organised files
+/// are written from the bytes in hand, so a failed cache write only means
+/// downloading again next time. The file is written under a temporary name
+/// and renamed, so the cache never holds part of an asset.
+pub fn write_cache(root: &Path, asset_id: u64, bytes: &[u8]) {
+	let cache = cache_path(root, asset_id);
+	if let Some(dir) = cache.parent() {
+		let _ = std::fs::create_dir_all(dir);
+	}
+	let tmp = temp_beside(&cache);
+	if std::fs::write(&tmp, bytes)
+		.and_then(|()| std::fs::rename(&tmp, &cache))
+		.is_err()
+	{
+		let _ = std::fs::remove_file(&tmp);
 	}
 }
 

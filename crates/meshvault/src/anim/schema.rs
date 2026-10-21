@@ -242,6 +242,18 @@ impl ClipStatus {
 		)
 	}
 
+	/// Why a clip with this status cannot play, or `None` when it can.
+	pub fn unplayable_reason(self) -> Option<&'static str> {
+		match self {
+			ClipStatus::KeyframeSequence | ClipStatus::CurveAnimation => None,
+			ClipStatus::Unavailable => Some("The clip could not be loaded when it was exported."),
+			ClipStatus::CurveAnimationExportFailed => Some("The curve animation failed to export."),
+			ClipStatus::UnsupportedClipType | ClipStatus::Unknown => {
+				Some("This clip type is not supported.")
+			}
+		}
+	}
+
 	pub fn label(self) -> &'static str {
 		match self {
 			ClipStatus::KeyframeSequence => "Keyframes",

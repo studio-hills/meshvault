@@ -5,8 +5,8 @@
 
 use super::math::CFrame;
 use super::schema::{
-	AnimationClip, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle, Pose,
-	RotationKey, ScalarKey,
+	AnimationClip, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle, FaceControlPose,
+	Pose, RotationKey, ScalarKey,
 };
 
 /// One face control (JawDrop, ..) over time: NumberPoses of a keyframe
@@ -19,21 +19,29 @@ pub struct FaceTrack {
 
 #[derive(Clone, Debug)]
 enum FaceKeys {
-	Poses(Vec<(f32, f32, EasingStyle, EasingDirection)>),
+	Poses(Vec<FaceKey>),
 	Curve(Vec<ScalarKey>),
+}
+
+/// A face control's value at one keyframe.
+#[derive(Clone, Debug)]
+struct FaceKey {
+	time: f32,
+	value: f32,
+	style: EasingStyle,
+	direction: EasingDirection,
 }
 
 impl FaceTrack {
 	fn sample(&self, time: f32) -> f32 {
 		match &self.keys {
 			FaceKeys::Curve(keys) => sample_scalar(keys, time).unwrap_or(0.0),
-			FaceKeys::Poses(keys) => match segment(keys, time, |k| k.0) {
-				Err(i) => keys[i].1,
+			FaceKeys::Poses(keys) => match segment(keys, time, |k| k.time) {
+				Err(i) => keys[i].value,
 				Ok(i) => {
 					let (a, b) = (&keys[i], &keys[i + 1]);
-					let span = b.0 - a.0;
-					let t = if span > 0.0 { (time - a.0) / span } else { 1.0 };
-					a.1 + (b.1 - a.1) * pose_ease(a.2, a.3, t)
+					let t = fraction(a.time, b.time, time);
+					a.value + (b.value - a.value) * pose_ease(a.style, a.direction, t)
 				}
 			},
 		}
@@ -111,20 +119,14 @@ impl Clip {
 			skipped_curves: 0,
 			face: Vec::new(),
 		};
+		if let Some(why) = record.status.unplayable_reason() {
+			return Err(why.into());
+		}
 		match record.status {
 			ClipStatus::KeyframeSequence => clip.add_keyframes(record),
 			ClipStatus::CurveAnimation => clip.add_curves(record),
-			other => {
-				return Err(match other {
-					ClipStatus::Unavailable => {
-						"The clip could not be loaded when it was exported.".into()
-					}
-					ClipStatus::CurveAnimationExportFailed => {
-						"The curve animation failed to export.".into()
-					}
-					_ => "This clip type is not supported.".into(),
-				});
-			}
+			// the other statuses returned their reason above
+			_ => {}
 		}
 		if clip.tracks.is_empty() && clip.face.is_empty() {
 			return Err("The clip has no motion data.".into());
@@ -139,7 +141,7 @@ impl Clip {
 	fn add_keyframes(&mut self, record: &AnimationClip) {
 		let mut tracks: Vec<(TargetKey, Vec<PoseKey>)> = Vec::new();
 		let mut frames: Vec<_> = record.keyframes.iter().collect();
-		frames.sort_by(|a, b| a.time.total_cmp(&b.time));
+		sort_by_time(&mut frames, |f| f.time);
 		for frame in frames {
 			for marker in &frame.markers {
 				self.markers.push(ClipMarker {
@@ -149,13 +151,17 @@ impl Clip {
 				});
 			}
 			walk_poses(&frame.poses, None, frame.time, &mut tracks);
-			for face in frame.poses.iter().flat_map(face_controls_of) {
-				let key = (
-					frame.time,
-					face.value,
-					face.easing_style,
-					face.easing_direction,
-				);
+			let mut faces = Vec::new();
+			for pose in &frame.poses {
+				face_controls_of(pose, &mut faces);
+			}
+			for face in faces {
+				let key = FaceKey {
+					time: frame.time,
+					value: face.value,
+					style: face.easing_style,
+					direction: face.easing_direction,
+				};
 				match self.face.iter_mut().find(|t| t.control == face.name) {
 					Some(FaceTrack {
 						keys: FaceKeys::Poses(keys),
@@ -218,7 +224,7 @@ impl Clip {
 				}
 				CurveData::RotationCurve { keys } => {
 					let mut keys = keys.clone();
-					keys.sort_by(|a, b| a.time.total_cmp(&b.time));
+					sort_by_time(&mut keys, |k| k.time);
 					entry.2 = Rotation::Keys(keys);
 				}
 				// a face control: its folder is FaceControls
@@ -226,7 +232,7 @@ impl Clip {
 					if track.path.rsplit('/').next() == Some("FaceControls") =>
 				{
 					let mut keys = keys.clone();
-					keys.sort_by(|a, b| a.time.total_cmp(&b.time));
+					sort_by_time(&mut keys, |k| k.time);
 					self.face.push(FaceTrack {
 						control: track.name.clone(),
 						keys: FaceKeys::Curve(keys),
@@ -264,7 +270,7 @@ impl Clip {
 fn channels_of(channels: &Channels) -> [Vec<ScalarKey>; 3] {
 	let sorted = |keys: &Option<Vec<ScalarKey>>| {
 		let mut keys = keys.clone().unwrap_or_default();
-		keys.sort_by(|a, b| a.time.total_cmp(&b.time));
+		sort_by_time(&mut keys, |k| k.time);
 		keys
 	};
 	[
@@ -274,13 +280,19 @@ fn channels_of(channels: &Channels) -> [Vec<ScalarKey>; 3] {
 	]
 }
 
-/// Every face control pose in a pose tree.
-fn face_controls_of(pose: &Pose) -> Vec<&super::schema::FaceControlPose> {
-	let mut found: Vec<&super::schema::FaceControlPose> = pose.face_controls.iter().collect();
+/// Adds every face control pose in a pose tree to `found`, each pose's
+/// before its children's.
+fn face_controls_of<'a>(pose: &'a Pose, found: &mut Vec<&'a FaceControlPose>) {
+	found.extend(&pose.face_controls);
 	for child in &pose.children {
-		found.extend(face_controls_of(child));
+		face_controls_of(child, found);
 	}
-	found
+}
+
+/// Sorts keys by time. The sort is stable, so keys at the same time keep
+/// their exported order.
+fn sort_by_time<T>(keys: &mut [T], time: impl Fn(&T) -> f32) {
+	keys.sort_by(|a, b| time(a).total_cmp(&time(b)));
 }
 
 fn walk_poses(
@@ -383,17 +395,23 @@ fn segment<T>(keys: &[T], time: f32, key_time: impl Fn(&T) -> f32) -> Result<usi
 	Ok(i - 1)
 }
 
+/// How far `time` is from `start` to `end`, 0 to 1. Keys at the same time
+/// (or out of order) give 1, so the later key wins.
+fn fraction(start: f32, end: f32, time: f32) -> f32 {
+	let span = end - start;
+	if span > 0.0 {
+		(time - start) / span
+	} else {
+		1.0
+	}
+}
+
 fn sample_poses(keys: &[PoseKey], time: f32) -> CFrame {
 	match segment(keys, time, |k| k.time) {
 		Err(i) => keys[i].transform,
 		Ok(i) => {
 			let (a, b) = (&keys[i], &keys[i + 1]);
-			let span = b.time - a.time;
-			let t = if span > 0.0 {
-				(time - a.time) / span
-			} else {
-				1.0
-			};
+			let t = fraction(a.time, b.time, time);
 			// a pose's easing shapes the transition from it to the next pose
 			let eased = pose_ease(a.style, a.direction, t);
 			a.transform.lerp(&b.transform, eased)
@@ -525,11 +543,7 @@ fn sample_scalar(keys: &[ScalarKey], time: f32) -> Option<f32> {
 		Ok(i) => {
 			let (a, b) = (&keys[i], &keys[i + 1]);
 			let span = b.time - a.time;
-			let s = if span > 0.0 {
-				(time - a.time) / span
-			} else {
-				1.0
-			};
+			let s = fraction(a.time, b.time, time);
 			match a.interpolation.as_str() {
 				"Constant" => a.value,
 				"Cubic" => {
@@ -564,12 +578,7 @@ fn sample_rotation(keys: &[RotationKey], time: f32) -> CFrame {
 			if a.interpolation == "Constant" {
 				return ca;
 			}
-			let span = b.time - a.time;
-			let s = if span > 0.0 {
-				(time - a.time) / span
-			} else {
-				1.0
-			};
+			let s = fraction(a.time, b.time, time);
 			// cubic rotation keys are approximated by a spherical lerp
 			ca.lerp(&cb, s)
 		}
@@ -810,7 +819,6 @@ mod tests {
 	/// with nothing else still plays.
 	#[test]
 	fn face_controls_are_tracks() {
-		use crate::anim::schema::FaceControlPose;
 		let jaw = |value: f32| FaceControlPose {
 			name: "JawDrop".into(),
 			value,
@@ -865,5 +873,108 @@ mod tests {
 				.unwrap_err()
 				.contains("could not be loaded")
 		);
+	}
+
+	#[test]
+	fn every_status_plays_or_says_why_not() {
+		let cases = [
+			(ClipStatus::KeyframeSequence, "The clip has no motion data."),
+			(ClipStatus::CurveAnimation, "The clip has no motion data."),
+			(
+				ClipStatus::Unavailable,
+				"The clip could not be loaded when it was exported.",
+			),
+			(
+				ClipStatus::CurveAnimationExportFailed,
+				"The curve animation failed to export.",
+			),
+			(
+				ClipStatus::UnsupportedClipType,
+				"This clip type is not supported.",
+			),
+			(ClipStatus::Unknown, "This clip type is not supported."),
+		];
+		for (status, why) in cases {
+			assert_eq!(status.is_playable(), status.unplayable_reason().is_none());
+			// empty clips: the playable ones fail only for having no motion
+			let record = AnimationClip {
+				status,
+				..Default::default()
+			};
+			assert_eq!(Clip::from_record(&record).unwrap_err(), why, "{status:?}");
+		}
+		// with motion, both playable statuses build a clip
+		let still = Keyframe {
+			poses: vec![pose("Torso", 0.0, 1.0, vec![])],
+			..Default::default()
+		};
+		let keyframes = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			keyframes: vec![still],
+			..Default::default()
+		};
+		assert!(Clip::from_record(&keyframes).is_ok());
+		let curves = AnimationClip {
+			status: ClipStatus::CurveAnimation,
+			curves: vec![CurveTrack {
+				path: "Torso".into(),
+				name: "Position".into(),
+				curve: CurveData::Vector3Curve {
+					channels: Channels {
+						x: Some(vec![key(0.0, 1.0, "Linear")]),
+						..Default::default()
+					},
+				},
+			}],
+			..Default::default()
+		};
+		assert!(Clip::from_record(&curves).is_ok());
+	}
+
+	#[test]
+	fn fractions_of_a_segment() {
+		assert_eq!(fraction(1.0, 3.0, 2.0), 0.5);
+		assert_eq!(fraction(1.0, 3.0, 1.0), 0.0);
+		// keys at the same time, or out of order, give the later key
+		assert_eq!(fraction(2.0, 2.0, 2.0), 1.0);
+		assert_eq!(fraction(3.0, 1.0, 2.0), 1.0);
+		assert_eq!(fraction(0.0, f32::NAN, 1.0), 1.0);
+	}
+
+	#[test]
+	fn sorting_by_time_keeps_ties_in_order() {
+		let mut keys = vec![(2.0, 'a'), (1.0, 'b'), (2.0, 'c'), (1.0, 'd')];
+		sort_by_time(&mut keys, |k| k.0);
+		assert_eq!(keys, [(1.0, 'b'), (1.0, 'd'), (2.0, 'a'), (2.0, 'c')]);
+	}
+
+	#[test]
+	fn face_controls_are_gathered_parents_first() {
+		let control = |name: &str| FaceControlPose {
+			name: name.into(),
+			..Default::default()
+		};
+		let tree = Pose {
+			face_controls: vec![control("A")],
+			children: vec![
+				Pose {
+					face_controls: vec![control("B")],
+					children: vec![Pose {
+						face_controls: vec![control("C")],
+						..pose("Inner", 0.0, 0.0, vec![])
+					}],
+					..pose("Child", 0.0, 0.0, vec![])
+				},
+				Pose {
+					face_controls: vec![control("D")],
+					..pose("Second", 0.0, 0.0, vec![])
+				},
+			],
+			..pose("Root", 0.0, 0.0, vec![])
+		};
+		let mut found = Vec::new();
+		face_controls_of(&tree, &mut found);
+		let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
+		assert_eq!(names, ["A", "B", "C", "D"]);
 	}
 }

@@ -193,13 +193,16 @@ fn over_gradient(
 	bottom: egui::Color32,
 ) -> image::RgbaImage {
 	let h = image.height().max(2) - 1;
+	let (top, bottom) = (
+		[top.r(), top.g(), top.b()],
+		[bottom.r(), bottom.g(), bottom.b()],
+	);
 	image::RgbaImage::from_fn(image.width(), image.height(), |x, y| {
 		let t = y as f32 / h as f32;
-		let bg = [top.r(), top.g(), top.b()]
-			.iter()
-			.zip([bottom.r(), bottom.g(), bottom.b()])
-			.map(|(&a, b)| a as f32 + (b as f32 - a as f32) * t)
-			.collect::<Vec<f32>>();
+		let bg: [f32; 3] = std::array::from_fn(|k| {
+			let (a, b) = (top[k], bottom[k]);
+			a as f32 + (b as f32 - a as f32) * t
+		});
 		let px = image.get_pixel(x, y);
 		let a = px[3] as f32 / 255.0;
 		let mix = |k: usize| (px[k] as f32 * a + bg[k] * (1.0 - a)).round() as u8;

@@ -57,14 +57,15 @@ pub(super) fn fit_point(cf: &CFrame, scale: V3, centre: V3, v: V3) -> V3 {
 }
 
 impl PartSkin {
+	/// Binds the mesh of part `owner`, fitted to it as `fit` (the part's
+	/// mesh centre, scale and SpecialMesh offset) says.
 	pub(super) fn build(
 		skin: &Skin,
 		asset: &MeshAsset,
 		rig: &Rig,
 		rest: &Posed,
 		owner: usize,
-		centre: V3,
-		scale: V3,
+		(centre, scale, offset): (V3, V3, V3),
 	) -> Self {
 		let near = rig.parts[owner].path.as_str();
 		// a bind pose moved into part space, like the vertices
@@ -72,9 +73,9 @@ impl PartSkin {
 			let b = CFrame::from_components(c);
 			CFrame {
 				pos: [
-					(b.pos[0] - centre[0]) * scale[0],
-					(b.pos[1] - centre[1]) * scale[1],
-					(b.pos[2] - centre[2]) * scale[2],
+					(b.pos[0] - centre[0]) * scale[0] + offset[0],
+					(b.pos[1] - centre[1]) * scale[1] + offset[1],
+					(b.pos[2] - centre[2]) * scale[2] + offset[2],
 				],
 				rot: b.rot,
 			}
@@ -124,10 +125,12 @@ impl PartSkin {
 		order.sort();
 		let owner_rest = rest.parts[owner];
 		let g = &asset.geometry;
+		// SpecialMesh.Offset moves the mesh in the part's own space
+		let placed = owner_rest.mul(&CFrame::from_position(offset));
 		let rest_positions = g
 			.positions
 			.iter()
-			.map(|&v| fit_point(&owner_rest, scale, centre, v))
+			.map(|&v| fit_point(&placed, scale, centre, v))
 			.collect();
 		// normals transform by the inverse scale before rotating
 		let rest_normals = g.normals.as_ref().map(|normals| {
@@ -359,7 +362,7 @@ mod tests {
 			vec![[0.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.5, 0.0]],
 			skin.clone(),
 		);
-		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, [0.0; 3], [1.0; 3]);
+		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, ([0.0; 3], [1.0; 3], [0.0; 3]));
 		assert_eq!(ps.matched, 3);
 		// at rest nothing moves
 		assert_eq!(ps.geometry.positions[1], [0.0, -1.0, 0.0]);
@@ -398,7 +401,7 @@ mod tests {
 			facs: None,
 		};
 		let a = asset(vec![[0.0, 0.0, 2.0]; 3], skin.clone());
-		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, [0.0; 3], [1.0; 3]);
+		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, ([0.0; 3], [1.0; 3], [0.0; 3]));
 		assert_eq!(ps.matched, 1);
 		assert_eq!(ps.geometry.positions[0], [0.0, 0.0, 2.0]);
 		// a track named Jaw moving it up by 1
@@ -407,6 +410,53 @@ mod tests {
 		let p = ps.geometry.positions[0];
 		assert!(
 			(p[1] - 1.0).abs() < 1e-5 && (p[2] - 2.0).abs() < 1e-5,
+			"{p:?}"
+		);
+	}
+
+	/// A SpecialMesh's Offset moves a skinned mesh in its part's space, as
+	/// it does an unskinned one: the vertices, and the bones only the mesh
+	/// has, so a named track still moves the vertices from there.
+	#[test]
+	fn skinned_meshes_keep_their_special_mesh_offset() {
+		let (rig, _) = two_part_rig();
+		let rest = rig.rest();
+		let skin = Skin {
+			bones: vec!["Upper".into(), "Jaw".into()],
+			parents: vec![None, None],
+			binds: vec![cf([0.0; 3]), cf([0.0, 0.0, 1.0])],
+			influences: vec![
+				[(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)],
+				[(1, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)],
+				[(1, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)],
+			],
+			facs: None,
+		};
+		let a = asset(
+			vec![[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [1.0, 0.0, 2.0]],
+			skin.clone(),
+		);
+		let offset = [0.5, 0.25, -1.0];
+		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, ([0.0; 3], [2.0; 3], offset));
+		// placed as an unskinned mesh with the same fit is
+		let in_part = rest.parts[0].mul(&CFrame::from_position(offset));
+		let unskinned: Vec<V3> = (a.geometry.positions.iter())
+			.map(|&v| fit_point(&in_part, [2.0; 3], [0.0; 3], v))
+			.collect();
+		assert_eq!(unskinned[1], [0.5, 0.25, 3.0]);
+		assert_eq!(ps.rest_positions, unskinned);
+		assert_eq!(ps.geometry.positions, unskinned);
+		// the mesh-only Jaw is placed from its bind pose in the offset part
+		let Driver::Mesh { local, .. } = &ps.drivers[1] else {
+			panic!("Jaw is only in the mesh");
+		};
+		assert_eq!(local.pos, [0.5, 0.25, 1.0]);
+		let by_name = HashMap::from([("Jaw".to_string(), CFrame::from_position([0.0, 1.0, 0.0]))]);
+		ps.update(&rest, &rest, 0, &by_name, &[]);
+		let p = ps.geometry.positions[1];
+		// a track's movement is in mesh units, scaled by the mesh (2)
+		assert!(
+			(p[0] - 0.5).abs() < 1e-5 && (p[1] - 2.25).abs() < 1e-5 && (p[2] - 3.0).abs() < 1e-5,
 			"{p:?}"
 		);
 	}

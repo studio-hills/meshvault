@@ -291,7 +291,14 @@ mod tests {
 		];
 		for (i, skin) in skins.into_iter().enumerate() {
 			let a = asset(vec![[0.0; 3]; 3], skin.clone());
-			let ps = PartSkin::build(&skin, &a, &view.rig, &view.rest, i, [0.0; 3], [1.0; 3]);
+			let ps = PartSkin::build(
+				&skin,
+				&a,
+				&view.rig,
+				&view.rest,
+				i,
+				([0.0; 3], [1.0; 3], [0.0; 3]),
+			);
 			view.parts[i].shape = PartShape::Mesh(Arc::new(a));
 			view.parts[i].skin = Some(ps);
 		}

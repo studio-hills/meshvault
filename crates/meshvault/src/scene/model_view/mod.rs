@@ -494,7 +494,8 @@ impl ModelView {
 				&mut assets,
 				&mut counts.missing_parts,
 			);
-			let (centre, scale, offset) = fit(&shape, &look, part.size);
+			let fitted = fit(&shape, &look, part.size);
+			let (centre, scale, offset) = fitted;
 			let approximate = match &look {
 				Look::Primitive { approximate, .. } => approximate.clone(),
 				_ => None,
@@ -505,9 +506,7 @@ impl ModelView {
 			};
 			let skin = match &shape {
 				PartShape::Mesh(asset) => match &asset.skin {
-					Ok(Some(skin)) => {
-						Some(PartSkin::build(skin, asset, &rig, &rest, i, centre, scale))
-					}
+					Ok(Some(skin)) => Some(PartSkin::build(skin, asset, &rig, &rest, i, fitted)),
 					Ok(None) => None,
 					Err(e) => {
 						warnings.push(format!("{} is drawn without skinning: {e}", part.name));

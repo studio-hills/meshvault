@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// `Path::new(SAMPLE_MESHES).join(name)`.
 pub(crate) const SAMPLE_MESHES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
 
+/// Decodes the sample mesh with this file name.
+pub(crate) fn load_sample(name: &str) -> crate::scene::geometry::Loaded {
+	let path = std::path::Path::new(crate::test_support::SAMPLE_MESHES).join(name);
+	crate::scene::geometry::load(&std::fs::read(path).unwrap()).unwrap()
+}
+
 /// An empty folder under the system temp folder, deleted (best effort) when
 /// dropped, so a failing test does not leave it behind. Each call gets its
 /// own folder, so tests running in parallel never share one.

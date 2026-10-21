@@ -36,7 +36,7 @@ pub use self::export::ExportMesh;
 pub use self::skin::PartSkin;
 
 use self::decals::{
-	ImageCache, PartDecal, body_sections, clothing_layers, insert_clothing, part_decals,
+	ImageCache, Missing, PartDecal, body_sections, clothing_layers, insert_clothing, part_decals,
 	variant_layer,
 };
 use self::look::{BLOCK_COLOUR, INVISIBLE, Look, appearance, colour_of, look, surface_of};
@@ -171,9 +171,9 @@ struct LoadCounts {
 	/// Parts not drawn: no mesh, or one that did not load.
 	missing_parts: usize,
 	/// Decals whose images did not load.
-	missing_decals: usize,
+	missing_decals: Missing,
 	/// MaterialVariants drawn without some of their maps.
-	partial_variants: usize,
+	partial_variants: Missing,
 	/// MaterialVariants drawn over mesh parts.
 	variants_on_meshes: usize,
 }
@@ -280,17 +280,25 @@ fn load_warnings(warnings: &mut Vec<String>, counts: &LoadCounts, parts: &[PartV
 			"{variants_on_meshes} mesh parts have a MaterialVariant, drawn tiled over the part's box faces as on ordinary parts; Studio lays it out differently on meshes."
 		));
 	}
-	let variants_missing = counts.partial_variants;
-	if variants_missing > 0 {
-		warnings.push(format!(
-			"{variants_missing} parts show their MaterialVariant without some of its maps: they are not downloaded yet."
-		));
+	let variants = counts.partial_variants;
+	for (n, why) in [
+		(variants.not_downloaded, "are not downloaded yet"),
+		(variants.unreadable, "could not be read"),
+	] {
+		if n > 0 {
+			warnings.push(format!(
+				"{n} parts show their MaterialVariant without some of its maps: they {why}."
+			));
+		}
 	}
-	let decals_missing = counts.missing_decals;
-	if decals_missing > 0 {
-		warnings.push(format!(
-			"{decals_missing} decals are not drawn: their images are not downloaded yet."
-		));
+	let decals = counts.missing_decals;
+	for (n, why) in [
+		(decals.not_downloaded, "are not downloaded yet"),
+		(decals.unreadable, "could not be read"),
+	] {
+		if n > 0 {
+			warnings.push(format!("{n} decals are not drawn: their images {why}."));
+		}
 	}
 	let approximated: Vec<&str> = parts
 		.iter()
@@ -1181,7 +1189,7 @@ mod tests {
 		] {
 			images.insert(id, png(&dir, name));
 		}
-		// downloaded but not an image: still counted as not downloaded
+		// downloaded but not an image: it could not be read
 		let bad = dir.join("bad.png");
 		std::fs::write(&bad, b"not an image").unwrap();
 		images.insert(99, bad);
@@ -1271,9 +1279,8 @@ mod tests {
 			[
 				"1 mesh parts have a MaterialVariant, drawn tiled over the part's box faces as on ordinary parts; Studio lays it out differently on meshes.",
 				"1 parts show their MaterialVariant without some of its maps: they are not downloaded yet.",
-				// one of these two is downloaded but cannot be decoded: the
-				// message is misleading for it (a known bug, kept for now)
-				"2 decals are not drawn: their images are not downloaded yet.",
+				"1 decals are not drawn: their images are not downloaded yet.",
+				"1 decals are not drawn: their images could not be read.",
 				"1 parts are drawn approximately because Meshvault has no geometry for their shape: a UnionOperation (drawn as a box).",
 				"1 parts are not shown because their meshes are not downloaded or could not be read. Hover them in the part list for details.",
 			]
@@ -1336,9 +1343,9 @@ mod tests {
 		assert_eq!(
 			view.warnings,
 			[
-				"Some of the model's clothing is not drawn: its images are not downloaded yet.",
-				"1 parts show their MaterialVariant without some of its maps: they are not downloaded yet.",
-				"1 decals are not drawn: their images are not downloaded yet.",
+				"Some of the model's clothing is not drawn: its images could not be read.",
+				"1 parts show their MaterialVariant without some of its maps: they could not be read.",
+				"1 decals are not drawn: their images could not be read.",
 			]
 		);
 	}

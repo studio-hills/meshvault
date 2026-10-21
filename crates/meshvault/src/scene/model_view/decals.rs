@@ -148,13 +148,38 @@ impl NormalId {
 	}
 }
 
+/// Why an image a layer wants is not drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ImageError {
+	/// Not in the workspace (or not an asset id).
+	NotDownloaded,
+	/// Downloaded, but the file could not be read or decoded.
+	Unreadable,
+}
+
+/// How many of some layers are not drawn (or drawn in part), by why.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Missing {
+	pub(super) not_downloaded: usize,
+	pub(super) unreadable: usize,
+}
+
+impl Missing {
+	fn count(&mut self, error: ImageError) {
+		match error {
+			ImageError::NotDownloaded => self.not_downloaded += 1,
+			ImageError::Unreadable => self.unreadable += 1,
+		}
+	}
+}
+
 /// Images by asset id, shared by a model's clothing, decals and
 /// MaterialVariants: each is read and decoded once, and one that does not
 /// load is not tried again.
 pub(super) struct ImageCache<'a> {
 	ctx: &'a egui::Context,
 	paths: &'a HashMap<u64, PathBuf>,
-	loaded: HashMap<u64, Option<Texture>>,
+	loaded: HashMap<u64, Result<Texture, ImageError>>,
 }
 
 impl<'a> ImageCache<'a> {
@@ -166,20 +191,15 @@ impl<'a> ImageCache<'a> {
 		}
 	}
 
-	/// The image, or `None` when it is not in the workspace or does not load.
-	pub(super) fn get(&mut self, id: u64) -> Option<Texture> {
+	/// The image, or whether it is not in the workspace or does not load.
+	pub(super) fn get(&mut self, id: u64) -> Result<Texture, ImageError> {
 		let (ctx, paths) = (self.ctx, self.paths);
 		self.loaded
 			.entry(id)
 			.or_insert_with(|| {
-				let image = paths
-					.get(&id)
-					.ok_or_else(|| "not downloaded".to_string())
-					.and_then(|path| texture::load_file(ctx, path));
-				// why it did not load is dropped here on purpose: callers only
-				// count the images that are missing, and report them all as not
-				// downloaded, even one that is but does not decode (bug B38)
-				image.ok()
+				let path = paths.get(&id).ok_or(ImageError::NotDownloaded)?;
+				// the warnings say an image could not be read, not the decode error
+				texture::load_file(ctx, path).map_err(|_| ImageError::Unreadable)
 			})
 			.clone()
 	}
@@ -209,10 +229,20 @@ pub(super) fn clothing_layers(
 	images: &mut ImageCache,
 	warnings: &mut Vec<String>,
 ) -> Vec<ClothingLayer> {
-	let mut load = |content: &Option<String>| images.get(parse_asset_id(content.as_deref()?)?);
-	let pants = load(&c.pants_template);
-	let shirt = load(&c.shirt_template);
-	let graphic = load(&c.graphic);
+	// None when the clothing has no such template
+	let mut load = |content: &Option<String>| {
+		let id = parse_asset_id(content.as_deref()?);
+		Some(
+			id.ok_or(ImageError::NotDownloaded)
+				.and_then(|id| images.get(id)),
+		)
+	};
+	let loads = [
+		load(&c.pants_template),
+		load(&c.shirt_template),
+		load(&c.graphic),
+	];
+	let [pants, shirt, graphic] = loads.clone().map(|l| l.and_then(Result::ok));
 	let mut layers = Vec::new();
 	for (_, section) in SECTIONS {
 		let legs = matches!(section, Section::RightLeg | Section::LeftLeg);
@@ -246,21 +276,19 @@ pub(super) fn clothing_layers(
 			graphic: true,
 		});
 	}
-	let wanted = [&c.pants_template, &c.shirt_template, &c.graphic]
-		.iter()
-		.filter(|t| t.is_some())
-		.count();
-	let got = [
-		pants.is_some(),
-		shirt.is_some(),
-		layers.iter().any(|l| l.graphic),
-	]
-	.iter()
-	.filter(|b| **b)
-	.count();
-	if got < wanted {
+	let failed = |error| {
+		loads
+			.iter()
+			.any(|l| matches!(l, Some(Err(e)) if *e == error))
+	};
+	if failed(ImageError::NotDownloaded) {
 		warnings.push(
 			"Some of the model's clothing is not drawn: its images are not downloaded yet.".into(),
+		);
+	}
+	if failed(ImageError::Unreadable) {
+		warnings.push(
+			"Some of the model's clothing is not drawn: its images could not be read.".into(),
 		);
 	}
 	layers
@@ -321,14 +349,19 @@ pub(super) fn body_sections(rig: &Rig, joint_rest: &Posed) -> HashMap<usize, Sec
 pub(super) fn part_decals(
 	record: &ModelPart,
 	images: &mut ImageCache,
-	missing: &mut usize,
+	missing: &mut Missing,
 ) -> Vec<(i32, PartDecal)> {
 	let mut decals = Vec::new();
 	for d in &record.decals {
-		let image = parse_asset_id(&d.texture).and_then(|id| images.get(id));
-		let Some(image) = image else {
-			*missing += 1;
-			continue;
+		let image = parse_asset_id(&d.texture)
+			.ok_or(ImageError::NotDownloaded)
+			.and_then(|id| images.get(id));
+		let image = match image {
+			Ok(image) => image,
+			Err(e) => {
+				missing.count(e);
+				continue;
+			}
 		};
 		let tiles = d.studs_per_tile_u.map(|u| {
 			[
@@ -362,26 +395,27 @@ pub(super) fn part_decals(
 }
 
 /// A MaterialVariant over the whole part with the maps that loaded, or
-/// `None` when none did. Counts it in `missing` when some did not; a map
-/// that is not an asset id is not counted.
+/// `None` when none did. Counts it in `missing` when some did not, once
+/// for each reason; a map that is not an asset id is not counted.
 pub(super) fn variant_layer(
 	v: &MaterialVariantInfo,
 	images: &mut ImageCache,
-	missing: &mut usize,
+	missing: &mut Missing,
 ) -> Option<PartDecal> {
 	let mut material = Material::default();
-	let mut wanted = 0;
+	let mut failed = Vec::new();
 	for (slot, content) in v.maps() {
 		let Some(id) = parse_asset_id(content) else {
 			continue;
 		};
-		wanted += 1;
-		if let Some(image) = images.get(id) {
-			material.set(slot, image);
+		match images.get(id) {
+			Ok(image) => material.set(slot, image),
+			Err(e) if !failed.contains(&e) => failed.push(e),
+			Err(_) => {}
 		}
 	}
-	if material.maps.len() < wanted {
-		*missing += 1;
+	for e in failed {
+		missing.count(e);
 	}
 	if material.maps.is_empty() {
 		return None;

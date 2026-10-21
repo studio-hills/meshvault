@@ -70,7 +70,8 @@ impl Config {
 		match read_config(legacy) {
 			Some(config) => {
 				if let Some(path) = &primary {
-					config.save_to(path);
+					// not reported yet (bug B08); the old settings still load
+					let _ = config.save_to(path);
 				}
 				config
 			}
@@ -78,29 +79,35 @@ impl Config {
 		}
 	}
 
-	pub fn save(&self) {
-		let Some(path) = config_path() else { return };
-		self.save_to(&path);
+	pub fn save(&self) -> Result<(), String> {
+		let path = config_path().ok_or("Could not find the user's config folder")?;
+		self.save_to(&path)
 	}
 
-	fn save_to(&self, path: &Path) {
+	/// Writes the settings to `path`, making its folder first. The write is
+	/// tried even when the folder cannot be made, and its error is the one
+	/// reported.
+	fn save_to(&self, path: &Path) -> Result<(), String> {
 		if let Some(dir) = path.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
-		if let Ok(json) = serde_json::to_string_pretty(self) {
-			let _ = std::fs::write(path, json);
-		}
+		let json = serde_json::to_string_pretty(self)
+			.map_err(|e| format!("Could not save the settings: {e}"))?;
+		std::fs::write(path, json)
+			.map_err(|e| format!("Could not save the settings to {}: {e}", path.display()))
 	}
 
 	/// Takes a workspace off the recent list. Its folder is not touched.
 	pub fn remove_recent(&mut self, root: &Path) {
 		self.recent_workspaces.retain(|p| p != root);
-		self.save();
+		// a failed save is not reported yet (bug B08)
+		let _ = self.save();
 	}
 
 	pub fn add_recent(&mut self, root: PathBuf) {
 		self.push_recent(root);
-		self.save();
+		// a failed save is not reported yet (bug B08)
+		let _ = self.save();
 	}
 
 	/// Puts a workspace first on the recent list, once, keeping the newest
@@ -127,21 +134,28 @@ fn keyring_user(method: AuthMethod) -> &'static str {
 	}
 }
 
-fn read_secret(service: &str, method: AuthMethod) -> Option<String> {
-	keyring::Entry::new(service, keyring_user(method))
-		.ok()?
-		.get_password()
-		.ok()
-		.filter(|s| !s.is_empty())
+/// The credential saved under `service`. An empty one counts as none; a
+/// credential store that cannot be read is an error.
+fn read_secret(service: &str, method: AuthMethod) -> Result<Option<String>, String> {
+	let read = keyring::Entry::new(service, keyring_user(method)).and_then(|e| e.get_password());
+	match read {
+		Ok(secret) => Ok(Some(secret).filter(|s| !s.is_empty())),
+		Err(keyring::Error::NoEntry) => Ok(None),
+		Err(e) => Err(format!(
+			"Could not read from the system credential store: {e}"
+		)),
+	}
 }
 
 pub fn load_secret(method: AuthMethod) -> Option<String> {
-	if let Some(secret) = read_secret(APP_ID, method) {
+	// TODO(release): a credential store that cannot be read looks the same
+	// as no credential here (bug B07)
+	if let Ok(Some(secret)) = read_secret(APP_ID, method) {
 		return Some(secret);
 	}
 	// copy a credential saved under the old name. The old entry is left in
 	// place so builds from before the rename keep working; Forget removes both.
-	let secret = read_secret(LEGACY_APP_ID, method)?;
+	let secret = read_secret(LEGACY_APP_ID, method).ok().flatten()?;
 	let _ = save_secret(method, &secret);
 	Some(secret)
 }
@@ -152,11 +166,24 @@ pub fn save_secret(method: AuthMethod, secret: &str) -> Result<(), String> {
 		.map_err(|e| format!("Could not save to the system credential store: {e}"))
 }
 
-pub fn delete_secret(method: AuthMethod) {
+/// Removes the credential under both the current and the old name. Both
+/// are tried even if one fails; one that was never saved is not an error.
+pub fn delete_secret(method: AuthMethod) -> Result<(), String> {
+	let mut failed = Vec::new();
 	for service in [APP_ID, LEGACY_APP_ID] {
-		if let Ok(entry) = keyring::Entry::new(service, keyring_user(method)) {
-			let _ = entry.delete_credential();
+		match keyring::Entry::new(service, keyring_user(method)).and_then(|e| e.delete_credential())
+		{
+			Ok(()) | Err(keyring::Error::NoEntry) => {}
+			Err(e) => failed.push(e.to_string()),
 		}
+	}
+	if failed.is_empty() {
+		Ok(())
+	} else {
+		Err(format!(
+			"Could not remove from the system credential store: {}",
+			failed.join("; ")
+		))
 	}
 }
 
@@ -202,9 +229,19 @@ mod tests {
 		};
 		config.push_recent("ws".into());
 		// the folder is made
-		config.save_to(&path);
+		config.save_to(&path).unwrap();
 		let loaded = Config::load_from(Some(path), None);
 		assert_eq!(json(&loaded), json(&config));
+	}
+
+	#[test]
+	fn a_failed_save_says_why() {
+		let dir = TempDir::new("config");
+		// a folder where the file should be cannot be written over
+		let path = dir.join("config.json");
+		std::fs::create_dir_all(&path).unwrap();
+		let err = Config::default().save_to(&path).unwrap_err();
+		assert!(err.contains("config.json"), "{err}");
 	}
 
 	#[test]

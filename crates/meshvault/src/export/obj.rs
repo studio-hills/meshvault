@@ -551,7 +551,7 @@ mod tests {
 		let models = (0..ws.models().len())
 			.map(|i| ModelJob {
 				name: ws.models()[i].name.clone(),
-				load: Box::new(crate::workspace::view_loader::model_loader(&ws, i)),
+				load: Box::new(crate::workspace::view_loader::model_loader(&ws, i).unwrap()),
 			})
 			.collect();
 		let dir = std::env::temp_dir().join("meshvault-obj-test-models");

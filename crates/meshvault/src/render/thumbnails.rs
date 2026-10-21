@@ -256,7 +256,8 @@ fn spawn(
 			});
 		}
 		Source::Model(index) => {
-			let load = model_loader(ws, index);
+			// `source` found the index in this same workspace
+			let load = model_loader(ws, index).expect("the model is in the workspace");
 			std::thread::spawn(move || {
 				let _ = tx.send(load(&ctx).map(|m| Prepared::Model(Box::new(m))));
 				ctx.request_repaint();

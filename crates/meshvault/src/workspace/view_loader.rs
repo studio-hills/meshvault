@@ -14,12 +14,12 @@ use crate::studio::export_file;
 
 /// Reads the workspace's model `index` with its downloaded meshes, maps
 /// and decal images. Slow, so the returned closure runs on a background
-/// thread.
+/// thread. `None` if the workspace has no model `index`.
 pub fn model_loader(
 	ws: &Workspace,
 	index: usize,
-) -> impl FnOnce(&egui::Context) -> Result<ModelView, String> + Send + 'static {
-	let item = &ws.models()[index];
+) -> Option<impl FnOnce(&egui::Context) -> Result<ModelView, String> + Send + 'static> {
+	let item = ws.models().get(index)?;
 	let sources: HashMap<u32, MeshSource> = item
 		.meshes
 		.iter()
@@ -54,7 +54,7 @@ pub fn model_loader(
 		})
 		.collect();
 	let file = ws.root.join(&item.file);
-	move |ctx: &egui::Context| {
+	Some(move |ctx: &egui::Context| {
 		std::fs::read_to_string(&file)
 			.map_err(|e| format!("Could not read {}: {e}", file.display()))
 			.and_then(|text| export_file::parse(&text))
@@ -66,7 +66,7 @@ pub fn model_loader(
 					.ok_or_else(|| format!("{} holds no model", file.display()))
 			})
 			.map(|model| ModelView::load(ctx, index, &model, &sources, &images))
-	}
+	})
 }
 
 /// Each material slot's downloaded map: the first that feeds it (ColorMap

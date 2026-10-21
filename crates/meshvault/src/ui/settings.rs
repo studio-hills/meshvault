@@ -91,7 +91,8 @@ impl SettingsDialog {
 		config.auth_method = self.method;
 		config.place_id = place_id;
 		config.concurrency = self.concurrency;
-		config.save();
+		// a failed save is not reported yet (bug B08)
+		let _ = config.save();
 		Ok(())
 	}
 
@@ -246,7 +247,8 @@ impl SettingsDialog {
 									AuthMethod::Cookie => "cookie",
 								};
 								if widgets::danger_button(ui, "Forget").clicked() {
-									config::delete_secret(self.method);
+									// a failed delete is not reported yet (bug B07)
+									let _ = config::delete_secret(self.method);
 									self.saved[slot(self.method)] = false;
 									self.confirm_forget = false;
 									self.message = Some((true, "Saved credential removed.".into()));

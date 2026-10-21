@@ -195,7 +195,8 @@ impl App {
 
 	pub fn set_theme(&mut self, mode: theme::ThemeMode) {
 		self.config.theme = mode;
-		self.config.save();
+		// a failed save is not reported yet (bug B08)
+		let _ = self.config.save();
 		theme::apply(&self.ctx, mode);
 	}
 
@@ -635,7 +636,9 @@ impl App {
 		let Some(item) = ws.models().get(index) else {
 			return;
 		};
-		let load = model_loader(ws, index);
+		let Some(load) = model_loader(ws, index) else {
+			return;
+		};
 		let name = item.name.clone();
 		let (tx, rx) = std::sync::mpsc::channel();
 		let ctx = self.ctx.clone();
@@ -874,10 +877,11 @@ impl App {
 		let skipped = items.len() - meshes.len();
 		let models: Vec<ModelJob> = models
 			.iter()
-			.filter(|&&i| i < ws.models().len())
-			.map(|&i| ModelJob {
-				name: ws.models()[i].name.clone(),
-				load: Box::new(model_loader(ws, i)),
+			.filter_map(|&i| {
+				Some(ModelJob {
+					name: ws.models().get(i)?.name.clone(),
+					load: Box::new(model_loader(ws, i)?),
+				})
 			})
 			.collect();
 		if meshes.is_empty() && models.is_empty() {
@@ -979,7 +983,8 @@ impl App {
 	pub fn export_glb(&mut self) {
 		if let Some(model) = &self.model {
 			let Some(ws) = &self.workspace else { return };
-			let load = model_loader(ws, model.index);
+			// a stale index still panics here, as before (bug B13)
+			let load = model_loader(ws, model.index).expect("the open model is in the workspace");
 			let name = model.name.clone();
 			let Some(path) = self.save_dialog("Export for Blender", "glb", "glTF binary") else {
 				return;
@@ -1124,7 +1129,8 @@ impl App {
 
 	pub fn set_lighting(&mut self, lighting: crate::render::viewport::Lighting) {
 		self.config.lighting = lighting;
-		self.config.save();
+		// a failed save is not reported yet (bug B08)
+		let _ = self.config.save();
 	}
 
 	/// Copies the view as it is now, over the viewport's background.

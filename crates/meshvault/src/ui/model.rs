@@ -7,6 +7,7 @@ use super::theme::{CAPTION, CONTROL_RADIUS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
+use crate::render::camera::{Camera, project};
 use crate::render::viewport;
 use crate::scene::geometry::Primitive;
 use crate::scene::model_view::{ModelView, PartShape};
@@ -476,13 +477,13 @@ fn draw_skeleton(
 	ui: &egui::Ui,
 	p: &super::theme::Palette,
 	rect: egui::Rect,
-	camera: &viewport::Camera,
+	camera: &Camera,
 	skeleton: &crate::scene::model_view::Skeleton,
 	bones: bool,
 	joints: bool,
 ) {
 	let painter = ui.painter_at(rect);
-	let project = |at| viewport::project(camera, rect, at);
+	let project = |at| project(camera, rect, at);
 	let shadow = Color32::from_black_alpha(140);
 	if bones {
 		for &(a, b) in &skeleton.bones {

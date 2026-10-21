@@ -13,11 +13,9 @@ use crate::scene::geometry::Geometry;
 use crate::scene::surface::DecalDraw;
 use crate::scene::texture::Material;
 
-// For one step, until the ui/ callers that name these through
-// `viewport::` move to their new homes.
-pub use crate::render::camera::{Camera, project};
-pub use crate::render::maths::IDENTITY;
-pub use crate::scene::surface::{PART_COLOUR, Surface};
+use crate::render::camera::Camera;
+use crate::render::maths::IDENTITY;
+use crate::scene::surface::Surface;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shading {

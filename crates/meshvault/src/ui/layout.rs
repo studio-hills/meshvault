@@ -6,8 +6,10 @@ use super::inspector::header_backdrop;
 use super::theme::palette;
 use crate::app::App;
 use crate::render::camera::Camera;
+use crate::render::maths::IDENTITY;
 use crate::render::viewport::{self, ScenePart, ViewSettings};
 use crate::scene::geometry::GroupKind;
+use crate::scene::surface::{PART_COLOUR, Surface};
 
 impl eframe::App for App {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -104,19 +106,19 @@ impl App {
 		let mut parts = [ScenePart {
 			geometry,
 			groups: &groups,
-			transform: viewport::IDENTITY,
+			transform: IDENTITY,
 			material: if self.show_maps {
 				&doc.material
 			} else {
 				&self.no_material
 			},
 			colour_groups: geometry.group_kind == GroupKind::Hull,
-			colour: viewport::PART_COLOUR,
+			colour: PART_COLOUR,
 			scene: &mut doc.gpu,
 			moved: false,
-			surface: viewport::Surface {
+			surface: Surface {
 				alpha_mode: doc.alpha,
-				..viewport::Surface::OPAQUE
+				..Surface::OPAQUE
 			},
 			decal: None,
 			highlight: false,

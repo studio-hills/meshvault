@@ -8,7 +8,7 @@
 //!   Models/<Folder>/<Name>.mesh    organized copies, browsable in Explorer
 //!   Models/<Folder>/<Name>.png     TextureID, next to its mesh (same file stem)
 //!   Models/<Folder>/<Name>.normal.png   SurfaceAppearance maps (.color, .normal, ...)
-//!   Rigs/<Path>.rig.json           animated models: a schema 1 export holding one model
+//!   Rigs/<Path>.rig.json           animated models: an export holding one model (see `write_rig`)
 //!   .cache/<asset id>              one raw copy per asset id, so duplicates download once
 //!   .cache/thumbnails/<hash>.png   the library's pictures of models (see `thumbnails`)
 //!   .cache/facts.json              what the library filters on, per mesh (see `facts`)
@@ -182,8 +182,8 @@ impl Item {
 	}
 }
 
-/// An animated model (rig and clips) from a schema 1 export. Its parts use
-/// meshes stored as ordinary items.
+/// An animated model (rig and clips) from an export. Its parts use meshes
+/// stored as ordinary items.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelItem {
 	pub name: String,
@@ -222,8 +222,11 @@ pub struct Workspace {
 	generation: u64,
 }
 
-/// Writes a model as a schema 1 export holding just that model and the
-/// meshes it uses, so the file can also be imported on its own.
+/// Writes a model as an export in the current schema
+/// ([`export_file::SCHEMA_VERSION`]) holding just that model and the meshes
+/// it uses, so the file can also be imported on its own. Workspaces made
+/// before schema 2 hold schema 1 rig files; the export reader still accepts
+/// those, so they load as they are.
 fn write_rig(
 	path: &Path,
 	model: &AnimatedModel,

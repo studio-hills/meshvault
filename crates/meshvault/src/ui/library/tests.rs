@@ -3,6 +3,7 @@
 use super::grid::grid_sections;
 use super::*;
 use crate::test_support::TempDir;
+use crate::ui::icons;
 use crate::workspace::{AssetState, MapRef, ModelItem};
 
 fn done(path: &str) -> AssetState {

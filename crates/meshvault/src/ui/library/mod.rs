@@ -15,16 +15,16 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
+use eframe::egui::{self, Color32, RichText, Stroke};
 
 use self::list::nothing_matches;
 use crate::export::Format;
 use crate::render::gpu::GpuRenderer;
 use crate::render::thumbnails::Thumbnails;
 use crate::scene::maps::MapKind;
-use crate::ui::theme::{CAPTION, CONTROL_XXS, Palette, ROW, TITLE, display, palette};
+use crate::ui::theme::{Palette, ROW, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
-use crate::ui::{icons, widgets};
+use crate::ui::widgets;
 use crate::workspace::facts::Facts;
 use crate::workspace::{Item, Workspace};
 
@@ -222,41 +222,7 @@ impl Browser {
 			self.scroll_to_open.set(true);
 		}
 
-		ui.horizontal(|ui| {
-			ui.label(RichText::new("Library").size(TITLE).family(display()));
-			ui.label(RichText::new(items.len().to_string()).color(p.text_weak));
-			if items.is_empty() && ws.models().is_empty() {
-				return;
-			}
-			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-				ui.spacing_mut().item_spacing.x = 0.0;
-				ui.spacing_mut().interact_size.y = CONTROL_XXS;
-				if self.view == View::List {
-					if let Some(command) = tree::expand_collapse_buttons(ui) {
-						self.pending.replace(Some(command));
-					}
-					let reveal = ui
-						.add_enabled_ui(open_stem.is_some(), |ui| {
-							widgets::icon_button(
-								ui,
-								icons::CROSSHAIR_SIMPLE,
-								"Reveal the open model",
-							)
-						})
-						.inner;
-					if reveal.clicked() {
-						self.reveal = true;
-					}
-				}
-				let (icon, tip, other) = match self.view {
-					View::List => (icons::SQUARES_FOUR, "Show thumbnails", View::Grid),
-					View::Grid => (icons::LIST, "Show the folder tree", View::List),
-				};
-				if widgets::icon_button(ui, icon, tip).clicked() {
-					self.view = other;
-				}
-			});
-		});
+		self.header(ui, ws, open_stem);
 		if items.is_empty() && ws.models().is_empty() {
 			ui.add_space(8.0);
 			ui.label(
@@ -268,71 +234,9 @@ impl Browser {
 			return actions;
 		}
 		ui.add_space(4.0);
-		// search with a filter button (and a clear button) beside it, the same height
-		ui.horizontal(|ui| {
-			let button = ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
-			let buttons = if self.filter.is_empty() { 1.0 } else { 2.0 };
-			ui.add(
-				widgets::input(&mut self.filter)
-					.hint_text(format!(
-						"{}  Search name, folder or id",
-						icons::MAGNIFYING_GLASS
-					))
-					.desired_width(ui.available_width() - button * buttons),
-			);
-			if !self.filter.is_empty()
-				&& widgets::icon_button(ui, icons::X, "Clear search").clicked()
-			{
-				self.filter.clear();
-			}
-			self.filter_button(ui);
-		});
+		self.search_row(ui);
 		ui.add_space(2.0);
-		let count = |f: fn(&Item) -> bool| items.iter().filter(|i| f(i)).count();
-		let done = count(Item::is_done);
-		let failed = count(Item::has_failure);
-		let pending = count(|i| i.has_pending() && !i.has_failure());
-		ui.horizontal_wrapped(|ui| {
-			ui.spacing_mut().item_spacing.x = 4.0;
-			ui.spacing_mut().interact_size.y = CONTROL_XXS;
-			ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
-			// room before the label for the chip's status marker
-			let font = FontId::proportional(CAPTION);
-			let space = ui
-				.painter()
-				.layout_no_wrap(" ".into(), font, p.text)
-				.size()
-				.x;
-			let gap = " ".repeat((13.0 / space.max(1.0)).ceil() as usize);
-			for (value, label, n, marker) in [
-				(StatusFilter::All, "All", items.len(), None),
-				(StatusFilter::Downloaded, "Done", done, Some(Status::Done)),
-				(
-					StatusFilter::Pending,
-					"Pending",
-					pending,
-					Some(Status::Pending),
-				),
-				(StatusFilter::Failed, "Failed", failed, Some(Status::Failed)),
-			] {
-				if value == StatusFilter::Failed && n == 0 && self.status != StatusFilter::Failed {
-					continue;
-				}
-				let text = match marker {
-					Some(s) => RichText::new(format!("{gap}{label} {n}"))
-						.size(CAPTION)
-						.color(status_colour(&p, s)),
-					None => RichText::new(format!("{label} {n}")).size(CAPTION),
-				};
-				let response = ui.selectable_value(&mut self.status, value, text);
-				// the same marker as the rows and tiles this chip filters
-				if let Some(s) = marker {
-					let padding = ui.spacing().button_padding.x;
-					let centre = response.rect.left_center() + Vec2::new(padding + 3.5, 0.0);
-					status_dot(ui.painter(), &p, centre, s);
-				}
-			}
-		});
+		self.status_chips(ui, items);
 		ui.add_space(4.0);
 		self.selection_bar(ui, ws, &mut actions);
 		self.selection_keys(ui);

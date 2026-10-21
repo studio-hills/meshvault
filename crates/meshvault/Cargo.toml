@@ -10,7 +10,7 @@ authors = ["Jaden Hills"]
 publish = false
 
 [dependencies]
-rbx_mesh = { path = "../rbx_mesh" }
+rbx_mesh = { path = "../rbx_mesh", default-features = false, features = ["mesh-v1", "mesh-v7-draco", "union-graphics", "csgphs-v8-zstd"] }
 binrw = "0.15.0"
 eframe = "0.37.0"
 rfd = "0.17.2"

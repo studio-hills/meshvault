@@ -5,7 +5,7 @@ use eframe::egui::{
 	Margin, Modifiers, Order, RichText, Sense, Stroke, Vec2,
 };
 
-use super::theme::{CONTROL, ThemeMode, display, medium, palette, semibold};
+use super::theme::{CONTROL, CONTROL_RADIUS, ThemeMode, display, medium, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::geometry::GroupKind;
@@ -556,7 +556,9 @@ impl App {
 				Frame::NONE
 					.fill(p.panel.gamma_multiply(0.94))
 					.stroke(Stroke::new(1.0, p.border))
-					.corner_radius(CornerRadius::same(10))
+					// concentric with the shading track at its left end: the
+					// track's radius (CONTROL_RADIUS + 2) plus this padding
+					.corner_radius(CornerRadius::same(CONTROL_RADIUS + 2 + 4))
 					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)
 					.show(ui, |ui| {

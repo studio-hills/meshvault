@@ -23,7 +23,7 @@ use crate::scene::surface::{AlphaMode, DEFAULT_ROUGHNESS, Surface};
 use crate::scene::texture::Material;
 
 /// Keyframes per second of baked clips.
-pub const FPS: f32 = 30.0;
+const FPS: f32 = 30.0;
 
 const ARRAY_BUFFER: u32 = 34962;
 const ELEMENT_ARRAY_BUFFER: u32 = 34963;

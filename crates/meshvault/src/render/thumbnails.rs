@@ -23,7 +23,7 @@ use crate::workspace::view_loader::{item_maps, model_loader};
 use crate::workspace::{AssetState, CACHE_DIR, Workspace};
 
 /// Pixels on each side of a thumbnail.
-pub const SIZE: u32 = 192;
+const SIZE: u32 = 192;
 /// Drawn this many times bigger, then scaled down, for smooth edges.
 const SUPERSAMPLE: u32 = 2;
 /// Cached thumbnails read from disk per frame, so scrolling stays smooth.

@@ -18,7 +18,7 @@ pub struct Camera {
 	pub yaw: f32,
 	pub pitch: f32,
 	pub distance: f32,
-	pub target: V3,
+	pub(super) target: V3,
 	/// Radius of the mesh's bounding sphere; scales pan and zoom speed.
 	pub(super) radius: f32,
 	/// Lowest point of the model, where the ground grid sits.

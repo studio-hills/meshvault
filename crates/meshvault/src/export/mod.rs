@@ -27,7 +27,7 @@ pub enum Format {
 }
 
 impl Format {
-	pub fn extension(self) -> &'static str {
+	fn extension(self) -> &'static str {
 		match self {
 			Format::Glb => "glb",
 			Format::Obj => "obj",

@@ -18,7 +18,7 @@ use crate::scene::texture::Material;
 /// The window's multisample count (main passes it to `NativeOptions`);
 /// every pipeline and the off-screen colour and depth targets use it.
 pub const MSAA_SAMPLES: u32 = 4;
-pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -32,43 +32,43 @@ struct Vertex {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Uniforms {
-	pub view_proj: [[f32; 4]; 4],
+pub(super) struct Uniforms {
+	pub(super) view_proj: [[f32; 4]; 4],
 	/// Mesh to world, and its inverse transpose for normals (column-major).
-	pub model: [[f32; 4]; 4],
-	pub normal_model: [[f32; 4]; 4],
-	pub eye: [f32; 4],
-	pub light_dir: [f32; 4],
-	pub wire_color: [f32; 4],
-	pub params: [f32; 4],
-	pub flags: [u32; 4],
+	pub(super) model: [[f32; 4]; 4],
+	pub(super) normal_model: [[f32; 4]; 4],
+	pub(super) eye: [f32; 4],
+	pub(super) light_dir: [f32; 4],
+	pub(super) wire_color: [f32; 4],
+	pub(super) params: [f32; 4],
+	pub(super) flags: [u32; 4],
 	/// How a Roblox part's surface looks: opacity (1 − Transparency),
 	/// 1 for Neon, Reflectance, 1 for metal materials.
-	pub surface: [f32; 4],
+	pub(super) surface: [f32; 4],
 	/// SurfaceAppearance: linear tint of the colour map, and the alpha mode
 	/// (0 Overlay, 1 Transparency, 2 TintMask, 3 Opaque, 4 Blend: the map's
 	/// alpha blends the surface, for meshes shown on their own).
-	pub tint: [f32; 4],
+	pub(super) tint: [f32; 4],
 	/// Decal draws: mesh to part space (column-major), then mode (0 none,
 	/// 1 Decal, 2 Texture, 3 MaterialVariant, 4 clothing), face,
 	/// transparency; the part's size; studs per tile and offset (U, V, U,
 	/// V); and the linear tint.
-	pub part_from_mesh: [[f32; 4]; 4],
-	pub decal: [f32; 4],
-	pub decal_size: [f32; 4],
-	pub decal_tile: [f32; 4],
-	pub decal_colour: [f32; 4],
+	pub(super) part_from_mesh: [[f32; 4]; 4],
+	pub(super) decal: [f32; 4],
+	pub(super) decal_size: [f32; 4],
+	pub(super) decal_tile: [f32; 4],
+	pub(super) decal_colour: [f32; 4],
 	/// The model's lights (see `lighting::light_uniforms`), and how many.
-	pub lights: [[f32; 4]; crate::render::lighting::MAX_LIGHTS * 3],
-	pub light_count: [f32; 4],
+	pub(super) lights: [[f32; 4]; crate::render::lighting::MAX_LIGHTS * 3],
+	pub(super) light_count: [f32; 4],
 	/// Clothing draws: the template region (x, y, width, height, 0..1) of
 	/// each box face (Right, Top, Back, Left, Bottom, Front), then the box's
 	/// centre and half size in the body section's space.
-	pub clothing: [[f32; 4]; 8],
+	pub(super) clothing: [[f32; 4]; 8],
 	/// Lighting and highlight (see `lighting::Lighting`): key light colour
 	/// and fill strength; sky colour and exposure; ground colour and how
 	/// strongly this draw is highlighted; the highlight colour.
-	pub env: [[f32; 4]; 4],
+	pub(super) env: [[f32; 4]; 4],
 }
 
 /// How a surface is drawn, which picks its pipeline. Drawn in this order:
@@ -299,7 +299,7 @@ impl GpuRenderer {
 	/// Uploads geometry as an unindexed triangle list (each corner gets its
 	/// own barycentric coordinate for the wireframe). `colours` gives each
 	/// group's base colour.
-	pub fn create_scene(&self, geometry: &Geometry, colours: &[[f32; 3]]) -> GpuScene {
+	pub(super) fn create_scene(&self, geometry: &Geometry, colours: &[[f32; 3]]) -> GpuScene {
 		let (vertices, groups) = build_vertices(geometry, colours);
 		let vertex_buffer = self
 			.device
@@ -328,7 +328,12 @@ impl GpuRenderer {
 
 	/// Replaces the vertices of a scene with moved ones (a skinned mesh
 	/// each frame). The triangles must be the same as when it was created.
-	pub fn update_vertices(&self, scene: &GpuScene, geometry: &Geometry, colours: &[[f32; 3]]) {
+	pub(super) fn update_vertices(
+		&self,
+		scene: &GpuScene,
+		geometry: &Geometry,
+		colours: &[[f32; 3]],
+	) {
 		let (vertices, _) = build_vertices(geometry, colours);
 		self.queue
 			.write_buffer(&scene.vertices, 0, bytemuck::cast_slice(&vertices));
@@ -378,7 +383,7 @@ impl GpuRenderer {
 	}
 
 	/// Re-uploads maps that changed and rebuilds the bind group.
-	pub fn sync_material(&self, scene: &mut GpuScene, material: &Material) {
+	pub(super) fn sync_material(&self, scene: &mut GpuScene, material: &Material) {
 		if scene.material_generation == material.generation {
 			return;
 		}
@@ -411,7 +416,7 @@ impl GpuRenderer {
 
 	/// The paint callback drawing each scene's `groups` with its uniforms:
 	/// opaque ones first, then see-through ones in the order given.
-	pub fn callback<'a>(
+	pub(super) fn callback<'a>(
 		&self,
 		scenes: impl IntoIterator<Item = (&'a GpuScene, &'a [usize], Uniforms)>,
 		cull: bool,
@@ -458,7 +463,7 @@ impl GpuRenderer {
 	/// Draws `callback` off screen into a `size` image whose background is
 	/// transparent. It is drawn twice, over black and over white: where the
 	/// two differ, the background shows through.
-	pub fn render_image(&self, callback: &MeshCallback, size: [u32; 2]) -> image::RgbaImage {
+	pub(super) fn render_image(&self, callback: &MeshCallback, size: [u32; 2]) -> image::RgbaImage {
 		let black = self.render_over(callback, size, wgpu::Color::BLACK);
 		let white = self.render_over(callback, size, wgpu::Color::WHITE);
 		// an sRGB target blends in linear light and stores encoded values
@@ -734,7 +739,7 @@ struct Draw {
 	ranges: Vec<Range<u32>>,
 }
 
-pub struct MeshCallback {
+pub(super) struct MeshCallback {
 	pipelines: Pipelines,
 	/// Back faces are culled.
 	cull: bool,

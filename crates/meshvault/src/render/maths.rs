@@ -54,18 +54,38 @@ pub(super) fn transpose(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 }
 
 /// Inverse transpose of the upper 3x3 of a row-major transform, which
-/// keeps normals perpendicular under non-uniform scale.
+/// keeps normals perpendicular under non-uniform scale. A flat (singular)
+/// 3x3 gives zeros there.
+///
+/// The 3x3 is first divided by its largest entry, so how singular it is
+/// does not depend on its overall size: a tiny but invertible scale
+/// (whose determinant is far below 1e-12) still has normals.
 pub(super) fn normal_matrix(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-	let a = |r: usize, c: usize| m[r][c];
+	let size = (0..3)
+		.flat_map(|r| (0..3).map(move |c| (r, c)))
+		.map(|(r, c)| m[r][c].abs())
+		.fold(0.0f32, f32::max);
+	let mut out = IDENTITY;
+	if !(size > 0.0 && size.is_finite()) {
+		for row in out.iter_mut().take(3) {
+			row[..3].fill(0.0);
+		}
+		return out;
+	}
+	let a = |r: usize, c: usize| m[r][c] / size;
 	let cof = |r: usize, c: usize| {
 		let (r1, r2) = ((r + 1) % 3, (r + 2) % 3);
 		let (c1, c2) = ((c + 1) % 3, (c + 2) % 3);
 		a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)
 	};
 	let det = a(0, 0) * cof(0, 0) + a(0, 1) * cof(0, 1) + a(0, 2) * cof(0, 2);
-	let inv_det = if det.abs() > 1e-12 { 1.0 / det } else { 0.0 };
-	// (M^-1)^T is the cofactor matrix over the determinant
-	let mut out = IDENTITY;
+	// (M^-1)^T is the cofactor matrix over the determinant; dividing M by
+	// `size` multiplies its inverse by `size`, which is undone here
+	let inv_det = if det.abs() > 1e-12 {
+		1.0 / (det * size)
+	} else {
+		0.0
+	};
 	for (r, row) in out.iter_mut().enumerate().take(3) {
 		for (c, v) in row.iter_mut().enumerate().take(3) {
 			*v = cof(r, c) * inv_det;
@@ -201,6 +221,38 @@ mod tests {
 		// a zero (or vanishing) normal is not blown up
 		assert_eq!(apply_normal(&m, [0.0; 3]), [0.0; 3]);
 		assert_eq!(apply_normal(&IDENTITY, [1e-14, 0.0, 0.0]), [0.01, 0.0, 0.0]);
+	}
+
+	/// A tiny but invertible non-uniform scale (its determinant, 5e-13, is
+	/// below the singular cutoff) still turns normals: the cutoff is
+	/// relative to the matrix's size, not absolute.
+	#[test]
+	fn apply_normal_of_a_tiny_stretch_is_not_zero() {
+		let mut m = IDENTITY;
+		m[0][0] = 0.0001;
+		m[1][1] = 0.0001;
+		m[2][2] = 0.00005;
+		let n = apply_normal(&m, [1.0, 1.0, 0.0]);
+		let half = 0.5f32.sqrt();
+		assert!(
+			close(n[0], half) && close(n[1], half) && n[2] == 0.0,
+			"{n:?}"
+		);
+		let n = apply_normal(&m, [0.0, 1.0, 1.0]);
+		let len = 5f32.sqrt();
+		assert!(
+			n[0] == 0.0 && close(n[1], 1.0 / len) && close(n[2], 2.0 / len),
+			"{n:?}"
+		);
+		// the true inverse, not just its direction
+		let inverse = normal_matrix(m);
+		assert!(
+			close(inverse[0][0] / 1e4, 1.0) && close(inverse[2][2] / 2e4, 1.0),
+			"{inverse:?}"
+		);
+		// a flat transform at any size still has no normals
+		m[1][1] = 0.0;
+		assert_eq!(apply_normal(&m, [1.0, 1.0, 0.0]), [0.0; 3]);
 	}
 
 	/// A turn with a uniform scale keeps normals perpendicular as it is, so

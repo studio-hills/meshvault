@@ -132,11 +132,11 @@ fn read(path: &Path) -> MeshFacts {
 	let Ok(bytes) = std::fs::read(path) else {
 		return MeshFacts::default();
 	};
-	let Ok(loaded) = geometry::load(&bytes) else {
+	let Ok((loaded, skin)) = geometry::load_with_skin(&bytes) else {
 		return MeshFacts::default();
 	};
 	let geometry = loaded.geometry;
-	let skinned = geometry::skin(&bytes, geometry.positions.len())
+	let skinned = skin
 		.ok()
 		.flatten()
 		.is_some_and(|s| !s.bones.is_empty());

@@ -53,16 +53,37 @@ mod tests {
 		assert!(close(srgb8_to_linear(255), 1.0));
 	}
 
-	/// The straight piece and the curve join up at each threshold (to the
-	/// rounding of the published constants).
+	/// Published sRGB values (IEC 61966-2-1), either side of each threshold
+	/// and mid-range.
 	#[test]
-	fn the_two_pieces_meet() {
-		let below = 0.04045_f32 / 12.92;
-		let above = ((0.04045_f32 + 0.055) / 1.055).powf(2.4);
-		assert!((below - above).abs() < 1e-5);
-		let below = 0.003_130_8_f32 * 12.92;
-		let above = 1.055 * 0.003_130_8_f32.powf(1.0 / 2.4) - 0.055;
-		assert!((below - above).abs() < 1e-5);
+	fn matches_reference_values() {
+		for (encoded, linear) in [
+			(0.02, 0.001_547_99),
+			(0.04045, 0.003_130_8),
+			(0.05, 0.003_935_2),
+			(0.5, 0.214_041_1),
+			(0.8, 0.603_827_4),
+		] {
+			assert!((srgb_to_linear(encoded) - linear).abs() < 2e-6, "{encoded}");
+			assert!((linear_to_srgb(linear) - encoded).abs() < 2e-5, "{linear}");
+		}
+	}
+
+	/// The straight piece runs up to and including each threshold; the curve
+	/// starts just above it.
+	#[test]
+	fn thresholds_belong_to_the_straight_piece() {
+		let t = 0.04045_f32;
+		assert_eq!(srgb_to_linear(t), t / 12.92);
+		let up = t.next_up();
+		assert_eq!(srgb_to_linear(up), ((up + 0.055) / 1.055).powf(2.4));
+		let t = 0.003_130_8_f32;
+		assert_eq!(linear_to_srgb(t), t * 12.92);
+		let up = t.next_up();
+		assert_eq!(linear_to_srgb(up), 1.055 * up.powf(1.0 / 2.4) - 0.055);
+		// and the two pieces meet there, to the rounding of the constants
+		assert!((linear_to_srgb(t.next_up()) - linear_to_srgb(t)).abs() < 1e-5);
+		assert!((srgb_to_linear(0.04045_f32.next_up()) - srgb_to_linear(0.04045)).abs() < 1e-5);
 	}
 
 	#[test]

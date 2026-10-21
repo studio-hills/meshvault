@@ -80,7 +80,8 @@ fn read_mesh<R: BinReaderExt>(
 	// decode zstd
 	let pos = reader.stream_position()?;
 	let mut decoded = Vec::new();
-	#[cfg(feature = "csgphs-v8-ruzstd")]
+	// with both backends enabled, zstd is used
+	#[cfg(all(feature = "csgphs-v8-ruzstd", not(feature = "csgphs-v8-zstd")))]
 	let mut decoder =
 		ruzstd::decoding::StreamingDecoder::new(reader).map_err(|e| binrw::Error::Custom {
 			pos,

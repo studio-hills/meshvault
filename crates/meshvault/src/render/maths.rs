@@ -178,7 +178,7 @@ mod tests {
 
 	/// The viewport's normalise scales any vector longer than 0, however
 	/// short, and turns zero and NaN into zero. Skinning's normalise (in
-	/// scene/model_view.rs) stops at 1e-12 and keeps the vector instead.
+	/// scene/model_view/skin.rs) stops at 1e-12 and keeps the vector instead.
 	#[test]
 	fn normalize_scales_any_nonzero_vector_and_zeroes_the_rest() {
 		assert_eq!(normalize([3.0, 0.0, 4.0]), [0.6, 0.0, 0.8]);

@@ -13,89 +13,27 @@
 //!   .cache/thumbnails/<hash>.png   the library's pictures of models (see `thumbnails`)
 //!   .cache/facts.json              what the library filters on, per mesh (see `facts`)
 //! ```
-
 pub mod download;
 pub mod facts;
+mod manifest;
+mod paths;
+mod rig_file;
 mod store;
 pub mod view_loader;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use crate::anim::schema::AnimatedModel;
 use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
-use crate::studio::export_file::{self, Entry};
+use crate::studio::export_file::Entry;
 
-pub const MANIFEST: &str = "workspace.json";
-const MODELS_DIR: &str = "Models";
-const RIGS_DIR: &str = "Rigs";
-pub const CACHE_DIR: &str = ".cache";
-/// Images models use directly (decals), one file per asset.
-const IMAGES_DIR: &str = "Images";
-/// Manifest format version: 1 had a single texture per item, 2 added
-/// `maps`, 3 added animated models. tools/make_test_workspace.py writes
-/// this version too; update it with this.
-const MANIFEST_VERSION: u32 = 3;
-
-/// Where an image a model uses is stored, without its extension.
-fn image_stem(asset_id: u64) -> String {
-	format!("{IMAGES_DIR}/{asset_id}")
-}
-
-/// Where the raw download of an asset is kept, shared by every item using it.
-pub fn cache_path(root: &Path, asset_id: u64) -> PathBuf {
-	root.join(CACHE_DIR).join(asset_id.to_string())
-}
-
-fn rig_stem(file: &str) -> &str {
-	file.strip_suffix(".rig.json").unwrap_or(file)
-}
-
-/// Makes one path component safe on Windows, macOS and Linux.
-pub fn sanitize(name: &str) -> String {
-	let mut s: String = name
-		.chars()
-		.map(|c| match c {
-			'<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-			c if c.is_control() => '_',
-			c => c,
-		})
-		.collect();
-	// Windows silently drops trailing dots and spaces
-	while s.ends_with(['.', ' ']) {
-		s.pop();
-	}
-	let s = s.trim_start().to_string();
-	if s.is_empty() {
-		return "_".into();
-	}
-	const RESERVED: [&str; 22] = [
-		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-		"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-	];
-	let base = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-	if RESERVED.contains(&base.as_str()) {
-		format!("{s}_")
-	} else {
-		s
-	}
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum AssetState {
-	Pending,
-	/// `path` is relative to the workspace root.
-	Done {
-		path: String,
-	},
-	Failed {
-		error: String,
-	},
-}
+pub use self::manifest::{AssetState, Item, MapRef, ModelItem};
+use self::manifest::{MANIFEST_VERSION, Manifest};
+pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
+use self::paths::{MODELS_DIR, RIGS_DIR, image_stem, rig_stem};
+use self::rig_file::write_rig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AssetKind {
@@ -132,89 +70,6 @@ impl Job {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MapRef {
-	pub id: u64,
-	pub state: AssetState,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Item {
-	pub name: String,
-	pub folder: Vec<String>,
-	pub mesh_id: u64,
-	/// Relative path without extension, unique within the workspace.
-	pub stem: String,
-	pub mesh: AssetState,
-	/// Maps selected for import. Maps that were not selected are absent.
-	#[serde(default)]
-	pub maps: BTreeMap<MapKind, MapRef>,
-	// Version 1 manifests stored only a texture; migrated into `maps` on open.
-	#[serde(default, skip_serializing)]
-	texture_id: Option<u64>,
-	#[serde(default, skip_serializing)]
-	texture: Option<AssetState>,
-}
-
-impl Item {
-	fn states(&self) -> impl Iterator<Item = &AssetState> {
-		std::iter::once(&self.mesh).chain(self.maps.values().map(|m| &m.state))
-	}
-	pub fn is_done(&self) -> bool {
-		self.states().all(|s| matches!(s, AssetState::Done { .. }))
-	}
-	pub fn has_failure(&self) -> bool {
-		self.states()
-			.any(|s| matches!(s, AssetState::Failed { .. }))
-	}
-	pub fn has_pending(&self) -> bool {
-		self.states().any(|s| *s == AssetState::Pending)
-	}
-	/// Path of a downloaded file, relative to the workspace root.
-	pub fn done_path(&self, kind: AssetKind) -> Option<&str> {
-		let state = match kind {
-			AssetKind::Mesh => &self.mesh,
-			AssetKind::Map(k) => &self.maps.get(&k)?.state,
-			// images belong to models, not items
-			AssetKind::Image => return None,
-		};
-		match state {
-			AssetState::Done { path } => Some(path.as_str()),
-			_ => None,
-		}
-	}
-}
-
-/// An animated model (rig and clips) from an export. Its parts use meshes
-/// stored as ordinary items.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ModelItem {
-	pub name: String,
-	/// Roblox instance path; identifies the model when an export is re-imported.
-	pub path: String,
-	pub folder: Vec<String>,
-	/// The stored model record, relative to the workspace root.
-	pub file: String,
-	/// `Parts[].MeshRef` to the stem of the item holding that mesh.
-	pub meshes: BTreeMap<u32, String>,
-	pub parts: usize,
-	pub clips: usize,
-	pub playable_clips: usize,
-	/// Images the model's parts use directly (decals), by asset id, stored
-	/// once each under `Images/`.
-	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub images: BTreeMap<u64, AssetState>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Manifest {
-	pub version: u32,
-	pub name: String,
-	pub items: Vec<Item>,
-	#[serde(default)]
-	pub models: Vec<ModelItem>,
-}
-
 pub struct Workspace {
 	pub root: PathBuf,
 	manifest: Manifest,
@@ -223,51 +78,6 @@ pub struct Workspace {
 	dirty: bool,
 	/// Bumped whenever items are added or removed, so views can cache.
 	generation: u64,
-}
-
-/// Writes a model as an export in the current schema
-/// ([`export_file::SCHEMA_VERSION`]) holding just that model and the meshes
-/// it uses, so the file can also be imported on its own. Workspaces made
-/// before schema 2 hold schema 1 rig files; the export reader still accepts
-/// those, so they load as they are.
-fn write_rig(
-	path: &Path,
-	model: &AnimatedModel,
-	meshes: &[(&Entry, String)],
-) -> Result<(), String> {
-	let meshes: Vec<serde_json::Value> = meshes
-		.iter()
-		.filter_map(|(e, _)| {
-			let mut asset = serde_json::Map::new();
-			asset.insert("Id".into(), e.source_id?.into());
-			asset.insert("Name".into(), e.name.clone().into());
-			asset.insert(
-				"MeshId".into(),
-				format!("rbxassetid://{}", e.mesh_id).into(),
-			);
-			asset.insert("Folder".into(), e.folder.join("/").into());
-			for kind in MapKind::ALL {
-				let value = e
-					.maps
-					.get(&kind)
-					.map(|id| format!("rbxassetid://{id}"))
-					.unwrap_or_default();
-				asset.insert(kind.export_field().into(), value.into());
-			}
-			Some(asset.into())
-		})
-		.collect();
-	let doc = serde_json::json!({
-		"SchemaVersion": export_file::SCHEMA_VERSION,
-		"Meshes": meshes,
-		"Models": [model],
-	});
-	if let Some(dir) = path.parent() {
-		std::fs::create_dir_all(dir)
-			.map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-	}
-	let json = serde_json::to_string(&doc).map_err(|e| e.to_string())?;
-	std::fs::write(path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))
 }
 
 impl Workspace {
@@ -306,31 +116,7 @@ impl Workspace {
 				manifest.version
 			));
 		}
-		let mut dirty = false;
-		for item in &mut manifest.items {
-			// version 1: a single optional texture
-			if let (Some(id), Some(state)) = (item.texture_id.take(), item.texture.take()) {
-				item.maps.insert(MapKind::Texture, MapRef { id, state });
-				dirty = true;
-			}
-			// downloads interrupted by closing the app, or files deleted
-			// outside the app, are downloaded again
-			let missing = |state: &AssetState| matches!(state, AssetState::Done { path } if !root.join(path).exists());
-			if missing(&item.mesh) {
-				item.mesh = AssetState::Pending;
-				dirty = true;
-			}
-			for map in item.maps.values_mut() {
-				if missing(&map.state) {
-					map.state = AssetState::Pending;
-					dirty = true;
-				}
-			}
-		}
-		if manifest.version != MANIFEST_VERSION {
-			manifest.version = MANIFEST_VERSION;
-			dirty = true;
-		}
+		let dirty = manifest.upgrade(root);
 		let stems = manifest
 			.items
 			.iter()
@@ -456,16 +242,13 @@ impl Workspace {
 		}
 		let stem = self.unique_stem(MODELS_DIR, &entry.folder, &entry.name);
 		let maps = maps.collect();
-		self.manifest.items.push(Item {
-			name: entry.name.clone(),
-			folder: entry.folder.clone(),
-			mesh_id: entry.mesh_id,
-			stem: stem.clone(),
-			mesh: AssetState::Pending,
+		self.manifest.items.push(Item::new(
+			entry.name.clone(),
+			entry.folder.clone(),
+			entry.mesh_id,
+			stem.clone(),
 			maps,
-			texture_id: None,
-			texture: None,
-		});
+		));
 		self.dirty = true;
 		self.generation += 1;
 		(stem, true)
@@ -738,6 +521,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::studio::export_file;
 	use crate::test_support::TempDir;
 
 	fn entry(folder: &str, name: &str, mesh: u64, maps: &[(MapKind, u64)]) -> Entry {
@@ -752,17 +536,6 @@ mod tests {
 			maps: maps.iter().copied().collect(),
 			source_id: None,
 		}
-	}
-
-	#[test]
-	fn sanitizes_names() {
-		assert_eq!(sanitize("8: CrystalScorpion"), "8_ CrystalScorpion");
-		assert_eq!(sanitize("Demon Egg.013"), "Demon Egg.013");
-		assert_eq!(sanitize("trailing. "), "trailing");
-		assert_eq!(sanitize("CON"), "CON_");
-		assert_eq!(sanitize("con.txt"), "con.txt_");
-		assert_eq!(sanitize("a/b\\c"), "a_b_c");
-		assert_eq!(sanitize("   "), "_");
 	}
 
 	#[test]

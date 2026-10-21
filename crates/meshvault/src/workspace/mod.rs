@@ -316,7 +316,13 @@ impl Workspace {
 				self.unique_stem(RIGS_DIR, &folder, &model.name)
 			),
 		};
-		write_rig(&self.root.join(&file), model, meshes)?;
+		if let Err(e) = write_rig(&self.root.join(&file), model, meshes) {
+			// a new model that could not be written frees the stem it took
+			if existing.is_none() {
+				self.stems.remove(&rig_stem(&file).to_lowercase());
+			}
+			return Err(e);
+		}
 		// decal images: kept as they were when re-imported, otherwise to download
 		let previous = existing
 			.map(|i| self.manifest.models[i].images.clone())
@@ -823,6 +829,21 @@ mod tests {
 		assert!(ws.add_model(&rig_model("Wolf", 3), &[]).is_err());
 		assert_eq!(std::fs::read_to_string(&rig).unwrap(), written);
 		assert_eq!(ws.models()[0].parts, 2);
+	}
+
+	/// A new model whose rig file cannot be written is not added and does
+	/// not keep its stem, so the next try gets the same file name.
+	#[test]
+	fn a_new_rig_that_fails_to_write_frees_its_stem() {
+		let dir = TempDir::new("ws_rig_fails");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		// a file where the Rigs folder should be
+		std::fs::write(dir.join("Rigs"), b"x").unwrap();
+		assert!(ws.add_model(&rig_model("Wolf", 1), &[]).is_err());
+		assert!(ws.models().is_empty());
+		std::fs::remove_file(dir.join("Rigs")).unwrap();
+		assert!(ws.add_model(&rig_model("Wolf", 1), &[]).unwrap());
+		assert_eq!(ws.models()[0].file, "Rigs/Workspace/Wolf.rig.json");
 	}
 
 	/// Decal images are downloaded once per asset into `Images/`, for every

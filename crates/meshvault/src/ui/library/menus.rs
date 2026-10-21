@@ -15,7 +15,19 @@ pub(super) fn export_items(
 	models: &[usize],
 	actions: &mut Vec<Action>,
 ) {
-	let n = items.len() + models.len();
+	export_items_labelled(ui, items, models, items.len() + models.len(), actions);
+}
+
+/// [`export_items`], with the count in the labels given: the selection bar
+/// labels them with the count it showed at the start of the frame, which
+/// stays put for the frame in which Clear empties the selection.
+pub(super) fn export_items_labelled(
+	ui: &mut egui::Ui,
+	items: &[usize],
+	models: &[usize],
+	n: usize,
+	actions: &mut Vec<Action>,
+) {
 	let what = if n == 1 {
 		String::new()
 	} else {

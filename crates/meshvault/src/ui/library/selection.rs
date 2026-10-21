@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{self, CornerRadius, RichText};
 
-use super::menus::export_items;
+use super::menus::export_items_labelled;
 use super::{Action, Browser, Row, Selection};
 use crate::ui::theme::{CARD_RADIUS, CONTROL_XXS, palette};
 use crate::ui::{icons, widgets};
@@ -149,7 +149,7 @@ impl Browser {
 						egui::Popup::menu(&export).show(|ui| {
 							widgets::menu_style(ui);
 							let (items, models) = self.selected();
-							export_items(ui, &items, &models, actions);
+							export_items_labelled(ui, &items, &models, n, actions);
 						});
 						let failed = self.selected_failures(ws);
 						let retry = ui

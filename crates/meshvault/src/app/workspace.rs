@@ -194,15 +194,23 @@ impl App {
 	/// Removes animated models from the workspace; their meshes stay.
 	pub fn remove_models(&mut self, models: &[usize]) {
 		if let Some(ws) = &mut self.workspace {
+			// the open model is found again by its path afterwards, since a
+			// model whose rig file could not be deleted stays
+			let open_path = self
+				.model
+				.as_ref()
+				.and_then(|open| ws.models().get(open.index))
+				.map(|m| m.path.clone());
+			let removed = ws.remove_models(models);
 			if let Some(open) = &mut self.model {
-				if models.contains(&open.index) {
-					self.model = None;
-				} else {
-					// later models move up
-					open.index -= models.iter().filter(|&&i| i < open.index).count();
+				match open_path.and_then(|p| ws.models().iter().position(|m| m.path == p)) {
+					Some(i) => open.index = i,
+					None => self.model = None,
 				}
 			}
-			ws.remove_models(models);
+			if let Err(e) = removed {
+				self.toasts.error(e);
+			}
 		}
 		self.save_workspace();
 	}
@@ -218,7 +226,9 @@ impl App {
 			if removes_open {
 				self.open_stem = None;
 			}
-			ws.remove(items);
+			if let Err(e) = ws.remove(items) {
+				self.toasts.error(e);
+			}
 		}
 		self.save_workspace();
 	}

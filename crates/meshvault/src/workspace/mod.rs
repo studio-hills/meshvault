@@ -366,20 +366,26 @@ impl Workspace {
 	}
 
 	/// Removes animated models and their rig files. The meshes they use stay.
-	pub fn remove_models(&mut self, models: &[usize]) {
+	/// A model whose rig file cannot be deleted stays, and the error says so.
+	pub fn remove_models(&mut self, models: &[usize]) -> Result<(), String> {
 		let mut models = models.to_vec();
 		models.sort_unstable();
 		models.dedup();
+		let mut errors = Vec::new();
 		for &i in models.iter().rev() {
-			if i >= self.manifest.models.len() {
+			let Some(model) = self.manifest.models.get(i) else {
+				continue;
+			};
+			if let Err(e) = delete_file(&self.root, &model.file) {
+				errors.push(e);
 				continue;
 			}
 			let model = self.manifest.models.remove(i);
-			let _ = std::fs::remove_file(self.root.join(&model.file));
 			self.stems.remove(&rig_stem(&model.file).to_lowercase());
 		}
 		self.dirty = true;
 		self.generation += 1;
+		deletion_result(errors)
 	}
 
 	/// The first item with `stem`, as (index, name).
@@ -563,25 +569,61 @@ impl Workspace {
 	}
 
 	/// Removes items from the workspace and deletes their organized files.
-	/// Cached downloads are kept, so re-importing is instant.
-	pub fn remove(&mut self, items: &[usize]) {
+	/// Cached downloads are kept, so re-importing is instant. An item with
+	/// a file that cannot be deleted stays (and keeps its stem), with the
+	/// files that were deleted to download again, and the error says so.
+	pub fn remove(&mut self, items: &[usize]) -> Result<(), String> {
 		let mut items = items.to_vec();
 		items.sort_unstable();
 		items.dedup();
+		let mut errors = Vec::new();
 		for &i in items.iter().rev() {
-			if i >= self.manifest.items.len() {
+			let Some(item) = self.manifest.items.get_mut(i) else {
 				continue;
-			}
-			let item = self.manifest.items.remove(i);
-			for state in item.states() {
-				if let AssetState::Done { path } = state {
-					let _ = std::fs::remove_file(self.root.join(path));
+			};
+			let mut kept = false;
+			let states =
+				std::iter::once(&mut item.mesh).chain(item.maps.values_mut().map(|m| &mut m.state));
+			for state in states {
+				let AssetState::Done { path } = state else {
+					continue;
+				};
+				match delete_file(&self.root, path) {
+					Ok(()) => *state = AssetState::Pending,
+					Err(e) => {
+						errors.push(e);
+						kept = true;
+					}
 				}
 			}
-			self.stems.remove(&item.stem.to_lowercase());
+			if !kept {
+				let item = self.manifest.items.remove(i);
+				self.stems.remove(&item.stem.to_lowercase());
+			}
 		}
 		self.dirty = true;
 		self.generation += 1;
+		deletion_result(errors)
+	}
+}
+
+/// Deletes a file in the workspace. One that is already gone counts as
+/// deleted.
+fn delete_file(root: &Path, path: &str) -> Result<(), String> {
+	match std::fs::remove_file(root.join(path)) {
+		Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+			Err(format!("Could not delete {path}: {e}"))
+		}
+		_ => Ok(()),
+	}
+}
+
+/// The first error of a removal, saying how many more there were.
+fn deletion_result(errors: Vec<String>) -> Result<(), String> {
+	match errors.as_slice() {
+		[] => Ok(()),
+		[one] => Err(one.clone()),
+		[first, rest @ ..] => Err(format!("{first} (and {} more)", rest.len())),
 	}
 }
 
@@ -790,7 +832,7 @@ mod tests {
 		assert_eq!(export.entries[0].maps, torso.maps);
 
 		let mut ws = reopened;
-		ws.remove_models(&[0]);
+		ws.remove_models(&[0]).unwrap();
 		assert!(ws.models().is_empty());
 		assert!(!dir.join("Rigs/Workspace/Animals/Wolf.rig.json").exists());
 	}
@@ -1099,7 +1141,7 @@ mod tests {
 		let generation = ws.generation();
 
 		// an index past the end is skipped
-		ws.remove(&[0, 0, 9]);
+		ws.remove(&[0, 0, 9]).unwrap();
 		assert_eq!(ws.items().len(), 1);
 		assert_eq!(ws.items()[0].stem, "Models/F/B");
 		assert!(!dir.join("Models/F/A.mesh").exists());
@@ -1111,13 +1153,57 @@ mod tests {
 		assert_eq!(stem, "Models/F/a");
 	}
 
+	/// An item with a file that cannot be deleted (here a folder in its
+	/// place) is not removed and keeps its stem; its other files are deleted
+	/// and download again. A file that is already gone does not count.
+	#[test]
+	fn remove_keeps_items_whose_files_cannot_be_deleted() {
+		let dir = TempDir::new("ws_remove_fails");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([
+			entry("F", "A", 1, &[(MapKind::Color, 2)]),
+			entry("F", "B", 3, &[]),
+		]);
+		std::fs::create_dir_all(dir.join("Models/F/A.mesh")).unwrap();
+		std::fs::write(dir.join("Models/F/A.color.png"), b"x").unwrap();
+		let done = |path: &str| AssetState::Done { path: path.into() };
+		ws.set_state("Models/F/A", AssetKind::Mesh, done("Models/F/A.mesh"));
+		let color = AssetKind::Map(MapKind::Color);
+		ws.set_state("Models/F/A", color, done("Models/F/A.color.png"));
+		// B's file is already gone
+		ws.set_state("Models/F/B", AssetKind::Mesh, done("Models/F/B.mesh"));
+
+		let error = ws.remove(&[0, 1]).unwrap_err();
+		assert!(
+			error.starts_with("Could not delete Models/F/A.mesh"),
+			"{error}"
+		);
+		assert_eq!(ws.items().len(), 1);
+		let a = &ws.items()[0];
+		assert_eq!(a.stem, "Models/F/A");
+		assert_eq!(a.mesh, done("Models/F/A.mesh"));
+		assert_eq!(a.maps[&MapKind::Color].state, AssetState::Pending);
+		assert!(!dir.join("Models/F/A.color.png").exists());
+		let (stem, _) = ws.add_entry(&entry("F", "A", 4, &[]));
+		assert_eq!(stem, "Models/F/A (2)");
+
+		// the same for a model's rig file
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		let rig = dir.join(&ws.models()[0].file);
+		std::fs::remove_file(&rig).unwrap();
+		std::fs::create_dir(&rig).unwrap();
+		let error = ws.remove_models(&[0]).unwrap_err();
+		assert!(error.starts_with("Could not delete Rigs/"), "{error}");
+		assert_eq!(ws.models().len(), 1);
+	}
+
 	/// A download that finishes after its item was removed changes nothing.
 	#[test]
 	fn set_state_ignores_removed_items() {
 		let dir = TempDir::new("ws_set_state");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		ws.add([entry("", "A", 1, &[(MapKind::Color, 2)])]);
-		ws.remove(&[0]);
+		ws.remove(&[0]).unwrap();
 		ws.save_if_dirty().unwrap();
 		let done = AssetState::Done {
 			path: "Models/A.mesh".into(),

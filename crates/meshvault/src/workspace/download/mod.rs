@@ -69,15 +69,22 @@ struct Run {
 	/// Cancel or a rejected credential, or cut short by either while in
 	/// flight. Their items stay pending.
 	dropped: AtomicUsize,
+	#[cfg(test)]
+	hooks: Arc<Hooks>,
 }
+
+/// Something a test does at a point in a worker, given the worker's run.
+#[cfg(test)]
+type Hook = Box<dyn FnOnce(&Run) + Send>;
 
 /// Points in the workers a test can act at.
 #[cfg(test)]
 #[derive(Default)]
 struct Hooks {
-	/// Called once, by the first worker to stop, after it has decided to
-	/// stop and before it is gone, so a test can act in that gap.
-	on_stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+	/// Called once, by the first worker to find the queue empty, with the
+	/// queue still locked, so a test can see what a `start` waiting for the
+	/// queue would see once it gets it.
+	on_stop: Mutex<Option<Hook>>,
 }
 
 impl Run {
@@ -91,6 +98,8 @@ impl Run {
 			workers: AtomicUsize::new(0),
 			auth_failed: AtomicBool::new(false),
 			dropped: AtomicUsize::new(0),
+			#[cfg(test)]
+			hooks: Arc::default(),
 		}
 	}
 
@@ -164,7 +173,13 @@ impl Downloader {
 
 	/// Makes a new run the latest, with its counts at zero.
 	fn new_run(&mut self, root: PathBuf, client: Arc<Client>) -> Arc<Run> {
-		let run = Arc::new(Run::new(root, client));
+		let run = Run::new(root, client);
+		#[cfg(test)]
+		let run = Run {
+			hooks: self.hooks.clone(),
+			..run
+		};
+		let run = Arc::new(run);
 		self.run = Some(run.clone());
 		self.total = 0;
 		self.completed = 0;
@@ -236,14 +251,8 @@ impl Downloader {
 			let run = run.clone();
 			let tx = self.tx.clone();
 			let ctx = ctx.clone();
-			#[cfg(test)]
-			let hooks = self.hooks.clone();
 			std::thread::spawn(move || {
 				worker(&run, &tx, &ctx);
-				#[cfg(test)]
-				if let Some(on_stop) = hooks.on_stop.lock().unwrap().take() {
-					on_stop();
-				}
 				ctx.request_repaint();
 			});
 		}
@@ -360,6 +369,10 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 				}
 				None => {
 					let last = run.workers.fetch_sub(1, Ordering::SeqCst) == 1;
+					#[cfg(test)]
+					if let Some(on_stop) = run.hooks.on_stop.lock().unwrap().take() {
+						on_stop(run);
+					}
 					drop(queue);
 					// a run with no workers is never restarted, so this is
 					// its last event
@@ -980,29 +993,30 @@ mod tests {
 		assert_eq!(cached, b"version 4.00\nEIGHT");
 	}
 
-	/// Makes the first worker to stop wait, once it has decided to stop,
-	/// until the returned sender sends (or is dropped). The receiver hears
-	/// when it gets there.
-	fn pause_first_stop(downloader: &Downloader) -> (Receiver<()>, Sender<()>) {
-		let (stopping_tx, stopping) = channel();
-		let (go, go_rx) = channel::<()>();
-		*downloader.hooks.on_stop.lock().unwrap() = Some(Box::new(move || {
-			let _ = stopping_tx.send(());
-			let _ = go_rx.recv_timeout(test_server::WATCHDOG);
+	/// What the first worker to find the queue empty leaves for a `start`
+	/// waiting on the queue: (its run's workers, whether the run has
+	/// stopped), as seen while it still holds the queue.
+	fn watch_first_stop(downloader: &Downloader) -> Receiver<(usize, bool)> {
+		let (seen, watch) = channel();
+		*downloader.hooks.on_stop.lock().unwrap() = Some(Box::new(move |run: &Run| {
+			let _ = seen.send((run.workers.load(Ordering::SeqCst), run.stopped()));
 		}));
-		(stopping, go)
+		watch
 	}
 
 	/// A job queued just as the last worker finds the queue empty and
-	/// stops is still downloaded: the worker no longer counts as running
-	/// once it has decided to stop, so a new one is started (B04).
+	/// stops is still downloaded (B04). Once a `start` could see the worker
+	/// still counted after it had let go of the queue, so it queued the job
+	/// for a worker that was leaving. Now, by the time the worker lets go of
+	/// the queue, it no longer counts and its run has stopped, so whatever
+	/// `start` gets the queue next starts a new run.
 	#[test]
 	fn a_job_queued_as_the_last_worker_stops_is_downloaded() {
 		let dir = TempDir::new("download_stop_gap");
 		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
 		let ctx = eframe::egui::Context::default();
 		let mut downloader = Downloader::default();
-		let (stopping, go) = pause_first_stop(&downloader);
+		let watch = watch_first_stop(&downloader);
 		let root = dir.to_path_buf();
 		downloader.start(
 			&ctx,
@@ -1011,9 +1025,14 @@ mod tests {
 			vec![mesh_job(1, "Models/One")],
 			1,
 		);
-		stopping
+		let seen = watch
 			.recv_timeout(test_server::WATCHDOG)
 			.expect("the worker never stopped");
+		assert_eq!(
+			seen,
+			(0, true),
+			"a stopping worker still counted once it let go of the queue"
+		);
 		downloader.start(
 			&ctx,
 			root,
@@ -1021,7 +1040,6 @@ mod tests {
 			vec![mesh_job(2, "Models/Two")],
 			1,
 		);
-		drop(go);
 		publish(&mut run_to_end(&mut downloader, &dir), &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());

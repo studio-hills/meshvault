@@ -434,19 +434,22 @@ pub fn note(ui: &mut Ui, icon: RichText, text: RichText) -> Response {
 /// Two-column label/value rows with weak labels.
 pub fn properties(ui: &mut Ui, id: &str, rows: &[(String, String)]) {
 	let p = palette(ui.ctx());
-	// grids use the control height as their minimum row height; these rows
-	// hold text only
-	ui.spacing_mut().interact_size.y = 18.0;
-	egui::Grid::new(id)
-		.num_columns(2)
-		.spacing(Vec2::new(12.0, 6.0))
-		.show(ui, |ui| {
-			for (key, value) in rows {
-				ui.label(RichText::new(key).color(p.text_weak));
-				ui.add(egui::Label::new(value).wrap());
-				ui.end_row();
-			}
-		});
+	// in a scope, so what is added after the grid keeps the caller's height
+	ui.scope(|ui| {
+		// grids use the control height as their minimum row height; these
+		// rows hold text only
+		ui.spacing_mut().interact_size.y = 18.0;
+		egui::Grid::new(id)
+			.num_columns(2)
+			.spacing(Vec2::new(12.0, 6.0))
+			.show(ui, |ui| {
+				for (key, value) in rows {
+					ui.label(RichText::new(key).color(p.text_weak));
+					ui.add(egui::Label::new(value).wrap());
+					ui.end_row();
+				}
+			});
+	});
 }
 
 /// Key numbers about what is open, in a card: equal columns, each a value
@@ -647,5 +650,25 @@ pub fn blender_item(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
 			text,
 		)),
 		None => ui.button(text),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn properties_leave_the_callers_control_height_alone() {
+		let ctx = egui::Context::default();
+		let mut heights = None;
+		let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			ui.spacing_mut().interact_size.y = 36.0;
+			properties(ui, "test_grid", &[("Key".into(), "Value".into())]);
+			// it was left at 18 for whatever came next (bug B44)
+			heights = Some(ui.spacing().interact_size.y);
+		});
+		// the font atlas upload is never applied here
+		output.textures_delta.clear();
+		assert_eq!(heights, Some(36.0));
 	}
 }

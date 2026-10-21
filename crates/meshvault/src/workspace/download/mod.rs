@@ -32,6 +32,10 @@ pub enum Event {
 	AuthFailed(String),
 }
 
+/// One run of downloads: its queue and workers. A new run starts when
+/// downloads start after the last one stopped or was cancelled, so workers
+/// still finishing a cancelled run never take its jobs, and never leave
+/// them stranded.
 #[derive(Default)]
 struct Shared {
 	queue: Mutex<VecDeque<Job>>,
@@ -40,9 +44,14 @@ struct Shared {
 	/// queue locked, so a worker that finds the queue empty stops counting
 	/// at once, and `start` never counts on a worker that is stopping.
 	workers: AtomicUsize,
+}
+
+/// Points in the workers a test can act at.
+#[cfg(test)]
+#[derive(Default)]
+struct Hooks {
 	/// Called once, by the first worker to stop, after it has decided to
 	/// stop and before it is gone, so a test can act in that gap.
-	#[cfg(test)]
 	on_stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -55,6 +64,11 @@ impl Shared {
 			.lock()
 			.expect("download queue lock poisoned: a queue edit panicked")
 	}
+
+	/// Whether the run is over or ending: no new job would be picked up.
+	fn stopped(&self) -> bool {
+		self.cancel.load(Ordering::SeqCst) || self.workers.load(Ordering::SeqCst) == 0
+	}
 }
 
 pub struct Downloader {
@@ -64,6 +78,8 @@ pub struct Downloader {
 	pub total: usize,
 	pub completed: usize,
 	pub failed: usize,
+	#[cfg(test)]
+	hooks: Arc<Hooks>,
 }
 
 impl Default for Downloader {
@@ -76,6 +92,8 @@ impl Default for Downloader {
 			total: 0,
 			completed: 0,
 			failed: 0,
+			#[cfg(test)]
+			hooks: Arc::default(),
 		}
 	}
 }
@@ -86,7 +104,8 @@ impl Downloader {
 	}
 
 	/// Queues jobs; a job already queued gains the new targets. Starts
-	/// workers up to `concurrency`.
+	/// workers up to `concurrency`. Starts a new run, with its counts at
+	/// zero, if the last one has stopped or was cancelled.
 	pub fn start(
 		&mut self,
 		ctx: &eframe::egui::Context,
@@ -95,13 +114,19 @@ impl Downloader {
 		jobs: Vec<Job>,
 		concurrency: usize,
 	) {
-		if !self.is_running() {
+		let mut shared = self.shared.clone();
+		let mut queue = shared.queue();
+		// with the queue locked, a run seen live stays live: a run only
+		// ends with its queue locked
+		if shared.stopped() {
+			drop(queue);
+			self.shared = Arc::default();
 			self.total = 0;
 			self.completed = 0;
 			self.failed = 0;
-			self.shared.cancel.store(false, Ordering::SeqCst);
+			shared = self.shared.clone();
+			queue = shared.queue();
 		}
-		let mut queue = self.shared.queue();
 		for job in jobs {
 			// already queued: make sure every target gets written
 			if let Some(queued) = queue.iter_mut().find(|q| q.asset_id == job.asset_id) {
@@ -116,17 +141,19 @@ impl Downloader {
 			}
 		}
 		let wanted = concurrency.clamp(1, MAX_WORKERS).min(queue.len());
-		while self.shared.workers.load(Ordering::SeqCst) < wanted {
-			self.shared.workers.fetch_add(1, Ordering::SeqCst);
-			let shared = self.shared.clone();
+		while shared.workers.load(Ordering::SeqCst) < wanted {
+			shared.workers.fetch_add(1, Ordering::SeqCst);
+			let shared = shared.clone();
 			let tx = self.tx.clone();
 			let ctx = ctx.clone();
 			let root = root.clone();
 			let client = client.clone();
+			#[cfg(test)]
+			let hooks = self.hooks.clone();
 			std::thread::spawn(move || {
 				worker(&shared, &tx, &ctx, &root, &client);
 				#[cfg(test)]
-				if let Some(on_stop) = shared.on_stop.lock().unwrap().take() {
+				if let Some(on_stop) = hooks.on_stop.lock().unwrap().take() {
 					on_stop();
 				}
 				ctx.request_repaint();
@@ -137,9 +164,9 @@ impl Downloader {
 
 	/// Stops after the downloads in flight; queued jobs stay pending.
 	pub fn cancel(&mut self) {
-		self.shared.cancel.store(true, Ordering::SeqCst);
 		let dropped = {
 			let mut queue = self.shared.queue();
+			self.shared.cancel.store(true, Ordering::SeqCst);
 			let n = queue.len();
 			queue.clear();
 			n
@@ -194,8 +221,11 @@ fn worker(
 						Ok(bytes)
 					}
 					Err(FetchError::Auth(message)) => {
-						shared.cancel.store(true, Ordering::SeqCst);
-						shared.queue().clear();
+						{
+							let mut queue = shared.queue();
+							shared.cancel.store(true, Ordering::SeqCst);
+							queue.clear();
+						}
 						let _ = tx.send(Event::AuthFailed(message));
 						ctx.request_repaint();
 						continue;
@@ -744,7 +774,7 @@ mod tests {
 	fn pause_first_stop(downloader: &Downloader) -> (Receiver<()>, Sender<()>) {
 		let (stopping_tx, stopping) = channel();
 		let (go, go_rx) = channel::<()>();
-		*downloader.shared.on_stop.lock().unwrap() = Some(Box::new(move || {
+		*downloader.hooks.on_stop.lock().unwrap() = Some(Box::new(move || {
 			let _ = stopping_tx.send(());
 			let _ = go_rx.recv_timeout(test_server::WATCHDOG);
 		}));
@@ -780,6 +810,39 @@ mod tests {
 			1,
 		);
 		drop(go);
+		run_to_end(&mut downloader);
+		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
+		assert!(dir.join("Models/Two.mesh").is_file());
+	}
+
+	/// Downloads started while cancelled workers are still finishing their
+	/// last job run on new workers, and the total counts only them (B03).
+	#[test]
+	fn a_start_after_cancel_runs_while_cancelled_workers_finish() {
+		let dir = TempDir::new("download_cancel_restart");
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		let gate = assets.api.gate("/oc/1");
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let root = dir.to_path_buf();
+		downloader.start(
+			&ctx,
+			root.clone(),
+			assets.client(),
+			vec![mesh_job(1, "Models/One")],
+			1,
+		);
+		gate.wait_for_request();
+		downloader.cancel();
+		downloader.start(
+			&ctx,
+			root,
+			assets.client(),
+			vec![mesh_job(2, "Models/Two")],
+			1,
+		);
+		assert_eq!(downloader.total, 1);
+		gate.release();
 		run_to_end(&mut downloader);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());

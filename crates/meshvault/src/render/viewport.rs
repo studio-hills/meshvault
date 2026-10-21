@@ -240,14 +240,14 @@ fn draw_gpu(
 }
 
 /// Draws `parts` off screen into a `size` image with a transparent
-/// background (no grid or axes).
+/// background (no grid or axes). Fails when the GPU cannot hand it back.
 pub fn render_image(
 	parts: &mut [ScenePart],
 	camera: &Camera,
 	settings: &ViewSettings,
 	renderer: &GpuRenderer,
 	size: [u32; 2],
-) -> image::RgbaImage {
+) -> Result<image::RgbaImage, String> {
 	let aspect = size[0] as f32 / size[1].max(1) as f32;
 	let callback = mesh_callback(parts, camera, settings, renderer, aspect);
 	renderer.render_image(&callback, size)

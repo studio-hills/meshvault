@@ -15,13 +15,14 @@ use crate::ui::theme;
 impl App {
 	/// Draws the view as it is now into `frames` images of `size`; with more
 	/// than one, the camera turns once around the model while a selected
-	/// clip plays on, `step` seconds a frame.
+	/// clip plays on, `step` seconds a frame. `None` without the GPU
+	/// renderer or anything shown; an error when the GPU fails to draw.
 	fn render_view(
 		&mut self,
 		size: [u32; 2],
 		frames: usize,
 		step: f32,
-	) -> Option<Vec<image::RgbaImage>> {
+	) -> Option<Result<Vec<image::RgbaImage>, String>> {
 		let renderer = self.gpu.clone()?;
 		let p = theme::palette(&self.ctx);
 		let mut settings = self.view_settings(&p);
@@ -35,6 +36,7 @@ impl App {
 			camera
 		};
 		let mut out = Vec::with_capacity(frames);
+		let mut failed = None;
 		if let Some(model) = &mut self.model {
 			let (camera, start) = (model.camera.clone(), model.time);
 			let duration = model.duration();
@@ -44,13 +46,13 @@ impl App {
 				}
 				settings.lights = model.scene_lights();
 				let mut parts = model.scene_parts(plain);
-				out.push(render_image(
-					&mut parts,
-					&turn(&camera, k),
-					&settings,
-					&renderer,
-					size,
-				));
+				match render_image(&mut parts, &turn(&camera, k), &settings, &renderer, size) {
+					Ok(image) => out.push(image),
+					Err(e) => {
+						failed = Some(e);
+						break;
+					}
+				}
 			}
 			model.set_time(start);
 		} else if let Some(doc) = &mut self.doc {
@@ -73,24 +75,41 @@ impl App {
 					decal: None,
 					highlight: false,
 				}];
-				out.push(render_image(
+				match render_image(
 					&mut parts,
 					&turn(&doc.camera, k),
 					&settings,
 					&renderer,
 					size,
-				));
+				) {
+					Ok(image) => out.push(image),
+					Err(e) => {
+						failed = Some(e);
+						break;
+					}
+				}
 			}
 		} else {
 			return None;
 		}
-		Some(out)
+		Some(match failed {
+			Some(e) => Err(format!("Could not draw the view: {e}")),
+			None => Ok(out),
+		})
 	}
 
 	/// Copies the view as it is now, over the viewport's background.
 	pub fn copy_image(&mut self) {
 		let size = frame_size(self.viewport, STILL_HEIGHT);
-		let Some(image) = self.render_view(size, 1, 0.0).and_then(|mut f| f.pop()) else {
+		let image = match self.render_view(size, 1, 0.0) {
+			Some(Ok(mut frames)) => frames.pop(),
+			Some(Err(e)) => {
+				self.toasts.error(e);
+				return;
+			}
+			None => None,
+		};
+		let Some(image) = image else {
 			self.toasts.error("Copying images needs the GPU renderer.");
 			return;
 		};
@@ -114,7 +133,15 @@ impl App {
 			return;
 		};
 		let size = frame_size(self.viewport, STILL_HEIGHT);
-		let Some(image) = self.render_view(size, 1, 0.0).and_then(|mut f| f.pop()) else {
+		let image = match self.render_view(size, 1, 0.0) {
+			Some(Ok(mut frames)) => frames.pop(),
+			Some(Err(e)) => {
+				self.toasts.error(e);
+				return;
+			}
+			None => None,
+		};
+		let Some(image) = image else {
 			return;
 		};
 		self.in_background(move |_| {
@@ -138,8 +165,13 @@ impl App {
 		};
 		let size = frame_size(self.viewport, TURNTABLE_HEIGHT);
 		let delay = 1.0 / TURNTABLE_FPS;
-		let Some(frames) = self.render_view(size, TURNTABLE_FRAMES, delay) else {
-			return;
+		let frames = match self.render_view(size, TURNTABLE_FRAMES, delay) {
+			Some(Ok(frames)) => frames,
+			Some(Err(e)) => {
+				self.toasts.error(e);
+				return;
+			}
+			None => return,
 		};
 		let p = theme::palette(&self.ctx);
 		let (top, bottom) = (p.viewport_top, p.viewport_bottom);

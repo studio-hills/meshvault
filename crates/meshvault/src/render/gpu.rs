@@ -462,12 +462,17 @@ impl GpuRenderer {
 impl GpuRenderer {
 	/// Draws `callback` off screen into a `size` image whose background is
 	/// transparent. It is drawn twice, over black and over white: where the
-	/// two differ, the background shows through.
-	pub(super) fn render_image(&self, callback: &MeshCallback, size: [u32; 2]) -> image::RgbaImage {
-		let black = self.render_over(callback, size, wgpu::Color::BLACK);
-		let white = self.render_over(callback, size, wgpu::Color::WHITE);
+	/// two differ, the background shows through. Fails when the GPU could
+	/// not hand the image back.
+	pub(super) fn render_image(
+		&self,
+		callback: &MeshCallback,
+		size: [u32; 2],
+	) -> Result<image::RgbaImage, String> {
+		let black = self.render_over(callback, size, wgpu::Color::BLACK)?;
+		let white = self.render_over(callback, size, wgpu::Color::WHITE)?;
 		// an sRGB target blends in linear light and stores encoded values
-		unblend(&black, &white, size, self.target_format.is_srgb())
+		Ok(unblend(&black, &white, size, self.target_format.is_srgb()))
 	}
 
 	fn render_over(
@@ -475,7 +480,7 @@ impl GpuRenderer {
 		callback: &MeshCallback,
 		[width, height]: [u32; 2],
 		clear: wgpu::Color,
-	) -> image::RgbaImage {
+	) -> Result<image::RgbaImage, String> {
 		let extent = wgpu::Extent3d {
 			width,
 			height,
@@ -563,24 +568,42 @@ impl GpuRenderer {
 			extent,
 		);
 		self.queue.submit([encoder.finish()]);
-		buffer.map_async(wgpu::MapMode::Read, .., |_| {});
-		let _ = self.device.poll(wgpu::PollType::Wait {
-			submission_index: None,
-			timeout: None,
+		let (tx, rx) = std::sync::mpsc::channel();
+		buffer.map_async(wgpu::MapMode::Read, .., move |mapped| {
+			let _ = tx.send(mapped.map_err(|e| e.to_string()));
 		});
+		let polled = self
+			.device
+			.poll(wgpu::PollType::Wait {
+				submission_index: None,
+				timeout: None,
+			})
+			.map(|_| ())
+			.map_err(|e| e.to_string());
+		read_back(polled, rx.try_recv().ok())?;
 		let bgra = matches!(
 			self.target_format,
 			wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
 		);
-		// A failed readback is not reported: the map callback's result and
-		// the poll's error are dropped above, and an unmapped buffer leaves
-		// the image blank (every byte zero). Fixing that is a separate change.
 		let image = match buffer.slice(..).get_mapped_range() {
 			Ok(data) => read_rows(&data, row as usize, [width, height], bgra),
-			Err(_) => image::RgbaImage::new(width, height),
+			Err(e) => return Err(format!("could not read the image back: {e}")),
 		};
 		buffer.unmap();
-		image
+		Ok(image)
+	}
+}
+
+/// Whether a readback can be read: the wait for the GPU (`polled`) ended
+/// well, and the buffer's map callback (`mapped`) ran and succeeded.
+/// Reading a buffer that failed to map would give a blank image, which
+/// unblends to opaque black and would pass for a picture.
+fn read_back(polled: Result<(), String>, mapped: Option<Result<(), String>>) -> Result<(), String> {
+	polled.map_err(|e| format!("the GPU did not finish drawing: {e}"))?;
+	match mapped {
+		Some(Ok(())) => Ok(()),
+		Some(Err(e)) => Err(format!("could not read the image back: {e}")),
+		None => Err("the GPU did not hand the image back".into()),
 	}
 }
 
@@ -603,9 +626,10 @@ fn read_rows(data: &[u8], row: usize, [width, height]: [u32; 2], bgra: bool) -> 
 }
 
 /// Recovers a transparent `size` image from the same scene drawn over
-/// black and over white. Where both are blank (a failed readback, see
-/// `render_over`) the two agree, so the result is opaque black, not empty.
-/// `srgb`: the images hold sRGB-encoded values of a linear blend.
+/// black and over white. Two blank images agree everywhere, so they give
+/// opaque black, not an empty image: a failed readback must not get here
+/// (see `read_back`). `srgb`: the images hold sRGB-encoded values of a
+/// linear blend.
 fn unblend(
 	black: &image::RgbaImage,
 	white: &image::RgbaImage,
@@ -1027,7 +1051,7 @@ mod tests {
 		}
 	}
 
-	use super::{read_rows, unblend};
+	use super::{read_back, read_rows, unblend};
 	use crate::scene::colour::linear_to_srgb;
 
 	/// One pixel drawn over black and over white, unblended.
@@ -1086,12 +1110,28 @@ mod tests {
 		assert_eq!(unblend_one([100; 3], [50; 3], false), [100, 100, 100, 255]);
 	}
 
-	/// Two blank readbacks agree everywhere, so they read as opaque black.
+	/// Two blank readbacks agree everywhere, so unblended they would pass
+	/// for an opaque black picture (bug B31). A failed readback is an error
+	/// instead, whichever step failed.
 	#[test]
-	fn unblend_of_two_blank_images_is_opaque_black() {
+	fn a_failed_readback_is_an_error_not_opaque_black() {
 		let blank = image::RgbaImage::new(2, 2);
 		let out = unblend(&blank, &blank, [2, 2], true);
 		assert!(out.pixels().all(|p| p.0 == [0, 0, 0, 255]));
+		assert_eq!(read_back(Ok(()), Some(Ok(()))), Ok(()));
+		let lost = || Err::<(), _>("lost".to_string());
+		assert_eq!(
+			read_back(lost(), Some(Ok(()))),
+			Err("the GPU did not finish drawing: lost".into())
+		);
+		assert_eq!(
+			read_back(Ok(()), Some(lost())),
+			Err("could not read the image back: lost".into())
+		);
+		assert_eq!(
+			read_back(Ok(()), None),
+			Err("the GPU did not hand the image back".into())
+		);
 	}
 
 	#[test]

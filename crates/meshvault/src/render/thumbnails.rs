@@ -165,18 +165,32 @@ impl Thumbnails {
 		let Some(job) = self.job.take() else { return };
 		let state = match (result, renderer) {
 			(Ok(prepared), Some(renderer)) => {
-				let image = draw(renderer, prepared);
-				// a thumbnail that cannot be saved is still shown
-				if std::fs::create_dir_all(&self.dir).is_ok() {
-					let _ = image.save(&job.file);
+				match keep(&self.dir, &job.file, draw(renderer, prepared)) {
+					Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
+					None => State::Failed,
 				}
-				State::Ready(texture(ctx, &job.subject, &image))
 			}
-			// the reader's reason is not shown anywhere
+			// the reader's (or the GPU's) reason is not shown anywhere
 			_ => State::Failed,
 		};
 		self.states.insert(job.subject, state);
 	}
+}
+
+/// The thumbnail `drawn`, saved to `file` in `dir` for later runs. One the
+/// GPU could not hand back is neither saved nor shown, so it is drawn again
+/// rather than kept as a black square.
+fn keep(
+	dir: &Path,
+	file: &Path,
+	drawn: Result<image::RgbaImage, String>,
+) -> Option<image::RgbaImage> {
+	let image = drawn.ok()?;
+	// a thumbnail that cannot be saved is still shown
+	if std::fs::create_dir_all(dir).is_ok() {
+		let _ = image.save(file);
+	}
+	Some(image)
 }
 
 /// What `subject` is drawn from, and the files whose changes make its
@@ -307,7 +321,7 @@ fn thumbnail_settings() -> ViewSettings {
 }
 
 /// Draws a thumbnail from a front three-quarter view, as the viewer opens.
-fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
+fn draw(renderer: &GpuRenderer, prepared: Prepared) -> Result<image::RgbaImage, String> {
 	let mut settings = thumbnail_settings();
 	let big = [SIZE * SUPERSAMPLE; 2];
 	let image = match prepared {
@@ -332,7 +346,7 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 				decal: None,
 				highlight: false,
 			}];
-			viewport::render_image(&mut parts, &camera, &settings, renderer, big)
+			viewport::render_image(&mut parts, &camera, &settings, renderer, big)?
 		}
 		Prepared::Model(mut model) => {
 			settings.lights = model.scene_lights();
@@ -340,10 +354,15 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> image::RgbaImage {
 			// framed on what is drawn, in the pose it is drawn in
 			let mut camera = Camera::framing_bounds(drawn_bounds(&parts));
 			camera.distance *= ZOOM;
-			viewport::render_image(&mut parts, &camera, &settings, renderer, big)
+			viewport::render_image(&mut parts, &camera, &settings, renderer, big)?
 		}
 	};
-	image::imageops::resize(&image, SIZE, SIZE, image::imageops::FilterType::Triangle)
+	Ok(image::imageops::resize(
+		&image,
+		SIZE,
+		SIZE,
+		image::imageops::FilterType::Triangle,
+	))
 }
 
 /// The box around every drawn vertex (decals lie on their parts).
@@ -480,6 +499,18 @@ mod tests {
 	fn touch(path: &Path, when: SystemTime) {
 		let file = std::fs::File::create(path).unwrap();
 		file.set_modified(when).unwrap();
+	}
+
+	/// A drawing the GPU could not hand back is not cached (B31).
+	#[test]
+	fn only_drawn_thumbnails_are_kept() {
+		let dir = TempDir::new("thumb_keep");
+		let (cache, file) = (dir.join("cache"), dir.join("cache").join("t.png"));
+		assert_eq!(keep(&cache, &file, Err("lost".into())), None);
+		assert!(!file.exists());
+		let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		assert_eq!(keep(&cache, &file, Ok(image.clone())), Some(image.clone()));
+		assert_eq!(image::open(&file).unwrap().to_rgba8(), image);
 	}
 
 	#[test]

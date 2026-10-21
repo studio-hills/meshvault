@@ -723,11 +723,7 @@ impl Browser {
 				);
 				clicked = response.clicked();
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					ui.label(
-						RichText::new(ws.models().len().to_string())
-							.size(CAPTION)
-							.color(p.text_weak),
-					);
+					ui.label(widgets::caption(ui, ws.models().len().to_string()));
 				});
 				response.context_menu(|ui| {
 					widgets::menu_style(ui);
@@ -989,19 +985,18 @@ impl Browser {
 				widgets::menu_style(ui);
 				ui.set_min_width(200.0);
 				let f = &mut self.filters;
-				ui.label(RichText::new("Show only").size(CAPTION).color(p.text_weak));
+				ui.label(widgets::caption(ui, "Show only"));
 				ui.checkbox(&mut f.animated, "Has animations");
 				ui.checkbox(&mut f.skinned, "Skinned (bends with bones)");
 				if f.skinned && reading > 0 {
-					ui.label(
-						RichText::new(format!("Reading meshes… {reading} left"))
-							.size(CAPTION)
-							.color(p.text_weak),
-					);
+					ui.label(widgets::caption(
+						ui,
+						format!("Reading meshes… {reading} left"),
+					));
 				}
 				ui.checkbox(&mut f.missing, "Missing meshes");
 				ui.add_space(4.0);
-				ui.label(RichText::new("Has a map").size(CAPTION).color(p.text_weak));
+				ui.label(widgets::caption(ui, "Has a map"));
 				for kind in MapKind::ALL {
 					let mut on = f.maps.contains(&kind);
 					if ui.checkbox(&mut on, kind.label()).changed() {
@@ -1075,11 +1070,7 @@ impl Browser {
 					// the whole name toggles the folder, not just the arrow
 					clicked = response.clicked();
 					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-						ui.label(
-							RichText::new(format!("{done}/{}", all.len()))
-								.size(CAPTION)
-								.color(p.text_weak),
-						);
+						ui.label(widgets::caption(ui, format!("{done}/{}", all.len())));
 					});
 					response.context_menu(|ui| {
 						widgets::menu_style(ui);
@@ -1197,15 +1188,12 @@ impl Browser {
 			nothing_matches(ui);
 			return;
 		}
-		let p = palette(ui.ctx());
 		let width = ui.available_width();
 		let columns = ((width + GAP) / (TILE + GAP)).floor().max(1.0) as usize;
 		let side = (width - GAP * (columns - 1) as f32) / columns as f32;
 		for ((title, keys), path) in sections.into_iter().zip(paths) {
 			ui.add_space(4.0);
-			let label = ui.add(
-				egui::Label::new(RichText::new(title).size(CAPTION).color(p.text_weak)).truncate(),
-			);
+			let label = ui.add(egui::Label::new(widgets::caption(ui, title)).truncate());
 			if !path.is_empty() {
 				label.on_hover_text(path);
 			}

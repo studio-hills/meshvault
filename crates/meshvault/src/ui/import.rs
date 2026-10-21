@@ -15,9 +15,8 @@ use crate::scene::maps::MapKind;
 use crate::studio::export_file::{Entry, Export};
 use crate::ui::format::plural;
 use crate::ui::icons;
-use crate::ui::theme::{CAPTION, ROW, dialog_frame, display, palette};
-use crate::ui::tree::FolderTree;
-use crate::ui::tree::{self, FolderCommand};
+use crate::ui::theme::{ROW, palette};
+use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::widgets;
 use crate::workspace::Workspace;
 
@@ -256,26 +255,17 @@ impl ImportDialog {
 			.file_name()
 			.map(|s| s.to_string_lossy().into_owned())
 			.unwrap_or_default();
-		let modal = egui::Modal::new(egui::Id::unique("import_dialog"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
-				ui.set_width(size.x);
-				ui.set_height(size.y);
-				ui.horizontal(|ui| {
-					ui.label(
-						RichText::new(icons::FILE_ARROW_DOWN)
-							.size(20.0)
-							.color(palette(ui.ctx()).accent),
-					);
-					ui.label(
-						RichText::new(format!("Import {file}"))
-							.size(18.0)
-							.family(display()),
-					);
-				});
-				outcome = self.contents(ui);
-			});
+		let modal = widgets::modal(ctx, "import_dialog").show(ctx, |ui| {
+			ui.set_width(size.x);
+			ui.set_height(size.y);
+			let accent = palette(ui.ctx()).accent;
+			widgets::dialog_title(
+				ui,
+				Some((icons::FILE_ARROW_DOWN, 20.0, accent)),
+				format!("Import {file}"),
+			);
+			outcome = self.contents(ui);
+		});
 		if outcome.is_none() && modal.should_close() {
 			outcome = Some(Outcome::Cancel);
 		}
@@ -432,7 +422,6 @@ impl ImportDialog {
 	}
 
 	fn footer(&mut self, ui: &mut egui::Ui) -> Option<Outcome> {
-		let p = palette(ui.ctx());
 		let (entries, models) = self.selection();
 		let chosen: Vec<BTreeMap<MapKind, u64>> =
 			entries.iter().map(|&e| self.chosen_maps(e)).collect();
@@ -463,13 +452,12 @@ impl ImportDialog {
 		let already = entries.iter().filter(|&&e| self.existing[e]).count()
 			+ models.iter().filter(|&&m| self.model_existing[m]).count();
 		if already > 0 {
-			ui.label(
-				RichText::new(format!(
+			ui.label(widgets::caption(
+				ui,
+				format!(
 					"{already} already in this workspace; importing again only adds what is new."
-				))
-				.size(CAPTION)
-				.color(p.text_weak),
-			);
+				),
+			));
 		} else {
 			ui.add_space(NOTE_RESERVE);
 		}
@@ -549,11 +537,7 @@ impl ImportDialog {
 			|ui| {
 				widgets::menu_style(ui);
 				ui.set_min_width(240.0);
-				ui.label(
-					RichText::new("Images to download with each mesh")
-						.size(CAPTION)
-						.color(palette(ui.ctx()).text_weak),
-				);
+				ui.label(widgets::caption(ui, "Images to download with each mesh"));
 				for kind in offered {
 					let enabled = self.kinds.get_mut(&kind).expect("all kinds present");
 					widgets::pointer(
@@ -601,12 +585,7 @@ impl ImportDialog {
 						}
 					}
 					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-						let p = palette(ui.ctx());
-						ui.label(
-							RichText::new(format!("{selected}/{}", rows.len()))
-								.size(CAPTION)
-								.color(p.text_weak),
-						);
+						ui.label(widgets::caption(ui, format!("{selected}/{}", rows.len())));
 					});
 					response.context_menu(|ui| {
 						widgets::menu_style(ui);
@@ -679,7 +658,6 @@ impl ImportDialog {
 	/// Map count after a mesh's name, with the ids on hover.
 	fn mesh_hint(&self, ui: &mut egui::Ui, e: usize) {
 		let entry = &self.entries[e];
-		let p = palette(ui.ctx());
 		let mut hover = format!("Mesh {}", entry.mesh_id);
 		for (k, id) in &entry.maps {
 			let skipped = if self.kinds[k] {
@@ -694,14 +672,9 @@ impl ImportDialog {
 		} else {
 			format!("{}  {}", icons::IMAGE, entry.maps.len())
 		};
-		ui.label(RichText::new(text).size(CAPTION).color(p.text_weak))
-			.on_hover_text(hover);
+		ui.label(widgets::caption(ui, text)).on_hover_text(hover);
 		if self.existing[e] {
-			ui.label(
-				RichText::new("in workspace")
-					.size(CAPTION)
-					.color(p.text_weak),
-			);
+			ui.label(widgets::caption(ui, "in workspace"));
 		}
 	}
 
@@ -749,23 +722,18 @@ impl ImportDialog {
 					text = text.color(ui.visuals().weak_text_color());
 				}
 				widgets::pointer(ui.checkbox(&mut self.selected[r], text)).on_hover_text(hover);
-				ui.label(
-					RichText::new(format!(
+				ui.label(widgets::caption(
+					ui,
+					format!(
 						"{}  {}   {}  {playable}",
 						icons::CUBE,
 						meshes.len(),
 						icons::FILM_STRIP
-					))
-					.size(CAPTION)
-					.color(p.text_weak),
-				)
+					),
+				))
 				.on_hover_text("Meshes it uses · playable clips");
 				if existing {
-					ui.label(
-						RichText::new("in workspace")
-							.size(CAPTION)
-							.color(p.text_weak),
-					);
+					ui.label(widgets::caption(ui, "in workspace"));
 				}
 			})
 			.body(|ui| {

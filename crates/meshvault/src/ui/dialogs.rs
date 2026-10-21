@@ -4,10 +4,12 @@
 //! `dialogs` dispatcher also shows the import, Roblox access and Studio
 //! dialogs, which live in their own modules.
 
-use eframe::egui::{self, Id, Key, RichText, Vec2};
+use std::time::{Duration, Instant};
+
+use eframe::egui::{self, Key, RichText, Vec2};
 
 use super::layout::SHORTCUTS;
-use super::theme::{BODY_LINE_HEIGHT, CAPTION, dialog_frame, display, palette};
+use super::theme::{BODY_LINE_HEIGHT, TITLE, display, palette};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::scene::maps::Slot;
@@ -62,41 +64,18 @@ impl App {
 	/// Shown while a large export is read in the background.
 	fn parsing_dialog(&mut self, ctx: &egui::Context) {
 		let Some(parsing) = &self.parsing else { return };
-		// small files finish before a dialog would be noticed
-		if parsing.started.elapsed().as_millis() < 150 {
-			ctx.request_repaint_after(std::time::Duration::from_millis(150));
-			return;
-		}
 		let file = parsing
 			.path
 			.file_name()
 			.map(|s| s.to_string_lossy().into_owned())
 			.unwrap_or_default();
-		let mut cancel = false;
-		egui::Modal::new(Id::unique("parsing_export"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
-				ui.set_width(340.0);
-				ui.horizontal(|ui| {
-					ui.add(egui::Spinner::new().size(18.0));
-					ui.label(
-						RichText::new(format!("Reading {file}"))
-							.size(16.0)
-							.family(display()),
-					);
-				});
-				ui.add_space(6.0);
-				ui.label(
-					RichText::new("Large exports with animations can take a few seconds.")
-						.color(palette(ui.ctx()).text_weak),
-				);
-				ui.add_space(10.0);
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					cancel = widgets::text_button(ui, "Cancel").clicked();
-				});
-			});
-		if cancel {
+		if progress_dialog(
+			ctx,
+			"parsing_export",
+			parsing.started,
+			&format!("Reading {file}"),
+			"Large exports with animations can take a few seconds.",
+		) {
 			// the reader thread finishes on its own; its result is dropped
 			self.parsing = None;
 		}
@@ -107,36 +86,13 @@ impl App {
 		let Some(loading) = &self.loading_model else {
 			return;
 		};
-		if loading.started.elapsed().as_millis() < 150 {
-			ctx.request_repaint_after(std::time::Duration::from_millis(150));
-			return;
-		}
-		let name = loading.name.clone();
-		let mut cancel = false;
-		egui::Modal::new(Id::unique("loading_model"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
-				ui.set_width(340.0);
-				ui.horizontal(|ui| {
-					ui.add(egui::Spinner::new().size(18.0));
-					ui.label(
-						RichText::new(format!("Opening {name}"))
-							.size(16.0)
-							.family(display()),
-					);
-				});
-				ui.add_space(6.0);
-				ui.label(
-					RichText::new("Reading its meshes, maps and animations.")
-						.color(palette(ui.ctx()).text_weak),
-				);
-				ui.add_space(10.0);
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					cancel = widgets::text_button(ui, "Cancel").clicked();
-				});
-			});
-		if cancel {
+		if progress_dialog(
+			ctx,
+			"loading_model",
+			loading.started,
+			&format!("Opening {}", loading.name),
+			"Reading its meshes, maps and animations.",
+		) {
 			self.loading_model = None;
 		}
 	}
@@ -212,40 +168,34 @@ impl App {
 	fn confirm_dialog(&mut self, ctx: &egui::Context) {
 		let Some(confirm) = &self.confirm else { return };
 		let p = palette(ctx);
-		let modal = egui::Modal::new(Id::unique("confirm"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
-				ui.set_width(400.0);
-				ui.horizontal(|ui| {
-					ui.label(
-						RichText::new(icons::WARNING_CIRCLE)
-							.size(22.0)
-							.color(p.danger),
-					);
-					ui.label(RichText::new(&confirm.title).size(18.0).family(display()));
-				});
-				ui.add_space(4.0);
-				ui.add(
-					egui::Label::new(
-						RichText::new(&confirm.body)
-							.color(p.text_weak)
-							.line_height(Some(BODY_LINE_HEIGHT)),
-					)
-					.wrap(),
-				);
-				ui.add_space(16.0);
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					if widgets::danger_button(ui, &confirm.button).clicked() {
-						return Some(true);
-					}
-					if widgets::text_button(ui, "Cancel").clicked() {
-						return Some(false);
-					}
-					None
-				})
-				.inner
-			});
+		let modal = widgets::modal(ctx, "confirm").show(ctx, |ui| {
+			ui.set_width(400.0);
+			widgets::dialog_title(
+				ui,
+				Some((icons::WARNING_CIRCLE, 22.0, p.danger)),
+				&confirm.title,
+			);
+			ui.add_space(4.0);
+			ui.add(
+				egui::Label::new(
+					RichText::new(&confirm.body)
+						.color(p.text_weak)
+						.line_height(Some(BODY_LINE_HEIGHT)),
+				)
+				.wrap(),
+			);
+			ui.add_space(16.0);
+			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+				if widgets::danger_button(ui, &confirm.button).clicked() {
+					return Some(true);
+				}
+				if widgets::text_button(ui, "Cancel").clicked() {
+					return Some(false);
+				}
+				None
+			})
+			.inner
+		});
 		let decision = match modal.inner {
 			Some(decision) => Some(decision),
 			None if modal.should_close() => Some(false),
@@ -289,84 +239,80 @@ impl App {
 		let p = palette(ctx);
 		let mut create = false;
 		let mut cancel = false;
-		let modal = egui::Modal::new(Id::unique("new_workspace"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
-				ui.set_width(440.0);
-				ui.label(RichText::new("New workspace").size(18.0).family(display()));
-				if let Some(export) = &dialog.then_import {
-					ui.label(
-						RichText::new(format!(
-							"Importing {} needs a workspace to download into.",
-							export
-								.file_name()
-								.map(|s| s.to_string_lossy())
-								.unwrap_or_default()
-						))
-						.color(p.text_weak),
-					);
-				} else {
-					ui.label(
-						RichText::new(
-							"A folder that holds downloaded models, organized like your export.",
-						)
-						.color(p.text_weak),
-					);
-				}
-				ui.add_space(10.0);
-				ui.label("Name");
-				let response = ui.add(
-					widgets::input(&mut dialog.name)
-						.hint_text("e.g. My game assets")
-						.desired_width(f32::INFINITY),
+		let modal = widgets::modal(ctx, "new_workspace").show(ctx, |ui| {
+			ui.set_width(440.0);
+			widgets::dialog_title(ui, None, "New workspace");
+			if let Some(export) = &dialog.then_import {
+				ui.label(
+					RichText::new(format!(
+						"Importing {} needs a workspace to download into.",
+						export
+							.file_name()
+							.map(|s| s.to_string_lossy())
+							.unwrap_or_default()
+					))
+					.color(p.text_weak),
 				);
-				response.request_focus();
-				if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-					create = true;
-				}
-				ui.add_space(6.0);
-				ui.label("Location");
-				// a read-only field with a Browse button, the same height as the name input
-				ui.allocate_ui_with_layout(
-					egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-					egui::Layout::right_to_left(egui::Align::Center),
-					|ui| {
-						if widgets::text_button(ui, "Browse…").clicked()
-							&& let Some(dir) = rfd::FileDialog::new()
-								.set_directory(&dialog.parent)
-								.pick_folder()
-						{
-							dialog.parent = dir;
-						}
-						let mut shown = dialog.parent.display().to_string();
-						ui.add(
-							widgets::input(&mut shown)
-								.interactive(false)
-								.desired_width(ui.available_width()),
-						);
-					},
+			} else {
+				ui.label(
+					RichText::new(
+						"A folder that holds downloaded models, organized like your export.",
+					)
+					.color(p.text_weak),
 				);
-				if !dialog.name.trim().is_empty() {
-					ui.label(
-						RichText::new(format!(
-							"{}  {}",
-							icons::FOLDER_SIMPLE,
-							dialog
-								.parent
-								.join(workspace::sanitize(dialog.name.trim()))
-								.display()
-						))
-						.size(CAPTION)
-						.color(p.text_weak),
+			}
+			ui.add_space(10.0);
+			ui.label("Name");
+			let response = ui.add(
+				widgets::input(&mut dialog.name)
+					.hint_text("e.g. My game assets")
+					.desired_width(f32::INFINITY),
+			);
+			response.request_focus();
+			if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+				create = true;
+			}
+			ui.add_space(6.0);
+			ui.label("Location");
+			// a read-only field with a Browse button, the same height as the name input
+			ui.allocate_ui_with_layout(
+				egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+				egui::Layout::right_to_left(egui::Align::Center),
+				|ui| {
+					if widgets::text_button(ui, "Browse…").clicked()
+						&& let Some(dir) = rfd::FileDialog::new()
+							.set_directory(&dialog.parent)
+							.pick_folder()
+					{
+						dialog.parent = dir;
+					}
+					let mut shown = dialog.parent.display().to_string();
+					ui.add(
+						widgets::input(&mut shown)
+							.interactive(false)
+							.desired_width(ui.available_width()),
 					);
-				}
-				ui.add_space(14.0);
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					create |= widgets::primary_button(ui, "Create").clicked();
-					cancel = widgets::text_button(ui, "Cancel").clicked();
-				});
+				},
+			);
+			if !dialog.name.trim().is_empty() {
+				ui.label(widgets::caption(
+					ui,
+					format!(
+						"{}  {}",
+						icons::FOLDER_SIMPLE,
+						dialog
+							.parent
+							.join(workspace::sanitize(dialog.name.trim()))
+							.display()
+					),
+				));
+			}
+			ui.add_space(14.0);
+			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+				create |= widgets::primary_button(ui, "Create").clicked();
+				cancel = widgets::text_button(ui, "Cancel").clicked();
 			});
+		});
 		if cancel || modal.should_close() {
 			self.new_workspace = None;
 			return;
@@ -397,35 +343,64 @@ impl App {
 			return;
 		}
 		let p = palette(ctx);
-		let modal = egui::Modal::new(Id::unique("shortcuts"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
-				ui.set_width(380.0);
-				ui.label(
-					RichText::new("Keyboard shortcuts")
-						.size(18.0)
-						.family(display()),
-				);
-				ui.add_space(8.0);
-				egui::Grid::new("shortcut_grid")
-					.num_columns(2)
-					.spacing(Vec2::new(16.0, 8.0))
-					.show(ui, |ui| {
-						for (keys, action) in SHORTCUTS {
-							widgets::badge(ui, RichText::new(*keys).monospace(), p.text);
-							ui.label(*action);
-							ui.end_row();
-						}
-					});
-				ui.add_space(10.0);
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					widgets::text_button(ui, "Close").clicked()
-				})
-				.inner
-			});
+		let modal = widgets::modal(ctx, "shortcuts").show(ctx, |ui| {
+			ui.set_width(380.0);
+			widgets::dialog_title(ui, None, "Keyboard shortcuts");
+			ui.add_space(8.0);
+			egui::Grid::new("shortcut_grid")
+				.num_columns(2)
+				.spacing(Vec2::new(16.0, 8.0))
+				.show(ui, |ui| {
+					for (keys, action) in SHORTCUTS {
+						widgets::badge(ui, RichText::new(*keys).monospace(), p.text);
+						ui.label(*action);
+						ui.end_row();
+					}
+				});
+			ui.add_space(10.0);
+			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+				widgets::text_button(ui, "Close").clicked()
+			})
+			.inner
+		});
 		if modal.inner || modal.should_close() {
 			self.show_shortcuts = false;
 		}
 	}
+}
+
+/// How long a background job runs before its progress dialog shows: small
+/// files finish before a dialog would be noticed.
+const SHOW_AFTER: Duration = Duration::from_millis(150);
+
+/// A progress dialog for a job started at `started`: a spinner and title,
+/// a line of `body` and a Cancel button. Shows nothing until the job has run
+/// for [`SHOW_AFTER`]. Escape and the backdrop do not close it. Returns
+/// whether Cancel was clicked.
+fn progress_dialog(
+	ctx: &egui::Context,
+	id: &str,
+	started: Instant,
+	title: &str,
+	body: &str,
+) -> bool {
+	if started.elapsed() < SHOW_AFTER {
+		ctx.request_repaint_after(SHOW_AFTER);
+		return false;
+	}
+	let mut cancel = false;
+	widgets::modal(ctx, id).show(ctx, |ui| {
+		ui.set_width(340.0);
+		ui.horizontal(|ui| {
+			ui.add(egui::Spinner::new().size(18.0));
+			ui.label(RichText::new(title).size(TITLE).family(display()));
+		});
+		ui.add_space(6.0);
+		ui.label(RichText::new(body).color(palette(ui.ctx()).text_weak));
+		ui.add_space(10.0);
+		ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+			cancel = widgets::text_button(ui, "Cancel").clicked();
+		});
+	});
+	cancel
 }

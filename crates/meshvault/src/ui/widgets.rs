@@ -6,8 +6,8 @@ use eframe::egui::{
 };
 
 use super::theme::{
-	CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, LIST_TEXT, PILL_RADIUS, TITLE, display, medium,
-	palette, semibold,
+	CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, LIST_TEXT, MODAL_BACKDROP, PILL_RADIUS,
+	TITLE, dialog_frame, display, medium, palette, semibold,
 };
 
 /// Shows a pointing hand while hovering something clickable. egui does this
@@ -176,6 +176,42 @@ pub fn button(ui: &mut Ui, icon: &str, text: &str) -> Response {
 /// A bordered button with a text label.
 pub fn text_button(ui: &mut Ui, text: impl Into<String>) -> Response {
 	ui.add(egui::Button::new(RichText::new(text).family(medium())))
+}
+
+/// Caption-sized text in the weak colour: notes, counts and hints. Callers
+/// choose how it wraps or truncates.
+pub fn caption(ui: &Ui, text: impl Into<String>) -> RichText {
+	RichText::new(text)
+		.size(CAPTION)
+		.color(palette(ui.ctx()).text_weak)
+}
+
+/// A modal dialog with the app's dialog frame and backdrop. `id` names it
+/// as `Id::unique(id)`; show it with `.show(ctx, ..)`.
+pub fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+	egui::Modal::new(egui::Id::unique(id))
+		.frame(dialog_frame(ctx))
+		.backdrop_color(MODAL_BACKDROP)
+}
+
+/// A dialog's title in the heading style, after an icon when one is given
+/// as (glyph, size, colour). With an icon the two share a row.
+pub fn dialog_title(
+	ui: &mut Ui,
+	icon: Option<(&str, f32, Color32)>,
+	text: impl Into<String>,
+) -> Response {
+	let title = RichText::new(text).heading();
+	match icon {
+		Some((icon, size, colour)) => {
+			ui.horizontal(|ui| {
+				ui.label(RichText::new(icon).size(size).color(colour));
+				ui.label(title);
+			})
+			.response
+		}
+		None => ui.label(title),
+	}
 }
 
 /// A single-line text input preset (shadcn's `px-3`, text vertically

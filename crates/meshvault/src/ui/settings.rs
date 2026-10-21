@@ -7,7 +7,7 @@ use eframe::egui::{self, RichText};
 
 use crate::config::{self, Config};
 use crate::ui::icons;
-use crate::ui::theme::{dialog_frame, display, palette};
+use crate::ui::theme::palette;
 use crate::ui::widgets;
 use crate::workspace::AssetKind;
 use crate::workspace::download::{
@@ -164,15 +164,10 @@ impl SettingsDialog {
 
 		let mut open = true;
 		let mut close = false;
-		let modal = egui::Modal::new(egui::Id::unique("settings_dialog"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
-			.show(ctx, |ui| {
+		let modal = widgets::modal(ctx, "settings_dialog").show(ctx, |ui| {
 				ui.set_width(500.0);
-				ui.horizontal(|ui| {
-					ui.label(RichText::new(icons::KEY).size(20.0).color(palette(ui.ctx()).accent));
-					ui.label(RichText::new("Roblox access").size(18.0).family(display()));
-				});
+				let accent = palette(ui.ctx()).accent;
+				widgets::dialog_title(ui, Some((icons::KEY, 20.0, accent)), "Roblox access");
 				ui.add_space(4.0);
 				if let Some(notice) = &self.notice {
 					ui.label(RichText::new(notice).color(palette(ui.ctx()).warning));

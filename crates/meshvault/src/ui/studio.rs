@@ -4,9 +4,9 @@
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Align, CornerRadius, Frame, Id, Layout, Margin, RichText, Stroke, Vec2};
+use eframe::egui::{self, Align, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Vec2};
 
-use super::theme::{CARD_RADIUS, MODAL_BACKDROP, ROW, dialog_frame, display, palette};
+use super::theme::{CARD_RADIUS, ROW, palette};
 use super::{code, icons, widgets};
 use crate::app::App;
 use crate::studio::link::{self, CodeLayout, CodeMode, Status};
@@ -48,127 +48,120 @@ impl App {
 		};
 		let p = palette(ctx);
 		let listening = self.studio_link.is_listening();
-		let modal = egui::Modal::new(Id::unique("studio_export"))
-			.frame(dialog_frame(ctx))
-			.backdrop_color(MODAL_BACKDROP)
-			.show(ctx, |ui| {
-				ui.set_width(DIALOG_WIDTH);
-				ui.label(
-					RichText::new("Export from Roblox Studio")
-						.size(18.0)
-						.family(display()),
-				);
-				ui.add_space(2.0);
-				ui.label(
-					RichText::new("Paste this into Studio's Command Bar, in Edit mode.")
-						.color(p.text_weak),
-				);
-				ui.add_space(16.0);
+		let modal = widgets::modal(ctx, "studio_export").show(ctx, |ui| {
+			ui.set_width(DIALOG_WIDTH);
+			widgets::dialog_title(ui, None, "Export from Roblox Studio");
+			ui.add_space(2.0);
+			ui.label(
+				RichText::new("Paste this into Studio's Command Bar, in Edit mode.")
+					.color(p.text_weak),
+			);
+			ui.add_space(16.0);
 
-				if let Status::Unavailable(why) = &self.studio_link.status {
-					Frame::NONE
-						.fill(p.warning.gamma_multiply(0.12))
-						.stroke(Stroke::new(1.0, p.warning.gamma_multiply(0.5)))
-						.corner_radius(CornerRadius::same(CARD_RADIUS))
-						.inner_margin(Margin::symmetric(12, 10))
-						.show(ui, |ui| {
-							ui.horizontal_top(|ui| {
-								ui.label(
-									RichText::new(icons::WARNING)
-										.size(16.0)
-										.color(p.warning)
+			if let Status::Unavailable(why) = &self.studio_link.status {
+				Frame::NONE
+					.fill(p.warning.gamma_multiply(0.12))
+					.stroke(Stroke::new(1.0, p.warning.gamma_multiply(0.5)))
+					.corner_radius(CornerRadius::same(CARD_RADIUS))
+					.inner_margin(Margin::symmetric(12, 10))
+					.show(ui, |ui| {
+						ui.horizontal_top(|ui| {
+							ui.label(
+								RichText::new(icons::WARNING)
+									.size(16.0)
+									.color(p.warning)
+									.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+							);
+							ui.add(
+								egui::Label::new(
+									egui::RichText::new(unavailable_text(why))
 										.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
-								);
-								ui.add(
-									egui::Label::new(
-										egui::RichText::new(unavailable_text(why))
-											.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
-									)
-									.wrap(),
-								);
-							});
+								)
+								.wrap(),
+							);
 						});
-					ui.add_space(14.0);
-				}
+					});
+				ui.add_space(14.0);
+			}
 
-				// what the code does, and in a sentence what that means
-				let modes = [
-					(CodeMode::Send, "Send to Meshvault"),
-					(CodeMode::Edit, "Edit first"),
-				];
-				if widgets::text_segmented(ui, &mut dialog.mode, &modes) {
-					dialog.copied = None;
-				}
-				ui.add_space(8.0);
-				let about = match dialog.mode {
-					CodeMode::Send => {
-						"Exports the selected model (with nothing selected, the whole game except \
+			// what the code does, and in a sentence what that means
+			let modes = [
+				(CodeMode::Send, "Send to Meshvault"),
+				(CodeMode::Edit, "Edit first"),
+			];
+			if widgets::text_segmented(ui, &mut dialog.mode, &modes) {
+				dialog.copied = None;
+			}
+			ui.add_space(8.0);
+			let about = match dialog.mode {
+				CodeMode::Send => {
+					"Exports the selected model (with nothing selected, the whole game except \
 						 Workspace) and opens it here for import."
-					}
-					CodeMode::Edit => {
-						"Gives you the export to change first. send(export) then sends it here, or \
+				}
+				CodeMode::Edit => {
+					"Gives you the export to change first. send(export) then sends it here, or \
 						 save it your own way."
-					}
-				};
-				ui.add(
-					egui::Label::new(
-						RichText::new(about)
-							.color(p.text_weak)
-							.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
-					)
-					.wrap(),
-				);
-				ui.add_space(12.0);
+				}
+			};
+			ui.add(
+				egui::Label::new(
+					RichText::new(about)
+						.color(p.text_weak)
+						.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+				)
+				.wrap(),
+			);
+			ui.add_space(12.0);
 
-				let source = link::studio_code(dialog.schema, dialog.mode, dialog.layout);
-				if code_card(ui, &mut dialog.layout, &source, dialog.mode) {
+			let source = link::studio_code(dialog.schema, dialog.mode, dialog.layout);
+			if code_card(ui, &mut dialog.layout, &source, dialog.mode) {
+				dialog.copied = None;
+			}
+			ui.add_space(16.0);
+
+			// the schema on the left (rarely changed), the actions on the right
+			ui.horizontal(|ui| {
+				ui.label(RichText::new("Schema").color(p.text_weak));
+				let options: Vec<(u32, String)> = link::SCHEMAS
+					.iter()
+					.rev()
+					.map(|&v| {
+						let label = if v == link::LATEST_SCHEMA {
+							format!("{v} (latest)")
+						} else {
+							v.to_string()
+						};
+						(v, label)
+					})
+					.collect();
+				let options: Vec<(u32, &str)> =
+					options.iter().map(|(v, l)| (*v, l.as_str())).collect();
+				if widgets::text_segmented(ui, &mut dialog.schema, &options) {
 					dialog.copied = None;
 				}
-				ui.add_space(16.0);
-
-				// the schema on the left (rarely changed), the actions on the right
-				ui.horizontal(|ui| {
-					ui.label(RichText::new("Schema").color(p.text_weak));
-					let options: Vec<(u32, String)> = link::SCHEMAS
-						.iter()
-						.rev()
-						.map(|&v| {
-							let label = if v == link::LATEST_SCHEMA {
-								format!("{v} (latest)")
-							} else {
-								v.to_string()
-							};
-							(v, label)
-						})
-						.collect();
-					let options: Vec<(u32, &str)> =
-						options.iter().map(|(v, l)| (*v, l.as_str())).collect();
-					if widgets::text_segmented(ui, &mut dialog.schema, &options) {
-						dialog.copied = None;
+				ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+					let copied = dialog.copied.is_some_and(|t| t.elapsed() < COPIED_FOR);
+					let label = if copied {
+						format!("{}  Copied", icons::CHECK)
+					} else {
+						format!("{}  Copy", icons::COPY)
+					};
+					let copy = ui
+						.add_enabled_ui(listening, |ui| widgets::primary_button(ui, label))
+						.inner;
+					if copy.clicked() {
+						ui.ctx().copy_text(source.clone());
+						dialog.copied = Some(Instant::now());
 					}
-					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-						let copied = dialog.copied.is_some_and(|t| t.elapsed() < COPIED_FOR);
-						let label = if copied {
-							format!("{}  Copied", icons::CHECK)
-						} else {
-							format!("{}  Copy", icons::COPY)
-						};
-						let copy = ui
-							.add_enabled_ui(listening, |ui| widgets::primary_button(ui, label))
-							.inner;
-						if copy.clicked() {
-							ui.ctx().copy_text(source.clone());
-							dialog.copied = Some(Instant::now());
-						}
-						if copied {
-							ui.ctx().request_repaint_after(COPIED_REPAINT);
-						}
-						widgets::text_button(ui, "Close").clicked()
-					})
-					.inner
+					if copied {
+						ui.ctx().request_repaint_after(COPIED_REPAINT);
+					}
+					widgets::text_button(ui, "Close").clicked()
 				})
 				.inner
-			});
+			})
+			.inner
+		});
 		if modal.inner || modal.should_close() {
 			self.studio_dialog = None;
 		}

@@ -189,11 +189,10 @@ impl App {
 		}
 
 		ui.add_space(18.0);
-		ui.label(
-			RichText::new("Mesh v1–v7 · union graphics CSGMDL v2–v5 · union physics CSGPHS v3–v8")
-				.size(CAPTION)
-				.color(p.text_weak),
-		);
+		ui.label(widgets::caption(
+			ui,
+			"Mesh v1–v7 · union graphics CSGMDL v2–v5 · union physics CSGPHS v3–v8",
+		));
 	}
 }
 

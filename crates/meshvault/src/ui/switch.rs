@@ -80,7 +80,6 @@ pub(super) fn header(
 	subtitle: &str,
 	subtitle_hover: &str,
 ) -> Option<Switch> {
-	let p = palette(ui.ctx());
 	ui.add(
 		egui::Label::new(
 			egui::RichText::new(title)
@@ -91,10 +90,8 @@ pub(super) fn header(
 	)
 	.on_hover_text(title);
 	ui.add_space(2.0);
-	ui.add(
-		egui::Label::new(egui::RichText::new(subtitle).size(12.0).color(p.text_weak)).truncate(),
-	)
-	.on_hover_text(subtitle_hover);
+	ui.add(egui::Label::new(widgets::caption(ui, subtitle)).truncate())
+		.on_hover_text(subtitle_hover);
 	ui.add_space(12.0);
 	let switch = view_switch(ui, on_model, c);
 	if !c.models.is_empty() && !c.meshes.is_empty() {

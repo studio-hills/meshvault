@@ -80,7 +80,7 @@ impl App {
 		if progress_dialog(
 			ctx,
 			"parsing_export",
-			parsing.started,
+			parsing.task.started,
 			&format!("Reading {file}"),
 			"Large exports with animations can take a few seconds.",
 		) {
@@ -97,7 +97,7 @@ impl App {
 		if progress_dialog(
 			ctx,
 			"loading_model",
-			loading.started,
+			loading.task.started,
 			&format!("Opening {}", loading.name),
 			"Reading its meshes, maps and animations.",
 		) {

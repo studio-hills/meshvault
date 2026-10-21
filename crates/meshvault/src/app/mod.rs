@@ -6,6 +6,7 @@ mod document;
 mod downloads;
 mod export;
 mod import;
+mod task;
 mod workspace;
 
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use crate::workspace::{MANIFEST, Workspace};
 
 pub use document::Document;
 pub use import::Parsing;
+use task::Task;
 pub use workspace::LoadingModel;
 
 pub struct App {
@@ -75,7 +77,7 @@ pub struct App {
 	pub studio_progress: Option<(usize, usize, Instant)>,
 	/// Work on background threads (exports, saved images), each ending
 	/// with a message to show.
-	background: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
+	background: Vec<Task<String>>,
 	/// Where the 3D view was last drawn, for the shape of saved images.
 	pub viewport: egui::Rect,
 	last_save: Instant,

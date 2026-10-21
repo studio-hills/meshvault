@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::App;
+use super::task::Task;
 use crate::config::Config;
 use crate::scene::model_view::ModelView;
 use crate::ui::{self, ConfirmAction, NewWorkspaceDialog};
@@ -13,8 +14,7 @@ use crate::workspace::{self, AssetKind, AssetState, Workspace};
 /// An animated model being read on a background thread.
 pub struct LoadingModel {
 	pub name: String,
-	rx: std::sync::mpsc::Receiver<Result<ModelView, String>>,
-	pub started: Instant,
+	pub task: Task<ModelView>,
 }
 
 impl App {
@@ -148,17 +148,8 @@ impl App {
 			return;
 		};
 		let name = item.name.clone();
-		let (tx, rx) = std::sync::mpsc::channel();
-		let ctx = self.ctx.clone();
-		std::thread::spawn(move || {
-			let _ = tx.send(load(&ctx));
-			ctx.request_repaint();
-		});
-		self.loading_model = Some(LoadingModel {
-			name,
-			rx,
-			started: Instant::now(),
-		});
+		let task = Task::spawn(&self.ctx, load);
+		self.loading_model = Some(LoadingModel { name, task });
 	}
 
 	/// The open workspace's item whose mesh is the file at `path`.
@@ -188,12 +179,8 @@ impl App {
 		let Some(loading) = &self.loading_model else {
 			return;
 		};
-		let result = match loading.rx.try_recv() {
-			Ok(result) => result,
-			Err(std::sync::mpsc::TryRecvError::Empty) => return,
-			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-				Err("Reading the model stopped unexpectedly".into())
-			}
+		let Some(result) = loading.task.poll("Reading the model stopped unexpectedly") else {
+			return;
 		};
 		self.loading_model = None;
 		match result {

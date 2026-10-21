@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use super::App;
+use super::task::Task;
 use crate::studio::export_file;
 use crate::ui::format::format_bytes;
 use crate::ui::import::{self, ImportDialog};
@@ -12,8 +13,7 @@ use crate::ui::import::{self, ImportDialog};
 /// An export being read on a background thread.
 pub struct Parsing {
 	pub path: PathBuf,
-	rx: std::sync::mpsc::Receiver<Result<export_file::Export, String>>,
-	pub started: Instant,
+	pub task: Task<export_file::Export>,
 }
 
 impl App {
@@ -39,30 +39,19 @@ impl App {
 			return;
 		}
 		// schema 1 exports with animations run to hundreds of megabytes
-		let (tx, rx) = std::sync::mpsc::channel();
 		let bytes = bytes.to_vec();
-		let ctx = self.ctx.clone();
-		std::thread::spawn(move || {
+		let task = Task::spawn(&self.ctx, move |_| {
 			let result = export_file::parse(&String::from_utf8_lossy(&bytes));
 			drop(bytes);
-			let _ = tx.send(result);
-			ctx.request_repaint();
+			result
 		});
-		self.parsing = Some(Parsing {
-			path,
-			rx,
-			started: Instant::now(),
-		});
+		self.parsing = Some(Parsing { path, task });
 	}
 
 	pub(super) fn poll_parsing(&mut self) {
 		let Some(parsing) = &self.parsing else { return };
-		let result = match parsing.rx.try_recv() {
-			Ok(result) => result,
-			Err(std::sync::mpsc::TryRecvError::Empty) => return,
-			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-				Err("The export reader stopped unexpectedly".into())
-			}
+		let Some(result) = parsing.task.poll("The export reader stopped unexpectedly") else {
+			return;
 		};
 		let path = self.parsing.take().expect("checked above").path;
 		let Some(ws) = &self.workspace else { return };

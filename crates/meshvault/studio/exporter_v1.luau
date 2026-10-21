@@ -1,4 +1,6 @@
 -- Meshvault exporter, schema 1: mesh/material + rig + animation metadata as JSON.
+-- Source: crates/meshvault/studio/exporter_v1.luau in the Meshvault repository. Schema 1 is
+-- kept for older workspaces: it gets fixes, not features.
 -- Served by Meshvault (see its "Export from Roblox Studio" dialog); run in the Command Bar, in
 -- Edit mode. Exports metadata, NOT mesh geometry or texture files. Animation assets must be
 -- accessible to the current Studio session.

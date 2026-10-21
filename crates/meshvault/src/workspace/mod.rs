@@ -10,6 +10,7 @@
 //!   Models/<Folder>/<Name>.normal.png   SurfaceAppearance maps (.color, .normal, ...)
 //!   Rigs/<Path>.rig.json           animated models: an export holding one model (see `write_rig`)
 //!   .cache/<asset id>              one raw copy per asset id, so duplicates download once
+//!   .cache/format                  the cache's format (see `store::upgrade_cache`)
 //!   .cache/thumbnails/<hash>.png   the library's pictures of models (see `thumbnails`)
 //!   .cache/facts.json              what the library filters on, per mesh (see `facts`)
 //! ```
@@ -117,6 +118,7 @@ impl Workspace {
 			generation: 0,
 		};
 		ws.write()?;
+		store::upgrade_cache(root);
 		Ok(ws)
 	}
 
@@ -134,6 +136,7 @@ impl Workspace {
 			));
 		}
 		let dirty = manifest.upgrade(root);
+		store::upgrade_cache(root);
 		let stems = manifest
 			.items
 			.iter()
@@ -1158,6 +1161,39 @@ mod tests {
 		}
 		assert!(reopened.dirty);
 		assert_eq!(reopened.image_counts(), (3, 0));
+	}
+
+	/// A cache entry written by an older build may hold only the start of
+	/// its asset (here a mesh's header line), which was then used as the
+	/// asset on every later import (once: review of bug B14). Such entries
+	/// cannot be told from whole ones, so opening a workspace whose cache
+	/// has no format deletes them once; the rest of the cache stays, and
+	/// entries written from then on are kept.
+	#[test]
+	fn cache_entries_from_before_whole_writes_are_dropped_once() {
+		let dir = TempDir::new("ws_old_cache");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([entry("F", "A", 1, &[])]);
+		ws.save_if_dirty().unwrap();
+		// the cache as an older build left it
+		let cache = dir.join(CACHE_DIR);
+		std::fs::remove_file(cache.join("format")).unwrap();
+		std::fs::write(cache_path(&dir, 1), b"version 4.00\n").unwrap();
+		std::fs::write(cache.join("facts.json"), b"{}").unwrap();
+		std::fs::create_dir_all(cache.join("thumbnails")).unwrap();
+		std::fs::write(cache.join("thumbnails/1.png"), b"png").unwrap();
+
+		Workspace::open(&dir).unwrap();
+		assert_eq!(store::read_cache(&dir, 1), None);
+		assert!(cache.join("facts.json").exists());
+		assert!(cache.join("thumbnails/1.png").exists());
+
+		store::write_cache(&dir, 1, b"version 4.00\nWHOLE");
+		Workspace::open(&dir).unwrap();
+		assert_eq!(
+			store::read_cache(&dir, 1).as_deref(),
+			Some(&b"version 4.00\nWHOLE"[..])
+		);
 	}
 
 	/// Removing an item deletes its organised files, keeps the cached

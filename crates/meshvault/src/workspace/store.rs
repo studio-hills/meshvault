@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::workspace::{AssetKind, Job, cache_path};
+use crate::workspace::{AssetKind, CACHE_DIR, Job, cache_path};
 
 /// Picks a file extension from the content.
 pub fn sniff_extension(bytes: &[u8], kind: AssetKind) -> &'static str {
@@ -36,6 +36,48 @@ fn temp_beside(path: &Path) -> PathBuf {
 	let n = NEXT.fetch_add(1, Ordering::Relaxed);
 	let name = path.file_name().unwrap_or_default().to_string_lossy();
 	path.with_file_name(format!("{name}.{}-{n}.tmp", std::process::id()))
+}
+
+/// The cache's format, kept in [`FORMAT_FILE`]: 2 since entries are written
+/// whole. Before that an entry was written in place, so one cut short by a
+/// crash could hold only the start of its asset, and was used as it was.
+const CACHE_FORMAT: &str = "2";
+const FORMAT_FILE: &str = "format";
+
+/// Brings the workspace's cache up to [`CACHE_FORMAT`]: entries from
+/// before it are deleted once, since one cut short cannot be told from a
+/// whole one, so each is downloaded again when next needed. Best effort:
+/// if one cannot be deleted, the format is not marked and it is tried again
+/// next time. Thumbnails, facts and organised files are left alone.
+pub fn upgrade_cache(root: &Path) {
+	let dir = root.join(CACHE_DIR);
+	let marker = dir.join(FORMAT_FILE);
+	if std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == CACHE_FORMAT) {
+		return;
+	}
+	let mut cleared = true;
+	match std::fs::read_dir(&dir) {
+		Ok(entries) => {
+			for entry in entries.flatten() {
+				let name = entry.file_name();
+				let is_asset = name
+					.to_str()
+					.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+				if is_asset
+					&& let Err(e) = std::fs::remove_file(entry.path())
+					&& e.kind() != std::io::ErrorKind::NotFound
+				{
+					cleared = false;
+				}
+			}
+		}
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		Err(_) => cleared = false,
+	}
+	if cleared {
+		let _ = std::fs::create_dir_all(&dir);
+		let _ = std::fs::write(&marker, CACHE_FORMAT);
+	}
 }
 
 /// The raw download of an asset, if it is cached. An empty file is not

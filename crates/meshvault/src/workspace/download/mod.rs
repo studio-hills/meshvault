@@ -1237,12 +1237,13 @@ mod tests {
 		}
 	}
 
-	/// The names in the workspace's cache folder that are not assets.
+	/// The names in the workspace's cache folder that are not assets or
+	/// the cache's format.
 	fn cache_leftovers(root: &Path) -> Vec<String> {
 		std::fs::read_dir(root.join(crate::workspace::CACHE_DIR))
 			.map(|dir| {
 				dir.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-					.filter(|name| name.parse::<u64>().is_err())
+					.filter(|name| name.parse::<u64>().is_err() && name != "format")
 					.collect()
 			})
 			.unwrap_or_default()

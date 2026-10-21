@@ -192,6 +192,16 @@ impl Client {
 		}
 	}
 
+	/// Whether `other` sends the same credential to the same places.
+	pub fn same_as(&self, other: &Client) -> bool {
+		let (a, b) = (&self.credentials, &other.credentials);
+		a.method == b.method
+			&& a.secret == b.secret
+			&& a.place_id == b.place_id
+			&& self.endpoints.open_cloud == other.endpoints.open_cloud
+			&& self.endpoints.asset_delivery == other.endpoints.asset_delivery
+	}
+
 	fn cdn_get(&self, url: &str) -> Result<Vec<u8>, FetchError> {
 		let mut response = self.cdn.get(url).call().map_err(transport)?;
 		let status = response.status().as_u16();

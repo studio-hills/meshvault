@@ -67,7 +67,8 @@ impl App {
 	}
 
 	pub(super) fn poll_downloads(&mut self) {
-		let events = self.downloader.poll();
+		let root = self.workspace.as_ref().map(|ws| ws.root.as_path());
+		let events = self.downloader.poll(root);
 		let had_events = !events.is_empty();
 		for event in events {
 			match event {

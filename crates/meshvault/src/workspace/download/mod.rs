@@ -32,12 +32,20 @@ pub enum Event {
 	AuthFailed(String),
 }
 
-/// One run of downloads: its queue and workers. A new run starts when
-/// downloads start after the last one stopped or was cancelled, so workers
-/// still finishing a cancelled run never take its jobs, and never leave
-/// them stranded.
-#[derive(Default)]
-struct Shared {
+/// What a worker sends: an event, and the run it came from.
+struct Message {
+	run: Arc<Run>,
+	event: Event,
+}
+
+/// One run of downloads: the workspace and credential it downloads with,
+/// its queue and its workers. A new run starts when downloads start after
+/// the last one stopped or was cancelled, or for another workspace or
+/// credential, so workers still finishing an old run never take a new
+/// run's jobs, and never leave them stranded.
+struct Run {
+	root: PathBuf,
+	client: Arc<Client>,
 	queue: Mutex<VecDeque<Job>>,
 	cancel: AtomicBool,
 	/// Workers that have not yet decided to stop. Only changed with the
@@ -55,7 +63,17 @@ struct Hooks {
 	on_stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-impl Shared {
+impl Run {
+	fn new(root: PathBuf, client: Arc<Client>) -> Self {
+		Self {
+			root,
+			client,
+			queue: Mutex::default(),
+			cancel: AtomicBool::new(false),
+			workers: AtomicUsize::new(0),
+		}
+	}
+
 	/// The job queue. Only short queue edits run under this lock, so it is
 	/// poisoned only if one of them panicked part-way; the queue and the
 	/// totals can then no longer be trusted, so this panics too.
@@ -72,9 +90,10 @@ impl Shared {
 }
 
 pub struct Downloader {
-	shared: Arc<Shared>,
-	tx: Sender<Event>,
-	rx: Receiver<Event>,
+	/// The latest run; its events are the ones counted.
+	run: Option<Arc<Run>>,
+	tx: Sender<Message>,
+	rx: Receiver<Message>,
 	pub total: usize,
 	pub completed: usize,
 	pub failed: usize,
@@ -86,7 +105,7 @@ impl Default for Downloader {
 	fn default() -> Self {
 		let (tx, rx) = channel();
 		Self {
-			shared: Arc::default(),
+			run: None,
 			tx,
 			rx,
 			total: 0,
@@ -100,12 +119,25 @@ impl Default for Downloader {
 
 impl Downloader {
 	pub fn is_running(&self) -> bool {
-		self.shared.workers.load(Ordering::SeqCst) > 0
+		self.run
+			.as_ref()
+			.is_some_and(|run| run.workers.load(Ordering::SeqCst) > 0)
 	}
 
-	/// Queues jobs; a job already queued gains the new targets. Starts
-	/// workers up to `concurrency`. Starts a new run, with its counts at
-	/// zero, if the last one has stopped or was cancelled.
+	/// Makes a new run the latest, with its counts at zero.
+	fn new_run(&mut self, root: PathBuf, client: Arc<Client>) -> Arc<Run> {
+		let run = Arc::new(Run::new(root, client));
+		self.run = Some(run.clone());
+		self.total = 0;
+		self.completed = 0;
+		self.failed = 0;
+		run
+	}
+
+	/// Queues jobs for the workspace at `root`; a job already queued gains
+	/// the new targets. Starts workers up to `concurrency`. Starts a new
+	/// run if the last one has stopped or was cancelled, or was for another
+	/// workspace or credential (which is cancelled).
 	pub fn start(
 		&mut self,
 		ctx: &eframe::egui::Context,
@@ -114,18 +146,21 @@ impl Downloader {
 		jobs: Vec<Job>,
 		concurrency: usize,
 	) {
-		let mut shared = self.shared.clone();
-		let mut queue = shared.queue();
+		let same = |run: &Run| run.root == root && run.client.same_as(&client);
+		if self.run.as_deref().is_some_and(|run| !same(run)) {
+			self.cancel();
+		}
+		let (mut run, fresh) = match self.run.clone() {
+			Some(run) => (run, false),
+			None => (self.new_run(root.clone(), client.clone()), true),
+		};
+		let mut queue = run.queue();
 		// with the queue locked, a run seen live stays live: a run only
 		// ends with its queue locked
-		if shared.stopped() {
+		if !fresh && run.stopped() {
 			drop(queue);
-			self.shared = Arc::default();
-			self.total = 0;
-			self.completed = 0;
-			self.failed = 0;
-			shared = self.shared.clone();
-			queue = shared.queue();
+			run = self.new_run(root, client);
+			queue = run.queue();
 		}
 		for job in jobs {
 			// already queued: make sure every target gets written
@@ -141,17 +176,15 @@ impl Downloader {
 			}
 		}
 		let wanted = concurrency.clamp(1, MAX_WORKERS).min(queue.len());
-		while shared.workers.load(Ordering::SeqCst) < wanted {
-			shared.workers.fetch_add(1, Ordering::SeqCst);
-			let shared = shared.clone();
+		while run.workers.load(Ordering::SeqCst) < wanted {
+			run.workers.fetch_add(1, Ordering::SeqCst);
+			let run = run.clone();
 			let tx = self.tx.clone();
 			let ctx = ctx.clone();
-			let root = root.clone();
-			let client = client.clone();
 			#[cfg(test)]
 			let hooks = self.hooks.clone();
 			std::thread::spawn(move || {
-				worker(&shared, &tx, &ctx, &root, &client);
+				worker(&run, &tx, &ctx);
 				#[cfg(test)]
 				if let Some(on_stop) = hooks.on_stop.lock().unwrap().take() {
 					on_stop();
@@ -164,9 +197,10 @@ impl Downloader {
 
 	/// Stops after the downloads in flight; queued jobs stay pending.
 	pub fn cancel(&mut self) {
+		let Some(run) = &self.run else { return };
 		let dropped = {
-			let mut queue = self.shared.queue();
-			self.shared.cancel.store(true, Ordering::SeqCst);
+			let mut queue = run.queue();
+			run.cancel.store(true, Ordering::SeqCst);
 			let n = queue.len();
 			queue.clear();
 			n
@@ -174,32 +208,47 @@ impl Downloader {
 		self.total -= dropped;
 	}
 
-	pub fn poll(&mut self) -> Vec<Event> {
-		let events: Vec<Event> = self.rx.try_iter().collect();
-		for event in &events {
-			if let Event::Finished { result, .. } = event {
-				self.completed += 1;
-				if result.is_err() {
-					self.failed += 1;
-				}
+	/// The events since the last poll for the workspace at `root` (none
+	/// when no workspace is open). Events for any other workspace are
+	/// dropped, and only the latest run's are counted or report a
+	/// credential failure.
+	pub fn poll(&mut self, root: Option<&Path>) -> Vec<Event> {
+		let mut events = Vec::new();
+		for Message { run, event } in self.rx.try_iter() {
+			if root != Some(run.root.as_path()) {
+				continue;
 			}
+			let latest = self.run.as_ref().is_some_and(|r| Arc::ptr_eq(r, &run));
+			match &event {
+				Event::Finished { result, .. } if latest => {
+					self.completed += 1;
+					if result.is_err() {
+						self.failed += 1;
+					}
+				}
+				Event::AuthFailed(_) if !latest => continue,
+				_ => {}
+			}
+			events.push(event);
 		}
 		events
 	}
 }
 
-fn worker(
-	shared: &Shared,
-	tx: &Sender<Event>,
-	ctx: &eframe::egui::Context,
-	root: &Path,
-	client: &Client,
-) {
+fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
+	let send = |event| {
+		let _ = tx.send(Message {
+			run: run.clone(),
+			event,
+		});
+		ctx.request_repaint();
+	};
+	let root = &run.root;
 	loop {
 		// deciding to stop and no longer counting happen under one lock
 		let job = {
-			let mut queue = shared.queue();
-			let next = if shared.cancel.load(Ordering::SeqCst) {
+			let mut queue = run.queue();
+			let next = if run.cancel.load(Ordering::SeqCst) {
 				None
 			} else {
 				queue.pop_front()
@@ -207,7 +256,7 @@ fn worker(
 			match next {
 				Some(job) => job,
 				None => {
-					shared.workers.fetch_sub(1, Ordering::SeqCst);
+					run.workers.fetch_sub(1, Ordering::SeqCst);
 					return;
 				}
 			}
@@ -215,23 +264,25 @@ fn worker(
 		let bytes = match store::read_cache(root, job.asset_id) {
 			Some(bytes) => Ok(bytes),
 			None => {
-				match client.fetch_with_retry(job.asset_id, job.wants_image(), &shared.cancel) {
+				match run
+					.client
+					.fetch_with_retry(job.asset_id, job.wants_image(), &run.cancel)
+				{
 					Ok(bytes) => {
 						store::write_cache(root, job.asset_id, &bytes);
 						Ok(bytes)
 					}
 					Err(FetchError::Auth(message)) => {
 						{
-							let mut queue = shared.queue();
-							shared.cancel.store(true, Ordering::SeqCst);
+							let mut queue = run.queue();
+							run.cancel.store(true, Ordering::SeqCst);
 							queue.clear();
 						}
-						let _ = tx.send(Event::AuthFailed(message));
-						ctx.request_repaint();
+						send(Event::AuthFailed(message));
 						continue;
 					}
 					// cancelled mid-retry: leave the item pending
-					Err(FetchError::Transient(..)) if shared.cancel.load(Ordering::SeqCst) => {
+					Err(FetchError::Transient(..)) if run.cancel.load(Ordering::SeqCst) => {
 						continue;
 					}
 					Err(e) => Err(e.to_string()),
@@ -239,12 +290,11 @@ fn worker(
 			}
 		};
 		let result = bytes.and_then(|bytes| store::store(root, &job, &bytes));
-		let _ = tx.send(Event::Finished { job, result });
-		ctx.request_repaint();
+		send(Event::Finished { job, result });
 	}
 }
 
-/// A local HTTP server and client for the client and pipeline tests.
+// A local HTTP server and client for the client and pipeline tests.
 #[cfg(test)]
 mod test_server {
 	use super::{AuthMethod, Client, Credentials, Endpoints};
@@ -556,7 +606,7 @@ mod tests {
 		let mut events = Vec::new();
 		while downloader.is_running() || events.len() < 4 {
 			assert!(std::time::Instant::now() < deadline, "downloads timed out");
-			events.extend(downloader.poll());
+			events.extend(downloader.poll(Some(&dir)));
 			std::thread::sleep(Duration::from_millis(20));
 		}
 		for event in events {
@@ -642,14 +692,19 @@ mod tests {
 				crate::workspace::AssetKind::Mesh,
 			)],
 		};
-		downloader.shared.queue().extend([job(1), job(2), job(3)]);
+		let run = Arc::new(Run::new(
+			PathBuf::new(),
+			Arc::new(client("http://0.0.0.0:9", AuthMethod::ApiKey)),
+		));
+		downloader.run = Some(run.clone());
+		run.queue().extend([job(1), job(2), job(3)]);
 		downloader.total = 5;
 		downloader.completed = 2;
 		downloader.cancel();
 		assert_eq!(downloader.total, 2);
 		assert_eq!(downloader.completed, 2);
-		assert!(downloader.shared.queue().is_empty());
-		assert!(downloader.shared.cancel.load(Ordering::SeqCst));
+		assert!(run.queue().is_empty());
+		assert!(run.cancel.load(Ordering::SeqCst));
 		// cancelling again with nothing queued changes nothing
 		downloader.cancel();
 		assert_eq!(downloader.total, 2);
@@ -709,13 +764,13 @@ mod tests {
 	}
 
 	/// Polls until the downloader has stopped, returning every event.
-	fn run_to_end(downloader: &mut Downloader) -> Vec<Event> {
+	fn run_to_end(downloader: &mut Downloader, root: &Path) -> Vec<Event> {
 		let deadline = std::time::Instant::now() + test_server::WATCHDOG;
 		let mut events = Vec::new();
 		loop {
-			events.extend(downloader.poll());
+			events.extend(downloader.poll(Some(root)));
 			if !downloader.is_running() {
-				events.extend(downloader.poll());
+				events.extend(downloader.poll(Some(root)));
 				return events;
 			}
 			assert!(std::time::Instant::now() < deadline, "downloads timed out");
@@ -736,7 +791,7 @@ mod tests {
 		let mut downloader = Downloader::default();
 		let jobs = vec![mesh_job(9, "Models/Nine")];
 		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
-		let events = run_to_end(&mut downloader);
+		let events = run_to_end(&mut downloader, &dir);
 		assert_eq!(assets.requests(9), 1);
 		assert!(matches!(
 			&events[..],
@@ -757,7 +812,7 @@ mod tests {
 		let mut downloader = Downloader::default();
 		let jobs = vec![mesh_job(8, "Models/Eight")];
 		downloader.start(&ctx, dir.to_path_buf(), assets.client(), jobs, 1);
-		run_to_end(&mut downloader);
+		run_to_end(&mut downloader, &dir);
 		let cache_dir = dir.join(crate::workspace::CACHE_DIR);
 		let names: Vec<_> = std::fs::read_dir(&cache_dir)
 			.unwrap()
@@ -810,7 +865,7 @@ mod tests {
 			1,
 		);
 		drop(go);
-		run_to_end(&mut downloader);
+		run_to_end(&mut downloader, &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());
 	}
@@ -843,8 +898,123 @@ mod tests {
 		);
 		assert_eq!(downloader.total, 1);
 		gate.release();
-		run_to_end(&mut downloader);
+		run_to_end(&mut downloader, &dir);
 		assert_eq!(assets.requests(2), 1, "job 2 was stranded in the queue");
 		assert!(dir.join("Models/Two.mesh").is_file());
+	}
+
+	/// Jobs for another workspace go to new workers, not to the old
+	/// workspace's workers, which would write them under the old folder
+	/// (B01).
+	#[test]
+	fn old_workers_never_take_another_workspaces_jobs() {
+		let (old, new) = (
+			TempDir::new("download_old_ws"),
+			TempDir::new("download_new_ws"),
+		);
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		let gate = assets.api.gate("/oc/1");
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let jobs = vec![mesh_job(1, "Models/One")];
+		downloader.start(&ctx, old.to_path_buf(), assets.client(), jobs, 1);
+		gate.wait_for_request();
+		let jobs = vec![mesh_job(2, "Models/Two")];
+		downloader.start(&ctx, new.to_path_buf(), assets.client(), jobs, 1);
+		gate.release();
+		let events = run_to_end(&mut downloader, &new);
+		assert!(new.join("Models/Two.mesh").is_file());
+		assert!(!old.join("Models/Two.mesh").exists());
+		// the old workspace's job is not reported to the new one
+		assert!(
+			events
+				.iter()
+				.all(|e| matches!(e, Event::Finished { job, .. } if job.asset_id == 2))
+		);
+	}
+
+	/// Jobs queued with a new credential are fetched with it, not by
+	/// workers still holding the old one (B01).
+	#[test]
+	fn jobs_queued_with_a_new_credential_use_it() {
+		let dir = TempDir::new("download_new_credential");
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		let gate = assets.api.gate("/oc/1");
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let root = dir.to_path_buf();
+		downloader.start(
+			&ctx,
+			root.clone(),
+			assets.client(),
+			vec![mesh_job(1, "Models/One")],
+			1,
+		);
+		gate.wait_for_request();
+		let other = Client::new(
+			Credentials {
+				method: AuthMethod::ApiKey,
+				secret: "OTHER".into(),
+				place_id: Some(77),
+			},
+			Endpoints {
+				open_cloud: format!("{}/oc/", assets.api.base),
+				asset_delivery: format!("{}/ad?id=", assets.api.base),
+			},
+		);
+		assert!(!other.same_as(&assets.client()));
+		downloader.start(
+			&ctx,
+			root,
+			Arc::new(other),
+			vec![mesh_job(2, "Models/Two")],
+			1,
+		);
+		gate.release();
+		run_to_end(&mut downloader, &dir);
+		let log = assets.api.log.lock().unwrap();
+		let two: Vec<_> = log.iter().filter(|r| r.starts_with("GET /oc/2 ")).collect();
+		assert_eq!(two.len(), 1);
+		assert!(two[0].to_lowercase().contains("x-api-key: other"));
+	}
+
+	/// Only events for the open workspace are returned, and only the latest
+	/// run's are counted or report a rejected credential (B01).
+	#[test]
+	fn poll_keeps_to_the_open_workspace_and_counts_the_latest_run() {
+		let (a, b) = (PathBuf::from("A"), PathBuf::from("B"));
+		let client = Arc::new(client("http://0.0.0.0:9", AuthMethod::ApiKey));
+		let mut downloader = Downloader::default();
+		let old = Arc::new(Run::new(b.clone(), client.clone()));
+		let other = Arc::new(Run::new(a.clone(), client.clone()));
+		let latest = downloader.new_run(b.clone(), client);
+		let tx = downloader.tx.clone();
+		let send = |run: &Arc<Run>, event| {
+			let run = run.clone();
+			tx.send(Message { run, event }).unwrap();
+		};
+		let finished = |id| Event::Finished {
+			job: mesh_job(id, "Models/X"),
+			result: Ok(Vec::new()),
+		};
+		send(&other, finished(1));
+		send(&other, Event::AuthFailed("A".into()));
+		send(&old, finished(2));
+		send(&old, Event::AuthFailed("old".into()));
+		send(&latest, finished(3));
+		send(&latest, Event::AuthFailed("latest".into()));
+		let events = downloader.poll(Some(&b));
+		let seen: Vec<String> = events
+			.iter()
+			.map(|e| match e {
+				Event::Finished { job, .. } => format!("finished {}", job.asset_id),
+				Event::AuthFailed(m) => format!("auth {m}"),
+			})
+			.collect();
+		assert_eq!(seen, ["finished 2", "finished 3", "auth latest"]);
+		assert_eq!((downloader.completed, downloader.failed), (1, 0));
+		// with no workspace open, nothing is returned
+		send(&latest, finished(4));
+		assert!(downloader.poll(None).is_empty());
 	}
 }

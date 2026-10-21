@@ -73,20 +73,33 @@ fn field(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Builds the download client from saved settings, if a credential is saved.
-pub fn client_from_config(config: &Config) -> Option<Arc<Client>> {
-	let secret = config::load_secret(config.auth_method)?;
-	Some(Arc::new(Client::new(
+pub fn client_from_config(config: &Config) -> Result<Option<Arc<Client>>, String> {
+	let Some(secret) = config::load_secret(config.auth_method)? else {
+		return Ok(None);
+	};
+	Ok(Some(Arc::new(Client::new(
 		Credentials {
 			method: config.auth_method,
 			secret,
 			place_id: config.place_id,
 		},
 		Endpoints::default(),
-	)))
+	))))
 }
 
 impl SettingsDialog {
 	pub fn new(config: &Config, test_id: Option<u64>) -> Self {
+		// a store that cannot be read shows why, rather than looking empty
+		let mut message = None;
+		let mut is_saved = |method| {
+			config::load_secret(method)
+				.inspect_err(|e| message = Some(Message::Err(e.clone())))
+				.is_ok_and(|s| s.is_some())
+		};
+		let saved = Saved {
+			api_key: is_saved(AuthMethod::ApiKey),
+			cookie: is_saved(AuthMethod::Cookie),
+		};
 		Self {
 			method: config.auth_method,
 			secret: String::new(),
@@ -94,13 +107,10 @@ impl SettingsDialog {
 			concurrency: config.concurrency,
 			test_id: test_id.map(|i| i.to_string()).unwrap_or_default(),
 			test: None,
-			message: None,
+			message,
 			notice: None,
 			confirm_forget: false,
-			saved: Saved {
-				api_key: config::load_secret(AuthMethod::ApiKey).is_some(),
-				cookie: config::load_secret(AuthMethod::Cookie).is_some(),
-			},
+			saved,
 		}
 	}
 
@@ -140,11 +150,18 @@ impl SettingsDialog {
 		let secret = if self.secret.trim().is_empty() {
 			config::load_secret(self.method)
 		} else {
-			Some(self.secret.clone())
+			Ok(Some(self.secret.clone()))
 		};
-		let Some(secret) = secret else {
-			self.message = Some(Message::Err("Enter a credential first.".into()));
-			return;
+		let secret = match secret {
+			Ok(Some(secret)) => secret,
+			Ok(None) => {
+				self.message = Some(Message::Err("Enter a credential first.".into()));
+				return;
+			}
+			Err(e) => {
+				self.message = Some(Message::Err(e));
+				return;
+			}
 		};
 		let Some(id) = crate::content_id::parse_asset_id(&self.test_id) else {
 			self.message = Some(Message::Err("Enter an asset id to test with.".into()));
@@ -351,11 +368,7 @@ impl SettingsDialog {
 				AuthMethod::Cookie => "cookie",
 			};
 			if widgets::danger_button(ui, "Forget").clicked() {
-				// a failed delete is not reported yet (bug B07)
-				let _ = config::delete_secret(self.method);
-				self.saved.set(self.method, false);
-				self.confirm_forget = false;
-				self.message = Some(Message::Ok("Saved credential removed.".into()));
+				self.forgot(config::delete_secret(self.method));
 			}
 			if widgets::text_button(ui, "Keep").clicked() {
 				self.confirm_forget = false;
@@ -391,6 +404,19 @@ impl SettingsDialog {
 		);
 	}
 
+	/// Shows how deleting the saved credential went. One that may still be
+	/// saved keeps its Forget button.
+	fn forgot(&mut self, deleted: Result<(), String>) {
+		self.confirm_forget = false;
+		self.message = Some(match deleted {
+			Ok(()) => {
+				self.saved.set(self.method, false);
+				Message::Ok("Saved credential removed.".into())
+			}
+			Err(e) => Message::Err(e),
+		});
+	}
+
 	/// Save and Cancel, laid out right to left. Returns true to close.
 	fn footer(&mut self, ui: &mut egui::Ui, config: &mut Config) -> bool {
 		let mut close = false;
@@ -406,5 +432,45 @@ impl SettingsDialog {
 			}
 		});
 		close
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn dialog() -> SettingsDialog {
+		SettingsDialog {
+			method: AuthMethod::ApiKey,
+			secret: String::new(),
+			place_id: String::new(),
+			concurrency: 1,
+			test_id: String::new(),
+			test: None,
+			message: None,
+			notice: None,
+			saved: Saved {
+				api_key: true,
+				cookie: true,
+			},
+			confirm_forget: true,
+		}
+	}
+
+	#[test]
+	fn forget_says_removed_only_when_the_delete_worked() {
+		let mut ok = dialog();
+		ok.forgot(Ok(()));
+		assert!(!ok.saved.get(AuthMethod::ApiKey) && ok.saved.get(AuthMethod::Cookie));
+		assert!(matches!(&ok.message, Some(Message::Ok(m)) if m == "Saved credential removed."));
+		assert!(!ok.confirm_forget);
+
+		let mut failed = dialog();
+		failed.forgot(Err(
+			"Could not remove from the system credential store: denied".into(),
+		));
+		assert!(failed.saved.get(AuthMethod::ApiKey));
+		assert!(matches!(&failed.message, Some(Message::Err(m)) if m.ends_with("denied")));
+		assert!(!failed.confirm_forget);
 	}
 }

@@ -147,17 +147,34 @@ fn read_secret(service: &str, method: AuthMethod) -> Result<Option<String>, Stri
 	}
 }
 
-pub fn load_secret(method: AuthMethod) -> Option<String> {
-	// TODO(release): a credential store that cannot be read looks the same
-	// as no credential here (bug B07)
-	if let Ok(Some(secret)) = read_secret(APP_ID, method) {
-		return Some(secret);
+/// The saved credential, or `None` when there is none. A credential store
+/// that cannot be read is an error, not "none", so the user is not sent to
+/// enter a credential that is in fact saved.
+pub fn load_secret(method: AuthMethod) -> Result<Option<String>, String> {
+	pick_secret(
+		|service| read_secret(service, method),
+		|secret| save_secret(method, secret),
+	)
+}
+
+/// Reads the current credential, falling back to one saved under the old
+/// name, which is copied to the current name. An unreadable current entry
+/// stops there rather than quietly using an older credential.
+fn pick_secret(
+	mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+	copy: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+	if let Some(secret) = read(APP_ID)? {
+		return Ok(Some(secret));
 	}
-	// copy a credential saved under the old name. The old entry is left in
-	// place so builds from before the rename keep working; Forget removes both.
-	let secret = read_secret(LEGACY_APP_ID, method).ok().flatten()?;
-	let _ = save_secret(method, &secret);
-	Some(secret)
+	// The old entry is left in place so builds from before the rename keep
+	// working; Forget removes both.
+	let Some(secret) = read(LEGACY_APP_ID)? else {
+		return Ok(None);
+	};
+	// a failed copy still leaves the old entry to read next time
+	let _ = copy(&secret);
+	Ok(Some(secret))
 }
 
 pub fn save_secret(method: AuthMethod, secret: &str) -> Result<(), String> {
@@ -194,6 +211,49 @@ mod tests {
 
 	fn json(config: &Config) -> serde_json::Value {
 		serde_json::to_value(config).unwrap()
+	}
+
+	/// A fake store: what reading each service gives, and what was copied.
+	fn pick(
+		current: Result<Option<&str>, &str>,
+		legacy: Result<Option<&str>, &str>,
+	) -> (Result<Option<String>, String>, Option<String>) {
+		let mut copied = None;
+		let picked = pick_secret(
+			|service| {
+				let read = if service == APP_ID { current } else { legacy };
+				read.map(|s| s.map(str::to_string)).map_err(str::to_string)
+			},
+			|secret| {
+				copied = Some(secret.to_string());
+				Ok(())
+			},
+		);
+		(picked, copied)
+	}
+
+	#[test]
+	fn the_current_credential_wins_and_an_old_one_is_copied_over() {
+		assert_eq!(
+			pick(Ok(Some("new")), Ok(Some("old"))),
+			(Ok(Some("new".into())), None)
+		);
+		assert_eq!(
+			pick(Ok(None), Ok(Some("old"))),
+			(Ok(Some("old".into())), Some("old".into()))
+		);
+		assert_eq!(pick(Ok(None), Ok(None)), (Ok(None), None));
+	}
+
+	#[test]
+	fn a_store_that_cannot_be_read_is_not_taken_for_no_credential() {
+		// not "none", and not quietly the older credential either
+		assert_eq!(
+			pick(Err("locked"), Ok(Some("old"))),
+			(Err("locked".into()), None)
+		);
+		assert_eq!(pick(Err("locked"), Ok(None)), (Err("locked".into()), None));
+		assert_eq!(pick(Ok(None), Err("locked")), (Err("locked".into()), None));
 	}
 
 	#[test]

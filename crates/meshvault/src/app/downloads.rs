@@ -27,9 +27,16 @@ impl App {
 			self.toasts.info("Nothing to download.");
 			return;
 		}
-		let Some(client) = settings::client_from_config(&self.config) else {
-			self.open_settings(Some("Add a Roblox credential to start downloading.".into()));
-			return;
+		let client = match settings::client_from_config(&self.config) {
+			Ok(Some(client)) => client,
+			Ok(None) => {
+				self.open_settings(Some("Add a Roblox credential to start downloading.".into()));
+				return;
+			}
+			Err(e) => {
+				self.toasts.error(e);
+				return;
+			}
 		};
 		let root = ws.root.clone();
 		self.downloader

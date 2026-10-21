@@ -1397,7 +1397,7 @@ mod tests {
 	/// or be a CSGK placeholder.
 	#[test]
 	fn loads_all_sample_meshes() {
-		let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
+		let dir = crate::test_support::SAMPLE_MESHES;
 		for entry in std::fs::read_dir(dir).unwrap() {
 			let path = entry.unwrap().path();
 			if !path.is_file() {
@@ -1426,7 +1426,7 @@ mod uv_tests {
 
 	#[test]
 	fn sample_skins_line_up_with_vertices() {
-		let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
+		let dir = crate::test_support::SAMPLE_MESHES;
 		let mut skinned = 0;
 		for entry in std::fs::read_dir(dir).unwrap() {
 			let path = entry.unwrap().path();
@@ -1645,7 +1645,7 @@ mod uv_tests {
 	}
 
 	fn load_sample(name: &str) -> Loaded {
-		let path = format!("{}/../rbx_mesh/meshes/{name}", env!("CARGO_MANIFEST_DIR"));
+		let path = std::path::Path::new(crate::test_support::SAMPLE_MESHES).join(name);
 		load(&std::fs::read(path).unwrap()).unwrap()
 	}
 

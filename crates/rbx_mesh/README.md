@@ -1,7 +1,7 @@
 Roblox Mesh Parser
 ==================
 
-Vendored into Meshvault from [krakow10/rbx_mesh](https://github.com/krakow10/rbx_mesh) by Rhys Lloyd and contributors, at upstream commit `1ea4cc4` (0.8.2), with mesh v6/v7 and Draco decoding added. See CHANGELOG.md for the changes. `git diff 1ea4cc4:src HEAD:crates/rbx_mesh/src` lists the local source changes; when porting newer upstream work, update the commit here and in Cargo.toml.
+Vendored into Meshvault from [krakow10/rbx_mesh](https://github.com/krakow10/rbx_mesh) by Rhys Lloyd and contributors, at upstream commit `1ea4cc4` (0.8.2), with mesh v6/v7 and Draco decoding added. See CHANGELOG.md for the changes. `git diff 1ea4cc4:src HEAD:crates/rbx_mesh/src` lists the local source changes; when porting newer upstream work, update the commit here and in Cargo.toml. Meshvault's own tests also read the sample files in `meshes/` (through `SAMPLE_MESHES` in `crates/meshvault/src/test_support.rs`), so keep them when re-vendoring.
 
 `rbx_mesh` is a collection of deserializers for the different mesh versions in Roblox, and a function to detect the version and invoke the correct deserializer.  The meshes are decoded into a structure that reflects the on-disk format of the particular mesh version, rather than being translated into a catch-all structure.
 

@@ -401,6 +401,7 @@ impl Obj {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::test_support::TempDir;
 
 	fn triangle(uvs: bool) -> Geometry {
 		Geometry {
@@ -433,8 +434,7 @@ mod tests {
 
 	#[test]
 	fn parts_with_and_without_uvs_index_their_own_lists() {
-		let dir = std::env::temp_dir().join("meshvault-obj-test-parts");
-		let _ = std::fs::create_dir_all(&dir);
+		let dir = TempDir::new("obj_parts");
 		let mut obj = Obj::new(&dir, "parts");
 		obj.add("a", &triangle(false), &[0], &viewport::IDENTITY, "m");
 		obj.add("b", &triangle(true), &[0], &viewport::IDENTITY, "m");
@@ -444,7 +444,7 @@ mod tests {
 
 	#[test]
 	fn exports_a_sample_mesh() {
-		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
+		let samples = crate::test_support::SAMPLE_MESHES;
 		let mesh = std::fs::read_dir(samples)
 			.unwrap()
 			.map(|e| e.unwrap().path())
@@ -455,9 +455,7 @@ mod tests {
 					.is_some_and(|l| !l.geometry.triangles.is_empty() && l.geometry.uvs.is_some())
 			})
 			.expect("a sample mesh with UVs");
-		let dir = std::env::temp_dir().join("meshvault-obj-test-sample");
-		let _ = std::fs::remove_dir_all(&dir);
-		std::fs::create_dir_all(&dir).unwrap();
+		let dir = TempDir::new("obj_sample");
 		let job = MeshJob {
 			name: "Sample".into(),
 			mesh,
@@ -479,7 +477,7 @@ mod tests {
 
 	#[test]
 	fn exports_a_sample_mesh_as_glb() {
-		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
+		let samples = crate::test_support::SAMPLE_MESHES;
 		let mesh = std::fs::read_dir(samples)
 			.unwrap()
 			.map(|e| e.unwrap().path())
@@ -490,9 +488,7 @@ mod tests {
 					.is_some_and(|l| !l.geometry.triangles.is_empty())
 			})
 			.expect("a sample mesh");
-		let dir = std::env::temp_dir().join("meshvault-glb-test-sample");
-		let _ = std::fs::remove_dir_all(&dir);
-		std::fs::create_dir_all(&dir).unwrap();
+		let dir = TempDir::new("glb_sample");
 		let job = MeshJob {
 			name: "Sample".into(),
 			mesh,

@@ -697,6 +697,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::test_support::TempDir;
 
 	fn entry(folder: &str, name: &str, mesh: u64, maps: &[(MapKind, u64)]) -> Entry {
 		Entry {
@@ -710,12 +711,6 @@ mod tests {
 			maps: maps.iter().copied().collect(),
 			source_id: None,
 		}
-	}
-
-	fn temp_dir(tag: &str) -> PathBuf {
-		let dir = std::env::temp_dir().join(format!("rbx_ws_{tag}_{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
-		dir
 	}
 
 	#[test]
@@ -732,7 +727,7 @@ mod tests {
 	#[test]
 	fn organizes_and_dedupes() {
 		use MapKind::*;
-		let dir = temp_dir("organize");
+		let dir = TempDir::new("ws_organize");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		let added = ws.add([
 			entry("Zone_10/8: Scorpion", "Body", 1, &[]),
@@ -790,13 +785,12 @@ mod tests {
 		let reopened = Workspace::open(&dir).unwrap();
 		assert_eq!(reopened.items().len(), 4);
 		assert_eq!(reopened.items()[1].maps.len(), 3);
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 
 	#[test]
 	fn stores_animated_models() {
 		use crate::anim::schema::{AnimationClip, ClipStatus, ModelPart};
-		let dir = temp_dir("models");
+		let dir = TempDir::new("ws_models");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		let mut torso = entry("Workspace/Wolf", "Torso", 10, &[(MapKind::Color, 11)]);
 		torso.source_id = Some(1);
@@ -841,7 +835,6 @@ mod tests {
 		ws.remove_models(&[0]);
 		assert!(ws.models().is_empty());
 		assert!(!dir.join("Rigs/Workspace/Animals/Wolf.rig.json").exists());
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 
 	/// Decal images are downloaded once per asset into `Images/`, for every
@@ -849,7 +842,7 @@ mod tests {
 	#[test]
 	fn decal_images_are_downloaded_for_models() {
 		use crate::anim::schema::{DecalInfo, ModelPart};
-		let dir = temp_dir("decals");
+		let dir = TempDir::new("ws_decals");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		let decal = |texture: &str| DecalInfo {
 			class_name: "Decal".into(),
@@ -908,22 +901,20 @@ mod tests {
 		ws.add_model(&tiled, &[]).unwrap();
 		let images = &ws.models()[2].images;
 		assert!(images.contains_key(&99) && images.contains_key(&100) && images.contains_key(&77));
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 
 	#[test]
 	fn same_mesh_with_other_images_is_separate() {
-		let dir = temp_dir("variants");
+		let dir = TempDir::new("ws_variants");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		let a = entry("F", "Handle", 1, &[(MapKind::Texture, 2)]);
 		let b = entry("F", "Handle", 1, &[(MapKind::Texture, 3)]);
 		assert_eq!(ws.add([a.clone(), b, a]), 2);
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 
 	#[test]
 	fn migrates_version_1() {
-		let dir = temp_dir("migrate");
+		let dir = TempDir::new("ws_migrate");
 		std::fs::create_dir_all(dir.join("Models")).unwrap();
 		std::fs::write(dir.join("Models/A.mesh"), b"version 2.00\n").unwrap();
 		std::fs::write(dir.join("Models/A.png"), b"png").unwrap();
@@ -956,6 +947,5 @@ mod tests {
 		let saved = std::fs::read_to_string(dir.join(MANIFEST)).unwrap();
 		assert!(saved.contains("\"version\": 3"));
 		assert!(!saved.contains("texture_id"));
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

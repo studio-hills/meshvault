@@ -13,6 +13,9 @@ mod studio;
 mod ui;
 mod workspace;
 
+#[cfg(test)]
+mod test_support;
+
 use std::path::PathBuf;
 
 use eframe::egui;

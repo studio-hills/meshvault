@@ -804,6 +804,7 @@ impl ImportDialog {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::test_support::TempDir;
 
 	#[test]
 	fn models_bring_their_meshes_and_others_stand_alone() {
@@ -817,8 +818,7 @@ mod tests {
 					"CFrame":[0,0,0,1,0,0,0,1,0,0,0,1],"Size":[1,1,1],"Transparency":0}],
 				"Joints":[],"Bones":[],"Animations":[]}]}"#;
 		let export = crate::studio::export_file::parse(json).unwrap();
-		let dir = std::env::temp_dir().join(format!("rbx_import_ui_{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
+		let dir = TempDir::new("import_ui");
 		let ws = Workspace::create(&dir, "Test").unwrap();
 		let mut dialog = ImportDialog::new("x.json".into(), export, &ws);
 		// the shark's body is listed under the shark, not again on its own
@@ -839,6 +839,5 @@ mod tests {
 		// searching a mesh name finds the model using it
 		dialog.filter = "body".into();
 		assert!(dialog.matches(0) && !dialog.matches(1));
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

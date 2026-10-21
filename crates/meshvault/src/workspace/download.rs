@@ -517,6 +517,7 @@ fn worker(
 mod tests {
 	use super::*;
 	use crate::scene::maps::MapKind;
+	use crate::test_support::{SAMPLE_MESHES, TempDir};
 	use std::io::{BufRead, BufReader, Write};
 	use std::net::TcpListener;
 
@@ -681,11 +682,7 @@ mod tests {
 		use crate::studio::export_file::Entry;
 		use crate::workspace::{AssetState, Workspace};
 
-		let mesh = std::fs::read(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/../rbx_mesh/meshes/torso.mesh"
-		))
-		.unwrap();
+		let mesh = std::fs::read(Path::new(SAMPLE_MESHES).join("torso.mesh")).unwrap();
 		let png = b"\x89PNG\r\n\x1a\nFAKE".to_vec();
 		let (cdn, _) = serve(vec![
 			("/cdn/1", 200, vec![], mesh.clone()),
@@ -714,8 +711,7 @@ mod tests {
 			),
 		]);
 
-		let dir = std::env::temp_dir().join(format!("rbx_dl_test_{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
+		let dir = TempDir::new("download");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		let entry = |folder: &str, name: &str, mesh_id, maps: &[(MapKind, u64)]| Entry {
 			name: name.into(),
@@ -745,7 +741,7 @@ mod tests {
 		let mut downloader = Downloader::default();
 		downloader.start(
 			&ctx,
-			dir.clone(),
+			dir.to_path_buf(),
 			Arc::new(client(&api, AuthMethod::ApiKey)),
 			ws.pending_jobs(),
 			3,
@@ -843,6 +839,5 @@ mod tests {
 		drop(requests);
 		// the viewer can open what was downloaded
 		assert!(crate::scene::geometry::load(&mesh).is_ok());
-		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

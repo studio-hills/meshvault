@@ -22,11 +22,17 @@
 //! Requests are served one at a time. Each has a capped head (request line
 //! and headers) and body, and deadlines for arriving and for its reply, so
 //! a slow or oversized request is dropped rather than holding the link.
+//! What is kept for the app is bounded too: a few exports may arrive at
+//! once, one that stops part-way is forgotten after a while, and pieces
+//! still arriving plus received exports the app has not taken share one
+//! byte limit.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -39,6 +45,19 @@ const MAX_EXPORT: usize = 2 * 1024 * 1024 * 1024;
 /// Most pieces one export may say it has, so a bad count cannot make a
 /// huge list of pieces.
 const MAX_PIECES: usize = 100_000;
+/// Most exports that may be arriving at once.
+const MAX_PENDING: usize = 8;
+/// Most bytes held for the app at once: pieces of exports still arriving,
+/// and received exports the app has not taken yet.
+const MAX_HELD: usize = MAX_EXPORT;
+/// Most events waiting for the app to take them.
+const MAX_EVENTS: usize = 64;
+/// How long an export may go without a new piece before it is forgotten,
+/// as one whose sender stopped part-way.
+const PENDING_TIMEOUT: Duration = Duration::from_secs(120);
+/// How often the server wakes, while exports are arriving, to forget the
+/// ones that have stopped.
+const EXPIRY_POLL: Duration = Duration::from_millis(10);
 /// How long a whole request may take to arrive before the connection is
 /// dropped, so a sender that stalls or trickles does not hold the link.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -194,15 +213,19 @@ pub enum Status {
 pub struct StudioLink {
 	pub status: Status,
 	rx: Receiver<Event>,
+	/// Bytes of received exports waiting in `rx` (see [`Exports::queued`]).
+	queued: Arc<AtomicUsize>,
 }
 
 impl StudioLink {
 	pub fn start(ctx: &egui::Context) -> Self {
-		let (tx, rx) = mpsc::channel();
+		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
+		let exports = Exports::default();
+		let queued = exports.queued.clone();
 		let status = match TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) {
 			Ok(listener) => {
 				let ctx = ctx.clone();
-				std::thread::spawn(move || serve(listener, tx, ctx));
+				std::thread::spawn(move || serve(listener, tx, exports, ctx));
 				Status::Listening
 			}
 			Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => Status::Unavailable(format!(
@@ -210,7 +233,7 @@ impl StudioLink {
 			)),
 			Err(e) => Status::Unavailable(format!("port {PORT} could not be opened ({e})")),
 		};
-		Self { status, rx }
+		Self { status, rx, queued }
 	}
 
 	pub fn is_listening(&self) -> bool {
@@ -219,15 +242,64 @@ impl StudioLink {
 
 	/// What happened since the last call.
 	pub fn poll(&self) -> Vec<Event> {
-		self.rx.try_iter().collect()
+		let events: Vec<Event> = self.rx.try_iter().collect();
+		for event in &events {
+			if let Event::Received(received) = event {
+				// the app has it now, so the link may take more
+				self.queued
+					.fetch_sub(received.json.len(), Ordering::Relaxed);
+			}
+		}
+		events
 	}
 }
 
+/// What the server keeps between requests.
 #[derive(Default)]
+struct Exports {
+	/// Exports still arriving, by id.
+	pending: HashMap<String, Pending>,
+	/// Bytes of received exports sent to the app and not yet taken by it,
+	/// shared with [`StudioLink::poll`] so they count towards [`MAX_HELD`].
+	queued: Arc<AtomicUsize>,
+}
+
+impl Exports {
+	/// Bytes held for the app: pieces still arriving and received exports
+	/// it has not taken.
+	fn held(&self) -> usize {
+		self.pending
+			.values()
+			.fold(self.queued.load(Ordering::Relaxed), |sum, p| {
+				sum.saturating_add(p.size)
+			})
+	}
+
+	/// Forgets exports with no new piece for [`PENDING_TIMEOUT`].
+	fn expire(&mut self, now: Instant) {
+		self.pending
+			.retain(|_, p| now.duration_since(p.last) < PENDING_TIMEOUT);
+	}
+}
+
 struct Pending {
 	name: String,
 	chunks: Vec<Option<Vec<u8>>>,
+	/// Bytes in `chunks`.
 	size: usize,
+	/// When the last piece arrived.
+	last: Instant,
+}
+
+impl Default for Pending {
+	fn default() -> Self {
+		Self {
+			name: String::new(),
+			chunks: Vec::new(),
+			size: 0,
+			last: Instant::now(),
+		}
+	}
 }
 
 struct Request {
@@ -254,15 +326,30 @@ impl Reply {
 	}
 }
 
-fn serve(listener: TcpListener, tx: Sender<Event>, ctx: egui::Context) {
-	let mut pending: HashMap<String, Pending> = HashMap::new();
+fn serve(listener: TcpListener, tx: SyncSender<Event>, mut exports: Exports, ctx: egui::Context) {
 	// the port asked for, or the one the system chose (tests ask for any)
 	let port = listener.local_addr().map_or(PORT, |a| a.port());
 	// one connection at a time, each with deadlines, so none can hold the
 	// link for long
-	for stream in listener.incoming().flatten() {
+	loop {
+		// while exports are arriving, wake now and then to forget the ones
+		// that stopped, even if nothing else connects
+		let _ = listener.set_nonblocking(!exports.pending.is_empty());
+		let stream = match listener.accept() {
+			Ok((stream, _)) => stream,
+			Err(e) if e.kind() == ErrorKind::WouldBlock => {
+				exports.expire(Instant::now());
+				std::thread::sleep(EXPIRY_POLL);
+				continue;
+			}
+			Err(_) => continue,
+		};
+		exports.expire(Instant::now());
+		// a socket accepted while the listener is non-blocking can be too
+		// (it is on Windows); the deadlines need it blocking
+		let _ = stream.set_nonblocking(false);
 		let reply = match read_request(Deadline::new(&stream, READ_TIMEOUT), port) {
-			Ok(request) => route(request, &mut pending, &tx),
+			Ok(request) => route(request, &mut exports, &tx),
 			Err(reply) => reply,
 		};
 		ctx.request_repaint();
@@ -430,7 +517,7 @@ fn for_the_link(host: &str, port: u16) -> bool {
 	p == port.to_string() && (name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1")
 }
 
-fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<Event>) -> Reply {
+fn route(request: Request, exports: &mut Exports, tx: &SyncSender<Event>) -> Reply {
 	match (request.method.as_str(), request.path.as_str()) {
 		("GET", "/export.luau") => {
 			let schema = request
@@ -448,7 +535,7 @@ fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<E
 			Reply::text(200, script)
 		}
 		("GET", "/") => Reply::text(200, "Meshvault Studio link"),
-		("POST", "/export") => match receive_piece(request, pending) {
+		("POST", "/export") => match receive_piece(request, exports) {
 			Ok(Some(done)) => {
 				// the exporter prints this, so Studio users know where it went. Studio's
 				// Output shows only the last part of a path, so the folder is in words
@@ -460,13 +547,21 @@ fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<E
 						.map(|n| n.to_string_lossy())
 						.unwrap_or_default()
 				);
-				let _ = tx.send(Event::Received(done));
+				// counted until the app takes it; never wait for the app, as
+				// that would hold the link
+				let size = done.json.len();
+				exports.queued.fetch_add(size, Ordering::Relaxed);
+				if tx.try_send(Event::Received(done)).is_err() {
+					exports.queued.fetch_sub(size, Ordering::Relaxed);
+					return Reply::text(503, "Meshvault is busy, send it again later");
+				}
 				Reply::text(200, reply)
 			}
 			Ok(None) => {
-				// how far the exports still arriving have got
-				for p in pending.values() {
-					let _ = tx.send(Event::Progress {
+				// how far the exports still arriving have got; dropped if the
+				// app is behind
+				for p in exports.pending.values() {
+					let _ = tx.try_send(Event::Progress {
 						done: p.chunks.iter().filter(|c| c.is_some()).count(),
 						count: p.chunks.len(),
 					});
@@ -480,10 +575,8 @@ fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<E
 }
 
 /// Stores one piece. Returns the whole export once its last piece arrives.
-fn receive_piece(
-	request: Request,
-	pending: &mut HashMap<String, Pending>,
-) -> Result<Option<Received>, Reply> {
+/// A piece sent again replaces the first copy.
+fn receive_piece(request: Request, exports: &mut Exports) -> Result<Option<Received>, Reply> {
 	let headers = &request.headers;
 	let id = headers
 		.get("x-meshvault-export")
@@ -500,6 +593,11 @@ fn receive_piece(
 		.filter(|&(i, n)| i >= 1 && i <= n && n <= MAX_PIECES)
 		.ok_or(Reply::text(400, "X-Meshvault-Chunk must be i/n"))?;
 
+	if !exports.pending.contains_key(id) && exports.pending.len() >= MAX_PENDING {
+		return Err(Reply::text(503, "too many exports arriving at once"));
+	}
+	let held = exports.held();
+	let pending = &mut exports.pending;
 	let entry = pending.entry(id.clone()).or_insert_with(|| Pending {
 		chunks: vec![None; count],
 		..Default::default()
@@ -511,11 +609,20 @@ fn receive_piece(
 	if let Some(name) = headers.get("x-meshvault-name") {
 		entry.name = name.chars().take(MAX_NAME).collect();
 	}
-	entry.size += request.body.len();
+	let replaced = entry.chunks[index - 1].as_ref().map_or(0, Vec::len);
+	entry.size = entry.size - replaced + request.body.len();
 	if entry.size > MAX_EXPORT {
 		pending.remove(id);
 		return Err(Reply::text(413, "export too large"));
 	}
+	if (held - replaced).saturating_add(request.body.len()) > MAX_HELD {
+		pending.remove(id);
+		return Err(Reply::text(
+			503,
+			"too much arriving at once, send it again later",
+		));
+	}
+	entry.last = Instant::now();
 	entry.chunks[index - 1] = Some(request.body);
 	if entry.chunks.iter().any(Option::is_none) {
 		return Ok(None);
@@ -552,8 +659,10 @@ mod tests {
 	fn start() -> (u16, Receiver<Event>) {
 		let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
 		let port = listener.local_addr().unwrap().port();
-		let (tx, rx) = mpsc::channel();
-		std::thread::spawn(move || serve(listener, tx, egui::Context::default()));
+		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
+		std::thread::spawn(move || {
+			serve(listener, tx, Exports::default(), egui::Context::default())
+		});
 		(port, rx)
 	}
 
@@ -1031,11 +1140,11 @@ mod tests {
 
 	#[test]
 	fn refuses_pieces_without_valid_headers() {
-		let mut pending = HashMap::new();
+		let mut exports = Exports::default();
 		assert_eq!(
 			refusal(receive_piece(
 				piece(&[("x-meshvault-chunk", "1/1")], b"x"),
-				&mut pending
+				&mut exports
 			)),
 			(400, "X-Meshvault-Export required".to_string())
 		);
@@ -1043,7 +1152,7 @@ mod tests {
 		assert_eq!(
 			refusal(receive_piece(
 				piece(&[("x-meshvault-export", "a")], b"x"),
-				&mut pending
+				&mut exports
 			)),
 			must
 		);
@@ -1052,82 +1161,228 @@ mod tests {
 			"3/2", "1/100001",
 		] {
 			assert_eq!(
-				refusal(receive_piece(chunk("a", bad, b"x"), &mut pending)),
+				refusal(receive_piece(chunk("a", bad, b"x"), &mut exports)),
 				must,
 				"{bad:?}"
 			);
 		}
 		// nothing is kept for a refused piece
-		assert!(pending.is_empty());
+		assert!(exports.pending.is_empty());
 		// the parts are trimmed, and the largest count is allowed
 		assert!(matches!(
-			receive_piece(chunk("a", " 1 / 100000 ", b"x"), &mut pending),
+			receive_piece(chunk("a", " 1 / 100000 ", b"x"), &mut exports),
 			Ok(None)
 		));
-		assert_eq!(pending["a"].chunks.len(), 100_000);
+		assert_eq!(exports.pending["a"].chunks.len(), 100_000);
 	}
 
 	#[test]
 	fn a_changed_piece_count_drops_the_export() {
-		let mut pending = HashMap::new();
+		let mut exports = Exports::default();
 		assert!(matches!(
-			receive_piece(chunk("a", "1/2", b"x"), &mut pending),
+			receive_piece(chunk("a", "1/2", b"x"), &mut exports),
 			Ok(None)
 		));
 		assert!(matches!(
-			receive_piece(chunk("b", "1/2", b"y"), &mut pending),
+			receive_piece(chunk("b", "1/2", b"y"), &mut exports),
 			Ok(None)
 		));
 		assert_eq!(
-			refusal(receive_piece(chunk("a", "2/3", b"z"), &mut pending)),
+			refusal(receive_piece(chunk("a", "2/3", b"z"), &mut exports)),
 			(400, "piece count changed".to_string())
 		);
-		assert!(!pending.contains_key("a"));
-		assert!(pending.contains_key("b"));
+		assert!(!exports.pending.contains_key("a"));
+		assert!(exports.pending.contains_key("b"));
 	}
 
 	#[test]
 	fn an_export_may_reach_the_size_limit_but_not_pass_it() {
-		let mut pending = HashMap::new();
+		let mut exports = Exports::default();
 		// a nearly full export, without allocating one
 		let nearly_full = || Pending {
 			chunks: vec![None; 2],
 			size: MAX_EXPORT - 1,
 			..Default::default()
 		};
-		pending.insert("at".to_string(), nearly_full());
+		exports.pending.insert("at".to_string(), nearly_full());
 		assert!(matches!(
-			receive_piece(chunk("at", "1/2", b"x"), &mut pending),
+			receive_piece(chunk("at", "1/2", b"x"), &mut exports),
 			Ok(None)
 		));
-		assert_eq!(pending["at"].size, MAX_EXPORT);
-		pending.insert("over".to_string(), nearly_full());
+		assert_eq!(exports.pending["at"].size, MAX_EXPORT);
+		exports.pending.insert("over".to_string(), nearly_full());
 		assert_eq!(
-			refusal(receive_piece(chunk("over", "1/2", b"xy"), &mut pending)),
+			refusal(receive_piece(chunk("over", "1/2", b"xy"), &mut exports)),
 			(413, "export too large".to_string())
 		);
-		assert!(!pending.contains_key("over"));
-		assert!(pending.contains_key("at"));
+		assert!(!exports.pending.contains_key("over"));
+		assert!(exports.pending.contains_key("at"));
 	}
 
-	// Pinned until bug B11 is fixed: a piece sent again replaces the first
-	// copy but is counted towards the size twice.
+	// A piece sent again replaces the first copy, and only the copy kept
+	// counts towards the size.
 	#[test]
-	fn a_resent_piece_replaces_the_first_but_counts_twice() {
-		let mut pending = HashMap::new();
-		for body in [&b"abc"[..], b"def"] {
+	fn a_resent_piece_replaces_the_first_and_counts_once() {
+		let mut exports = Exports::default();
+		for body in [&b"abc"[..], b"def", b"ghij"] {
 			assert!(matches!(
-				receive_piece(chunk("a", "1/2", body), &mut pending),
+				receive_piece(chunk("a", "1/2", body), &mut exports),
 				Ok(None)
 			));
 		}
-		assert_eq!(pending["a"].size, 6);
-		assert_eq!(pending["a"].chunks[0].as_deref(), Some(&b"def"[..]));
+		assert_eq!(exports.pending["a"].size, 4);
+		assert_eq!(
+			exports.pending["a"].chunks[0].as_deref(),
+			Some(&b"ghij"[..])
+		);
+		// so resending cannot push an export that fits over the limit
+		exports.pending.get_mut("a").unwrap().size = MAX_EXPORT;
+		assert!(matches!(
+			receive_piece(chunk("a", "1/2", b"wxyz"), &mut exports),
+			Ok(None)
+		));
+		assert_eq!(exports.pending["a"].size, MAX_EXPORT);
+	}
+
+	// An export whose sender stopped part-way is forgotten once no piece has
+	// come for a while; one still arriving is kept.
+	#[test]
+	fn abandoned_exports_are_forgotten() {
+		let mut exports = Exports::default();
+		for id in ["stopped", "arriving"] {
+			assert!(matches!(
+				receive_piece(chunk(id, "1/2", b"x"), &mut exports),
+				Ok(None)
+			));
+		}
+		let later = exports.pending["stopped"].last + PENDING_TIMEOUT;
+		exports.pending.get_mut("arriving").unwrap().last = later;
+		exports.expire(later - Duration::from_millis(1));
+		assert_eq!(exports.pending.len(), 2);
+		exports.expire(later);
+		assert!(!exports.pending.contains_key("stopped"));
+		assert!(exports.pending.contains_key("arriving"));
+		exports.expire(later + PENDING_TIMEOUT);
+		assert!(exports.pending.is_empty());
+	}
+
+	#[test]
+	fn only_so_many_exports_may_arrive_at_once() {
+		let mut exports = Exports::default();
+		for i in 0..MAX_PENDING {
+			assert!(matches!(
+				receive_piece(chunk(&i.to_string(), "1/2", b"x"), &mut exports),
+				Ok(None)
+			));
+		}
+		assert_eq!(
+			refusal(receive_piece(chunk("one more", "1/2", b"x"), &mut exports)),
+			(503, "too many exports arriving at once".to_string())
+		);
+		// those already arriving carry on
+		assert!(matches!(
+			receive_piece(chunk("0", "2/2", b"y"), &mut exports),
+			Ok(Some(_))
+		));
+		assert!(matches!(
+			receive_piece(chunk("one more", "1/2", b"x"), &mut exports),
+			Ok(None)
+		));
+	}
+
+	// Pieces of every export arriving, and received exports the app has not
+	// taken, share one limit.
+	#[test]
+	fn the_bytes_held_for_the_app_are_capped() {
+		let too_much = (
+			503,
+			"too much arriving at once, send it again later".to_string(),
+		);
+		let mut exports = Exports::default();
+		// a nearly full export, without allocating one
+		exports.pending.insert(
+			"big".to_string(),
+			Pending {
+				chunks: vec![None; 2],
+				size: MAX_HELD - 2,
+				..Default::default()
+			},
+		);
+		assert!(matches!(
+			receive_piece(chunk("small", "1/2", b"x"), &mut exports),
+			Ok(None)
+		));
+		// replacing a piece only adds the difference
+		assert!(matches!(
+			receive_piece(chunk("small", "1/2", b"y"), &mut exports),
+			Ok(None)
+		));
+		assert!(matches!(
+			receive_piece(chunk("small", "1/2", b"yz"), &mut exports),
+			Ok(None)
+		));
+		assert_eq!(exports.held(), MAX_HELD);
+		assert_eq!(
+			refusal(receive_piece(chunk("other", "1/2", b"x"), &mut exports)),
+			too_much
+		);
+		assert!(!exports.pending.contains_key("other"));
+		// the export that would pass the limit is dropped, freeing its bytes
+		assert_eq!(
+			refusal(receive_piece(chunk("small", "2/2", b"x"), &mut exports)),
+			too_much
+		);
+		assert!(!exports.pending.contains_key("small"));
+		assert!(exports.pending.contains_key("big"));
+		// received exports the app has not taken count too
+		exports.pending.clear();
+		exports.queued.store(MAX_HELD, Ordering::Relaxed);
+		assert_eq!(
+			refusal(receive_piece(chunk("next", "1/1", b"x"), &mut exports)),
+			too_much
+		);
+		exports.queued.store(MAX_HELD - 1, Ordering::Relaxed);
+		assert!(matches!(
+			receive_piece(chunk("next", "1/1", b"x"), &mut exports),
+			Ok(Some(_))
+		));
+	}
+
+	// The app's queue is bounded: when it is full, a finished export is
+	// refused (Studio then prints it) rather than the link waiting for the
+	// app, and the app taking an export frees its bytes.
+	#[test]
+	fn received_exports_wait_in_a_bounded_queue() {
+		let (tx, rx) = mpsc::sync_channel(MAX_EVENTS);
+		let mut exports = Exports::default();
+		let link = StudioLink {
+			status: Status::Listening,
+			rx,
+			queued: exports.queued.clone(),
+		};
+		for _ in 0..MAX_EVENTS {
+			tx.try_send(Event::Progress { done: 0, count: 1 }).unwrap();
+		}
+		let reply = route(chunk("a", "1/1", b"{}"), &mut exports, &tx);
+		assert_eq!(reply.code, 503);
+		assert_eq!(reply.body, b"Meshvault is busy, send it again later");
+		assert_eq!(exports.held(), 0);
+		assert!(exports.pending.is_empty());
+		// a part-way export's progress is dropped, not waited for
+		let reply = route(chunk("b", "1/2", b"{"), &mut exports, &tx);
+		assert_eq!(reply.code, 200);
+		assert_eq!(link.poll().len(), MAX_EVENTS);
+		let reply = route(chunk("b", "2/2", b"}"), &mut exports, &tx);
+		assert_eq!(reply.code, 200);
+		assert_eq!(exports.held(), 2);
+		let events = link.poll();
+		assert!(matches!(&events[..], [Event::Received(r)] if r.json == b"{}"));
+		assert_eq!(exports.held(), 0);
 	}
 
 	#[test]
 	fn joins_the_last_piece_into_an_export() {
-		let mut pending = HashMap::new();
+		let mut exports = Exports::default();
 		let named = |chunk, name, body| {
 			piece(
 				&[
@@ -1139,19 +1394,19 @@ mod tests {
 			)
 		};
 		assert!(matches!(
-			receive_piece(named("3/3", "First", b"c"), &mut pending),
+			receive_piece(named("3/3", "First", b"c"), &mut exports),
 			Ok(None)
 		));
 		// a piece without a name keeps the one given before; a later name wins
 		assert!(matches!(
-			receive_piece(chunk("a", "1/3", b"a"), &mut pending),
+			receive_piece(chunk("a", "1/3", b"a"), &mut exports),
 			Ok(None)
 		));
-		assert_eq!(pending["a"].name, "First");
-		let Ok(Some(done)) = receive_piece(named("2/3", "My/Place", b"b"), &mut pending) else {
+		assert_eq!(exports.pending["a"].name, "First");
+		let Ok(Some(done)) = receive_piece(named("2/3", "My/Place", b"b"), &mut exports) else {
 			panic!("the last piece completes the export");
 		};
-		assert!(pending.is_empty());
+		assert!(exports.pending.is_empty());
 		assert_eq!(done.name, "My/Place");
 		assert_eq!(done.json, b"abc");
 		let file = done.path.file_name().unwrap().to_str().unwrap();
@@ -1171,7 +1426,7 @@ mod tests {
 	// start is kept.
 	#[test]
 	fn a_long_name_is_cut_short() {
-		let mut pending = HashMap::new();
+		let mut exports = Exports::default();
 		let long = "é".repeat(MAX_NAME * 10);
 		let Ok(Some(done)) = receive_piece(
 			piece(
@@ -1182,7 +1437,7 @@ mod tests {
 				],
 				b"{}",
 			),
-			&mut pending,
+			&mut exports,
 		) else {
 			panic!("one piece is the whole export");
 		};

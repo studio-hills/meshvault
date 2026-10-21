@@ -1,9 +1,9 @@
 //! Switching between an animated model and the meshes it is built from,
 //! shown at the top of the inspector.
 
-use eframe::egui::{self, CornerRadius, FontId, Frame, Margin, Sense, Stroke, Vec2};
+use eframe::egui::{self, FontId, Sense, Vec2};
 
-use super::theme::{CONTROL_RADIUS, CONTROL_SM, TITLE, medium, palette};
+use super::theme::{CONTROL_SM, TITLE, medium, palette};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -111,113 +111,89 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 	}
 	let p = palette(ui.ctx());
 	let mut out = None;
-	let pad = 2.0;
-	let track = CONTROL_RADIUS + pad as u8;
-	// as tall as a small control, like the other segmented controls
-	let height = CONTROL_SM - 2.0 * (pad + 1.0);
-	Frame::NONE
-		.fill(p.raised)
-		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(track))
-		.inner_margin(Margin::same(pad as i8))
-		.show(ui, |ui| {
-			ui.spacing_mut().item_spacing.x = 2.0;
-			ui.spacing_mut().interact_size.y = height;
-			// the halves' corners are concentric with the track's
-			widgets::nest(ui, track, pad + 1.0);
-			let half = ((ui.available_width() - 2.0) / 2.0).floor();
-			ui.horizontal(|ui| {
-				let sides = [
-					(true, icons::PERSON_SIMPLE_RUN, "Animated", &c.models),
-					(false, icons::CUBE, "Meshes", &c.meshes),
-				];
-				for (is_model, icon, label, targets) in sides {
-					let current = is_model == on_model;
-					let (rect, response) =
-						ui.allocate_exact_size(Vec2::new(half, height), Sense::click());
-					let response = if current {
-						response
+	// as tall as a small control, like the other segmented controls; the
+	// halves' corners are concentric with the track's
+	widgets::segment_track(ui, CONTROL_SM, |ui, height| {
+		let half = ((ui.available_width() - 2.0) / 2.0).floor();
+		ui.horizontal(|ui| {
+			let sides = [
+				(true, icons::PERSON_SIMPLE_RUN, "Animated", &c.models),
+				(false, icons::CUBE, "Meshes", &c.meshes),
+			];
+			for (is_model, icon, label, targets) in sides {
+				let current = is_model == on_model;
+				let (rect, response) =
+					ui.allocate_exact_size(Vec2::new(half, height), Sense::click());
+				let response = if current {
+					response
+				} else {
+					widgets::pointer(response)
+				};
+				let hovered = !current && response.hovered();
+				let (fill, colour) = widgets::option_colours(&p, current, hovered);
+				ui.painter()
+					.rect_filled(rect, widgets::control_radius(ui), fill);
+				// icon and name, then the count and (when it opens a
+				// list) a caret, quieter, centred together
+				let many = !current && targets.len() > 1;
+				let painter = ui.painter();
+				// 12.5 is off the type scale on purpose; kept as it was
+				let name = painter.layout_no_wrap(
+					format!("{icon}  {label}"),
+					FontId::new(12.5, medium()),
+					colour,
+				);
+				let count = painter.layout_no_wrap(
+					if many {
+						format!("{}  {}", targets.len(), icons::CARET_DOWN)
 					} else {
-						widgets::pointer(response)
-					};
-					let hovered = !current && response.hovered();
-					let fill = if current {
-						p.accent_soft
-					} else if hovered {
-						p.raised_hover
-					} else {
-						egui::Color32::TRANSPARENT
-					};
-					ui.painter()
-						.rect_filled(rect, widgets::control_radius(ui), fill);
-					let colour = if current {
-						p.accent
-					} else if hovered {
-						p.text
-					} else {
-						p.text_weak
-					};
-					// icon and name, then the count and (when it opens a
-					// list) a caret, quieter, centred together
-					let many = !current && targets.len() > 1;
-					let painter = ui.painter();
-					// 12.5 is off the type scale on purpose; kept as it was
-					let name = painter.layout_no_wrap(
-						format!("{icon}  {label}"),
-						FontId::new(12.5, medium()),
-						colour,
-					);
-					let count = painter.layout_no_wrap(
-						if many {
-							format!("{}  {}", targets.len(), icons::CARET_DOWN)
-						} else {
-							targets.len().to_string()
-						},
-						FontId::proportional(crate::ui::theme::CAPTION),
-						if current {
-							p.accent.gamma_multiply(0.7)
-						} else {
-							p.text_weak.gamma_multiply(0.8)
-						},
-					);
-					let gap = 6.0;
-					let width = name.size().x + gap + count.size().x;
-					let left = rect.center().x - width / 2.0;
-					let name_pos = egui::pos2(left, rect.center().y - name.size().y / 2.0);
-					let count_pos = egui::pos2(
-						left + name.size().x + gap,
-						rect.center().y - count.size().y / 2.0,
-					);
-					painter.galley(name_pos, name, colour);
-					painter.galley(count_pos, count, colour);
+						targets.len().to_string()
+					},
+					FontId::proportional(crate::ui::theme::CAPTION),
 					if current {
-						continue;
-					}
-					let target = |i: usize| {
-						if is_model {
-							Switch::Model(i)
-						} else {
-							Switch::Mesh(i)
-						}
-					};
-					if let [(i, name)] = targets.as_slice() {
-						if response.on_hover_text(format!("Open {name}")).clicked() {
-							out = Some(target(*i));
-						}
+						p.accent.gamma_multiply(0.7)
 					} else {
-						egui::Popup::menu(&response).show(|ui| {
-							widgets::menu_style(ui);
-							ui.set_min_width(half);
-							for (i, name) in targets.iter() {
-								if ui.button(name).clicked() {
-									out = Some(target(*i));
-									ui.close();
-								}
-							}
-						});
-					}
+						p.text_weak.gamma_multiply(0.8)
+					},
+				);
+				let gap = 6.0;
+				let width = name.size().x + gap + count.size().x;
+				let left = rect.center().x - width / 2.0;
+				let name_pos = egui::pos2(left, rect.center().y - name.size().y / 2.0);
+				let count_pos = egui::pos2(
+					left + name.size().x + gap,
+					rect.center().y - count.size().y / 2.0,
+				);
+				painter.galley(name_pos, name, colour);
+				painter.galley(count_pos, count, colour);
+				if current {
+					continue;
 				}
-			});
+				let target = |i: usize| {
+					if is_model {
+						Switch::Model(i)
+					} else {
+						Switch::Mesh(i)
+					}
+				};
+				if let [(i, name)] = targets.as_slice() {
+					if response.on_hover_text(format!("Open {name}")).clicked() {
+						out = Some(target(*i));
+					}
+				} else {
+					egui::Popup::menu(&response).show(|ui| {
+						widgets::menu_style(ui);
+						ui.set_min_width(half);
+						for (i, name) in targets.iter() {
+							if ui.button(name).clicked() {
+								out = Some(target(*i));
+								ui.close();
+							}
+						}
+					});
+				}
+			}
 		});
+	});
 	out
 }

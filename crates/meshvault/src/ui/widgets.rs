@@ -7,7 +7,7 @@ use eframe::egui::{
 
 use super::theme::{
 	CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, LIST_TEXT, MODAL_BACKDROP, PILL_RADIUS,
-	TITLE, dialog_frame, display, medium, palette, semibold,
+	Palette, TITLE, dialog_frame, display, medium, palette, semibold,
 };
 
 /// Shows a pointing hand while hovering something clickable. egui does this
@@ -101,25 +101,17 @@ fn icon_widget(
 	let response = pointer(response);
 	let enabled = ui.is_enabled();
 	let hovered = enabled && response.hovered();
-	let fill = if on {
-		p.accent_soft
-	} else if hovered && danger {
-		p.danger.gamma_multiply(0.16)
-	} else if hovered {
-		p.raised_hover
+	// "on" wins over danger
+	let (fill, colour) = if hovered && danger && !on {
+		(p.danger.gamma_multiply(0.16), p.danger)
 	} else {
-		Color32::TRANSPARENT
+		option_colours(&p, on, hovered)
 	};
-	let colour = if !enabled {
-		p.text_weak.gamma_multiply(0.45)
-	} else if on {
-		p.accent
-	} else if hovered && danger {
-		p.danger
-	} else if hovered {
-		p.text
+	// disabled dims the icon, but an "on" button keeps its fill
+	let colour = if enabled {
+		colour
 	} else {
-		p.text_weak
+		p.text_weak.gamma_multiply(0.45)
 	};
 	ui.painter().rect_filled(rect, control_radius(ui), fill);
 	let galley = ui.painter().layout_no_wrap(
@@ -244,8 +236,41 @@ pub fn segmented<T: PartialEq + Copy>(
 	changed
 }
 
+/// The (fill, text) colours of one option in a group: tinted when
+/// selected, lightened when hovered, otherwise clear with weak text.
+pub(crate) fn option_colours(p: &Palette, selected: bool, hovered: bool) -> (Color32, Color32) {
+	if selected {
+		(p.accent_soft, p.accent)
+	} else if hovered {
+		(p.raised_hover, p.text)
+	} else {
+		(Color32::TRANSPARENT, p.text_weak)
+	}
+}
+
 /// Padding between a segmented track's border and its options.
 const TRACK_PAD: f32 = 2.0;
+
+/// A framed track for a row of options, `outer_height` tall with its
+/// border and padding. `add` gets the height left for the options; their
+/// corners are concentric with the track's (option = track − padding).
+pub fn segment_track<R>(ui: &mut Ui, outer_height: f32, add: impl FnOnce(&mut Ui, f32) -> R) -> R {
+	let p = palette(ui.ctx());
+	let height = outer_height - 2.0 * (TRACK_PAD + 1.0);
+	let track = CONTROL_RADIUS + TRACK_PAD as u8;
+	Frame::NONE
+		.fill(p.raised)
+		.stroke(Stroke::new(1.0, p.border))
+		.corner_radius(CornerRadius::same(track))
+		.inner_margin(Margin::same(TRACK_PAD as i8))
+		.show(ui, |ui| {
+			ui.spacing_mut().item_spacing.x = 2.0;
+			ui.spacing_mut().interact_size.y = height;
+			nest(ui, track, TRACK_PAD + 1.0);
+			add(ui, height)
+		})
+		.inner
+}
 
 /// A row of mutually exclusive text options in a framed track, as tall as
 /// the other controls. Radii are concentric: option = track − padding.
@@ -257,58 +282,37 @@ pub fn text_segmented<T: PartialEq + Copy>(
 	let p = palette(ui.ctx());
 	let mut changed = false;
 	// the track (border + padding) is as tall as an input beside it
-	let height = ui.spacing().interact_size.y - 2.0 * (TRACK_PAD + 1.0);
-	Frame::NONE
-		.fill(p.raised)
-		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(CONTROL_RADIUS + TRACK_PAD as u8))
-		.inner_margin(Margin::same(TRACK_PAD as i8))
-		.show(ui, |ui| {
-			ui.spacing_mut().item_spacing.x = 2.0;
-			ui.spacing_mut().interact_size.y = height;
-			nest(ui, CONTROL_RADIUS + TRACK_PAD as u8, TRACK_PAD + 1.0);
-			ui.horizontal(|ui| {
-				// rows inside a right-to-left layout fill from the right; keep the
-				// options in reading order either way
-				let mut ordered: Vec<&(T, &str)> = options.iter().collect();
-				if ui.layout().main_dir() == egui::Direction::RightToLeft {
-					ordered.reverse();
+	let outer_height = ui.spacing().interact_size.y;
+	segment_track(ui, outer_height, |ui, height| {
+		ui.horizontal(|ui| {
+			// rows inside a right-to-left layout fill from the right; keep the
+			// options in reading order either way
+			let mut ordered: Vec<&(T, &str)> = options.iter().collect();
+			if ui.layout().main_dir() == egui::Direction::RightToLeft {
+				ordered.reverse();
+			}
+			for &&(option, label) in &ordered {
+				let selected = *value == option;
+				let font = FontId::new(LIST_TEXT, medium());
+				let width = ui
+					.painter()
+					.layout_no_wrap(label.to_string(), font.clone(), p.text)
+					.size()
+					.x + 24.0;
+				let (rect, response) =
+					ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+				let response = pointer(response);
+				let (fill, colour) = option_colours(&p, selected, response.hovered());
+				ui.painter().rect_filled(rect, control_radius(ui), fill);
+				ui.painter()
+					.text(rect.center(), Align2::CENTER_CENTER, label, font, colour);
+				if response.clicked() && !selected {
+					*value = option;
+					changed = true;
 				}
-				for &&(option, label) in &ordered {
-					let selected = *value == option;
-					let font = FontId::new(LIST_TEXT, medium());
-					let width = ui
-						.painter()
-						.layout_no_wrap(label.to_string(), font.clone(), p.text)
-						.size()
-						.x + 24.0;
-					let (rect, response) =
-						ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-					let response = pointer(response);
-					let fill = if selected {
-						p.accent_soft
-					} else if response.hovered() {
-						p.raised_hover
-					} else {
-						Color32::TRANSPARENT
-					};
-					ui.painter().rect_filled(rect, control_radius(ui), fill);
-					let colour = if selected {
-						p.accent
-					} else if response.hovered() {
-						p.text
-					} else {
-						p.text_weak
-					};
-					ui.painter()
-						.text(rect.center(), Align2::CENTER_CENTER, label, font, colour);
-					if response.clicked() && !selected {
-						*value = option;
-						changed = true;
-					}
-				}
-			});
+			}
 		});
+	});
 	changed
 }
 

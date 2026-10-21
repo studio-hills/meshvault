@@ -56,7 +56,7 @@ impl App {
 			.unwrap_or((0, 0))
 	}
 
-	pub fn poll_downloads(&mut self) {
+	pub(super) fn poll_downloads(&mut self) {
 		let events = self.downloader.poll();
 		let had_events = !events.is_empty();
 		for event in events {

@@ -20,7 +20,7 @@ impl App {
 	}
 
 	/// Shows the messages of background work that ended.
-	pub fn poll_background(&mut self) {
+	pub(super) fn poll_background(&mut self) {
 		let mut done = Vec::new();
 		self.background.retain(|rx| match rx.try_recv() {
 			Ok(result) => {

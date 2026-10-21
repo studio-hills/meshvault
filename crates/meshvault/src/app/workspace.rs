@@ -184,7 +184,7 @@ impl App {
 		})
 	}
 
-	pub fn poll_model(&mut self) {
+	pub(super) fn poll_model(&mut self) {
 		let Some(loading) = &self.loading_model else {
 			return;
 		};

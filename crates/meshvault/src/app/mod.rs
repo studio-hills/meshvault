@@ -148,6 +148,16 @@ impl App {
 		theme::apply(&self.ctx, mode);
 	}
 
+	/// Takes in what background work finished since the last frame. Runs
+	/// once a frame, before anything is drawn.
+	pub fn poll(&mut self) {
+		self.poll_downloads();
+		self.poll_parsing();
+		self.poll_model();
+		self.poll_background();
+		self.poll_studio_link();
+	}
+
 	pub fn frame_model(&mut self) {
 		if let Some(doc) = &mut self.doc {
 			doc.camera = Camera::framing(&doc.loaded.geometry);

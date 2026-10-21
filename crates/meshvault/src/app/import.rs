@@ -55,7 +55,7 @@ impl App {
 		});
 	}
 
-	pub fn poll_parsing(&mut self) {
+	pub(super) fn poll_parsing(&mut self) {
 		let Some(parsing) = &self.parsing else { return };
 		let result = match parsing.rx.try_recv() {
 			Ok(result) => result,
@@ -132,7 +132,7 @@ impl App {
 	}
 
 	/// Saves exports that arrived from Studio and opens them for import.
-	pub fn poll_studio_link(&mut self) {
+	pub(super) fn poll_studio_link(&mut self) {
 		for event in self.studio_link.poll() {
 			let received = match event {
 				crate::studio::link::Event::Progress { done, count } => {

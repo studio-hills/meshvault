@@ -14,11 +14,7 @@ use crate::scene::surface::{PART_COLOUR, Surface};
 impl eframe::App for App {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
-		self.poll_downloads();
-		self.poll_parsing();
-		self.poll_model();
-		self.poll_background();
-		self.poll_studio_link();
+		self.poll();
 		self.handle_dropped_files(&ctx);
 		self.shortcuts(&ctx);
 		let p = palette(&ctx);

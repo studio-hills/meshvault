@@ -4,6 +4,7 @@
 //! `dialogs` dispatcher also shows the import, Roblox access and Studio
 //! dialogs, which live in their own modules.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, RichText, Vec2};
@@ -31,6 +32,13 @@ pub enum ConfirmAction {
 		items: Vec<usize>,
 		models: Vec<usize>,
 	},
+}
+
+pub struct NewWorkspaceDialog {
+	pub name: String,
+	pub parent: PathBuf,
+	/// Export to import once the workspace exists.
+	pub then_import: Option<PathBuf>,
 }
 
 pub struct Confirm {

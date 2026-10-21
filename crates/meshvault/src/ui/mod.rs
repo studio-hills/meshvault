@@ -27,7 +27,7 @@ mod welcome;
 pub mod widgets;
 pub mod window;
 
-pub use dialogs::{Confirm, ConfirmAction};
+pub use dialogs::{Confirm, ConfirmAction, NewWorkspaceDialog};
 pub use studio::{StudioDialog, unavailable_text};
 pub use toasts::Toasts;
 pub use welcome::paint_gradient;

@@ -71,9 +71,10 @@ pub struct Uniforms {
 	pub env: [[f32; 4]; 4],
 }
 
-/// How a surface is drawn, which picks its pipeline.
+/// How a surface is drawn, which picks its pipeline. Drawn in this order:
+/// opaque surfaces, cutouts, the decals on them, then see-through surfaces.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
+enum Pass {
 	Opaque,
 	/// Cut out by its colour map's alpha, with smooth (multisampled) edges.
 	Cutout,
@@ -81,15 +82,36 @@ enum Kind {
 	SeeThrough,
 }
 
-/// The render pipelines: each with no culling, then with back faces culled.
+/// One pass's pipeline with no culling and with back faces culled.
+#[derive(Clone)]
+struct Culled {
+	none: wgpu::RenderPipeline,
+	back: wgpu::RenderPipeline,
+}
+
+impl Culled {
+	/// The pipeline for the "cull back faces" setting.
+	fn pick(&self, cull: bool) -> &wgpu::RenderPipeline {
+		if cull { &self.back } else { &self.none }
+	}
+}
+
+/// The see-through pipelines. There is none without culling: when back
+/// faces are shown, a see-through surface draws its far side (front faces
+/// culled) and then its near side (back faces culled).
+#[derive(Clone)]
+struct SeeThroughPipelines {
+	back: wgpu::RenderPipeline,
+	front: wgpu::RenderPipeline,
+}
+
+/// The render pipelines, one set per pass.
 #[derive(Clone)]
 struct Pipelines {
-	opaque: [wgpu::RenderPipeline; 2],
-	cutout: [wgpu::RenderPipeline; 2],
-	decal: [wgpu::RenderPipeline; 2],
-	/// No culling, back faces culled, and front faces culled (to draw a
-	/// see-through surface's far side before its near side).
-	see_through: [wgpu::RenderPipeline; 3],
+	opaque: Culled,
+	cutout: Culled,
+	decal: Culled,
+	see_through: SeeThroughPipelines,
 }
 
 pub struct GpuRenderer {
@@ -117,8 +139,9 @@ pub struct GpuScene {
 	bind_group: wgpu::BindGroup,
 	flags: [u32; 4],
 	material_generation: u64,
-	/// Uploaded maps, keyed by the address of their pixels so toggling a
-	/// map off and on does not upload it again.
+	/// The active maps' uploads, keyed by the address of their pixels so a
+	/// material change that keeps a map does not upload it again. A map that
+	/// is turned off is dropped, so turning it back on uploads it again.
 	textures: BTreeMap<Slot, (usize, wgpu::TextureView)>,
 }
 
@@ -174,9 +197,9 @@ impl GpuRenderer {
 		// see-through parts blend over what is behind them and leave the depth
 		// buffer alone, so they are drawn last, from the back to the front;
 		// decals blend over their part's own surface, at the same depth
-		let pipeline = |kind: Kind, cull_mode| {
-			let see_through = matches!(kind, Kind::SeeThrough | Kind::Decal);
-			let decal = kind == Kind::Decal;
+		let pipeline = |pass: Pass, cull_mode| {
+			let see_through = matches!(pass, Pass::SeeThrough | Pass::Decal);
+			let decal = pass == Pass::Decal;
 			device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 				label: Some("meshvault pipeline"),
 				layout: Some(&pipeline_layout),
@@ -214,7 +237,7 @@ impl GpuRenderer {
 					count: MSAA_SAMPLES,
 					mask: !0,
 					// a cutout's alpha decides how many samples it covers
-					alpha_to_coverage_enabled: kind == Kind::Cutout,
+					alpha_to_coverage_enabled: pass == Pass::Cutout,
 				},
 				fragment: Some(wgpu::FragmentState {
 					module: &module,
@@ -230,16 +253,18 @@ impl GpuRenderer {
 				cache: None,
 			})
 		};
-		let both = |kind| [pipeline(kind, None), pipeline(kind, Some(wgpu::Face::Back))];
+		let culled = |pass| Culled {
+			none: pipeline(pass, None),
+			back: pipeline(pass, Some(wgpu::Face::Back)),
+		};
 		let pipelines = Pipelines {
-			opaque: both(Kind::Opaque),
-			cutout: both(Kind::Cutout),
-			decal: both(Kind::Decal),
-			see_through: [
-				pipeline(Kind::SeeThrough, None),
-				pipeline(Kind::SeeThrough, Some(wgpu::Face::Back)),
-				pipeline(Kind::SeeThrough, Some(wgpu::Face::Front)),
-			],
+			opaque: culled(Pass::Opaque),
+			cutout: culled(Pass::Cutout),
+			decal: culled(Pass::Decal),
+			see_through: SeeThroughPipelines {
+				back: pipeline(Pass::SeeThrough, Some(wgpu::Face::Back)),
+				front: pipeline(Pass::SeeThrough, Some(wgpu::Face::Front)),
+			},
 		};
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("meshvault sampler"),
@@ -700,16 +725,6 @@ fn upload_texture(
 	texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Drawn in this order: opaque surfaces, cutouts, the decals on them,
-/// then see-through surfaces.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Pass {
-	Opaque,
-	Cutout,
-	Decal,
-	SeeThrough,
-}
-
 struct Draw {
 	pass: Pass,
 	bind_group: wgpu::BindGroup,
@@ -754,7 +769,6 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 impl MeshCallback {
 	fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
 		let p = &self.pipelines;
-		let cull = self.cull as usize;
 		let one = |render_pass: &mut wgpu::RenderPass<'_>, draw: &Draw| {
 			render_pass.set_bind_group(0, &draw.bind_group, &[]);
 			render_pass.set_vertex_buffer(0, draw.vertices.slice(..));
@@ -765,9 +779,9 @@ impl MeshCallback {
 			}
 		};
 		for (pass, pipeline) in [
-			(Pass::Opaque, &p.opaque[cull]),
-			(Pass::Cutout, &p.cutout[cull]),
-			(Pass::Decal, &p.decal[cull]),
+			(Pass::Opaque, p.opaque.pick(self.cull)),
+			(Pass::Cutout, p.cutout.pick(self.cull)),
+			(Pass::Decal, p.decal.pick(self.cull)),
 		] {
 			render_pass.set_pipeline(pipeline);
 			for draw in self.draws.iter().filter(|d| d.pass == pass) {
@@ -777,9 +791,9 @@ impl MeshCallback {
 		// see-through surfaces come sorted from the farthest; each draws its
 		// far side before its near side, so it blends over itself in order
 		let sides: &[&wgpu::RenderPipeline] = if self.cull {
-			&[&p.see_through[1]]
+			&[&p.see_through.back]
 		} else {
-			&[&p.see_through[2], &p.see_through[1]]
+			&[&p.see_through.front, &p.see_through.back]
 		};
 		for draw in self.draws.iter().filter(|d| d.pass == Pass::SeeThrough) {
 			for pipeline in sides {

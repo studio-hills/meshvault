@@ -2100,13 +2100,11 @@ mod tests {
 	}
 
 	/// Plays every clip of every model in a real export (without meshes):
-	/// `RBX_V1_EXPORT=path cargo test -p meshvault --release -- --ignored plays_real_export --nocapture`
+	/// `MESHVAULT_EXPORT=path cargo test -p meshvault --release -- --ignored plays_real_export --nocapture`
 	#[test]
 	#[ignore]
 	fn plays_real_export() {
-		let Ok(path) = std::env::var("RBX_V1_EXPORT") else {
-			return;
-		};
+		let path = crate::test_support::real_export();
 		let export =
 			crate::studio::export_file::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
 		let ctx = egui::Context::default();

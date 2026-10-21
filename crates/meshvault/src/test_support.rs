@@ -46,3 +46,15 @@ impl Drop for TempDir {
 		let _ = std::fs::remove_dir_all(&self.0);
 	}
 }
+
+/// The export file the ignored real-export tests read, from
+/// `MESHVAULT_EXPORT`. The older names `RBX_V1_EXPORT` and `RBX_EXPORT` are
+/// still accepted, for one release. Panics when none is set, so an ignored
+/// run without one fails instead of passing having tested nothing.
+pub(crate) fn real_export() -> PathBuf {
+	["MESHVAULT_EXPORT", "RBX_V1_EXPORT", "RBX_EXPORT"]
+		.into_iter()
+		.find_map(std::env::var_os)
+		.map(PathBuf::from)
+		.expect("set MESHVAULT_EXPORT to an export file")
+}

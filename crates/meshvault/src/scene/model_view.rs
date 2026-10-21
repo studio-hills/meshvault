@@ -22,7 +22,7 @@ use crate::render::gpu::GpuScene;
 use crate::render::viewport::{
 	self, AlphaMode, Camera, ClothingDraw, DecalDraw, ScenePart, Surface,
 };
-use crate::scene::geometry::{self, Geometry, GroupKind, Primitive, Skin};
+use crate::scene::geometry::{self, Geometry, Primitive, Skin};
 use crate::scene::maps::Slot;
 use crate::scene::texture::{self, Material};
 
@@ -446,23 +446,13 @@ fn load_asset(ctx: &egui::Context, source: &MeshSource) -> Result<MeshAsset, Str
 	if geometry.triangles.is_empty() {
 		return Err(loaded.note.unwrap_or_else(|| "the mesh is empty".into()));
 	}
-	let groups = match geometry.group_kind {
-		GroupKind::Lod => vec![0],
-		_ => (0..geometry.groups.len()).collect(),
-	};
+	let groups = geometry.default_groups();
 	let skin = geometry::skin(&bytes, geometry.positions.len());
-	let mut material = Material::default();
-	if geometry.uvs.is_some() {
-		for (slot, map) in &source.maps {
-			// a missing map leaves the mesh plain rather than failing the part
-			if let Ok(texture) = std::fs::read(map)
-				.map_err(|e| e.to_string())
-				.and_then(|b| texture::load(ctx, map, &b))
-			{
-				material.set(*slot, texture);
-			}
-		}
-	}
+	let material = if geometry.uvs.is_some() {
+		texture::load_maps(ctx, &source.maps)
+	} else {
+		Material::default()
+	};
 	Ok(MeshAsset {
 		name: source.name.clone(),
 		geometry,
@@ -1910,6 +1900,7 @@ fn log_unbound(warnings: &mut Vec<String>, unbound: usize) {
 mod tests {
 	use super::*;
 	use crate::anim::schema::{BoneInfo, ModelPart, MotorJoint};
+	use crate::scene::geometry::GroupKind;
 
 	fn cf(pos: V3) -> [f32; 12] {
 		CFrame::from_position(pos).components()

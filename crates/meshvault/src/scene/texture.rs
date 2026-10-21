@@ -51,6 +51,26 @@ pub fn is_image(path: &Path) -> bool {
 		.is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// Reads and decodes an image file. A read error is the OS's message.
+pub fn load_file(ctx: &egui::Context, path: &Path) -> Result<Texture, String> {
+	std::fs::read(path)
+		.map_err(|e| e.to_string())
+		.and_then(|bytes| load(ctx, path, &bytes))
+}
+
+/// Loads each map in order into a new material; a later map for the same
+/// slot replaces an earlier one. Callers only do this for meshes with UVs.
+pub fn load_maps(ctx: &egui::Context, maps: &[(Slot, PathBuf)]) -> Material {
+	let mut material = Material::default();
+	for (slot, path) in maps {
+		// a missing map leaves the mesh plain rather than failing the part
+		if let Ok(texture) = load_file(ctx, path) {
+			material.set(*slot, texture);
+		}
+	}
+	material
+}
+
 pub fn load(ctx: &egui::Context, path: &Path, bytes: &[u8]) -> Result<Texture, String> {
 	let image = image::load_from_memory(bytes)
 		.map_err(|e| format!("Could not decode {}: {e}", path.display()))?;
@@ -170,4 +190,64 @@ pub fn find_siblings(mesh_path: &Path) -> BTreeMap<Slot, PathBuf> {
 		found.insert(Slot::Base, images[0].clone());
 	}
 	found
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::test_support::TempDir;
+
+	fn png(dir: &Path, name: &str) -> PathBuf {
+		let path = dir.join(name);
+		image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+			.save(&path)
+			.unwrap();
+		path
+	}
+
+	/// A read error is the OS's own message; a decode error names the file.
+	#[test]
+	fn load_file_reports_read_and_decode_errors() {
+		let dir = TempDir::new("texture_load_file");
+		let ctx = egui::Context::default();
+		let missing = dir.join("missing.png");
+		let err = load_file(&ctx, &missing).err().unwrap();
+		assert_eq!(err, std::fs::read(&missing).unwrap_err().to_string());
+		let bad = dir.join("bad.png");
+		std::fs::write(&bad, b"not an image").unwrap();
+		let err = load_file(&ctx, &bad).err().unwrap();
+		assert!(err.starts_with(&format!("Could not decode {}: ", bad.display())));
+		assert_eq!(
+			load_file(&ctx, &png(&dir, "good.png")).unwrap().size,
+			[2, 2]
+		);
+	}
+
+	/// Maps load in order, a later one for a slot wins, and maps that are
+	/// missing or do not decode are skipped.
+	#[test]
+	fn load_maps_skips_failures_and_lets_later_maps_win() {
+		let dir = TempDir::new("texture_load_maps");
+		let ctx = egui::Context::default();
+		let bad = dir.join("bad.png");
+		std::fs::write(&bad, b"not an image").unwrap();
+		let (first, second) = (png(&dir, "first.png"), png(&dir, "second.png"));
+		let material = load_maps(
+			&ctx,
+			&[
+				(Slot::Base, first),
+				(Slot::Normal, dir.join("missing.png")),
+				(Slot::Base, second.clone()),
+				(Slot::Roughness, bad),
+			],
+		);
+		let slots: Vec<(Slot, PathBuf)> = material
+			.maps
+			.iter()
+			.map(|(s, t)| (*s, t.path.clone()))
+			.collect();
+		assert_eq!(slots, [(Slot::Base, second)]);
+		assert_eq!(material.generation, 2);
+		assert!(material.disabled.is_empty());
+	}
 }

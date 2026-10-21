@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 
 use crate::render::viewport;
-use crate::scene::geometry::{self, Geometry, GroupKind};
+use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
-use crate::scene::texture::Material;
+use crate::scene::texture::{self, Material};
 use crate::workspace::sanitize;
 
 /// What to write.
@@ -129,11 +129,7 @@ fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), String> {
 	if geometry.triangles.is_empty() {
 		return Err("the mesh has no triangles".into());
 	}
-	// as the viewer opens it: the finest LOD, or every hull
-	let groups: Vec<usize> = match geometry.group_kind {
-		GroupKind::Lod => vec![0],
-		_ => (0..geometry.groups.len()).collect(),
-	};
+	let groups = geometry.default_groups();
 	let mut obj = Obj::new(dir, name);
 	let base = job
 		.maps
@@ -158,18 +154,12 @@ fn export_mesh_glb(
 ) -> Result<(), String> {
 	let bytes = std::fs::read(&job.mesh).map_err(|e| e.to_string())?;
 	let geometry = geometry::load(&bytes)?.geometry;
-	let mut material = Material::default();
-	if geometry.uvs.is_some() {
-		for (slot, map) in &job.maps {
-			if let Ok(texture) = std::fs::read(map)
-				.map_err(|e| e.to_string())
-				.and_then(|b| crate::scene::texture::load(ctx, map, &b))
-			{
-				material.set(*slot, texture);
-			}
-		}
-	}
-	let groups = crate::export::gltf::default_groups(&geometry);
+	let material = if geometry.uvs.is_some() {
+		texture::load_maps(ctx, &job.maps)
+	} else {
+		Material::default()
+	};
+	let groups = geometry.default_groups();
 	crate::export::gltf::export_mesh(
 		&geometry,
 		&groups,
@@ -404,6 +394,7 @@ impl Obj {
 mod tests {
 	use super::*;
 	use crate::export::fixtures::{parse_glb, sample_mesh};
+	use crate::scene::geometry::GroupKind;
 	use crate::test_support::TempDir;
 
 	fn triangle(uvs: bool) -> Geometry {

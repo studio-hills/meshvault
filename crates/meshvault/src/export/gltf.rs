@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use crate::anim::math::CFrame;
 use crate::render::viewport::{AlphaMode, Surface};
 use crate::scene::colour::{linear_rgb, linear_to_srgb, srgb_to_linear, srgb8_to_linear};
-use crate::scene::geometry::{Geometry, GroupKind};
+use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::model_view::{ExportMesh, ModelView};
 use crate::scene::texture::Material;
@@ -177,14 +177,6 @@ pub fn export_mesh(
 	g.nodes.push(json!({ "name": name, "mesh": index }));
 	g.scene = vec![0];
 	g.write(path)
-}
-
-/// The groups a mesh opens with in the viewer: the finest LOD, or all.
-pub fn default_groups(geometry: &Geometry) -> Vec<usize> {
-	match geometry.group_kind {
-		GroupKind::Lod => vec![0],
-		_ => (0..geometry.groups.len()).collect(),
-	}
 }
 
 /// A colour map as Meshvault draws it on a part (see `mesh.wgsl`): laid
@@ -651,6 +643,7 @@ fn same(a: &CFrame, b: &CFrame) -> bool {
 mod tests {
 	use super::*;
 	use crate::export::fixtures::parse_glb;
+	use crate::scene::geometry::GroupKind;
 	use crate::test_support::TempDir;
 
 	#[test]

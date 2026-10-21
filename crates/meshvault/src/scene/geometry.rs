@@ -36,6 +36,15 @@ pub struct Geometry {
 }
 
 impl Geometry {
+	/// The groups the viewer opens the mesh with: the finest LOD, or every
+	/// group (every hull).
+	pub fn default_groups(&self) -> Vec<usize> {
+		match self.group_kind {
+			GroupKind::Lod => vec![0],
+			_ => (0..self.groups.len()).collect(),
+		}
+	}
+
 	fn empty() -> Self {
 		Self {
 			positions: Vec::new(),
@@ -1724,5 +1733,21 @@ mod uv_tests {
 	#[test]
 	fn physics_has_no_uvs() {
 		assert!(load_sample("CSGPHS_7.data").geometry.uvs.is_none());
+	}
+
+	/// LOD meshes open on the finest level, even with no groups at all;
+	/// other kinds open with every group.
+	#[test]
+	fn default_groups_are_the_finest_lod_or_all() {
+		let mut g = Geometry::empty();
+		g.group_kind = GroupKind::Lod;
+		assert_eq!(g.default_groups(), [0]);
+		g.groups = vec![0..3, 3..4];
+		assert_eq!(g.default_groups(), [0]);
+		g.group_kind = GroupKind::Hull;
+		assert_eq!(g.default_groups(), [0, 1]);
+		g.group_kind = GroupKind::Whole;
+		g.groups.clear();
+		assert!(g.default_groups().is_empty());
 	}
 }

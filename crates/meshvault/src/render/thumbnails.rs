@@ -269,22 +269,12 @@ fn read_mesh(
 ) -> Result<Prepared, String> {
 	let bytes = std::fs::read(mesh).map_err(|e| e.to_string())?;
 	let geometry = geometry::load(&bytes)?.geometry;
-	// as the viewer opens it: the finest LOD, or every hull
-	let groups = match geometry.group_kind {
-		GroupKind::Lod => vec![0],
-		_ => (0..geometry.groups.len()).collect(),
+	let groups = geometry.default_groups();
+	let material = if geometry.uvs.is_some() {
+		texture::load_maps(ctx, maps)
+	} else {
+		Material::default()
 	};
-	let mut material = Material::default();
-	if geometry.uvs.is_some() {
-		for (slot, path) in maps {
-			if let Ok(texture) = std::fs::read(path)
-				.map_err(|e| e.to_string())
-				.and_then(|b| texture::load(ctx, path, &b))
-			{
-				material.set(*slot, texture);
-			}
-		}
-	}
 	Ok(Prepared::Mesh {
 		geometry,
 		groups,

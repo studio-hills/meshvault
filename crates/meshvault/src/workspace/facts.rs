@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::scene::geometry;
 use crate::workspace::{AssetState, CACHE_DIR, Workspace};
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MeshFacts {
 	/// Bound to bones, so it bends with them.
 	pub skinned: bool,
@@ -109,6 +109,8 @@ impl Facts {
 			return;
 		}
 		self.dirty = false;
+		// facts.json is a cache that can be rebuilt, so failing to write it
+		// is not worth reporting
 		if let Some(dir) = self.file.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
@@ -124,25 +126,22 @@ impl Drop for Facts {
 	}
 }
 
-/// Reads a mesh's facts. One that does not decode counts as an empty,
-/// unskinned mesh, so it is not read again.
+/// Reads a mesh's facts. A file that cannot be read or decoded counts as an
+/// empty, unskinned mesh, so it is not read again.
 fn read(path: &Path) -> MeshFacts {
 	let Ok(bytes) = std::fs::read(path) else {
-		return MeshFacts {
-			skinned: false,
-			triangles: 0,
-		};
+		return MeshFacts::default();
 	};
-	let (skinned, triangles) = match geometry::load(&bytes) {
-		Ok(loaded) => {
-			let geometry = loaded.geometry;
-			let skinned = geometry::skin(&bytes, geometry.positions.len())
-				.ok()
-				.flatten()
-				.is_some_and(|s| !s.bones.is_empty());
-			(skinned, geometry.triangles.len())
-		}
-		Err(_) => (false, 0),
+	let Ok(loaded) = geometry::load(&bytes) else {
+		return MeshFacts::default();
 	};
-	MeshFacts { skinned, triangles }
+	let geometry = loaded.geometry;
+	let skinned = geometry::skin(&bytes, geometry.positions.len())
+		.ok()
+		.flatten()
+		.is_some_and(|s| !s.bones.is_empty());
+	MeshFacts {
+		skinned,
+		triangles: geometry.triangles.len(),
+	}
 }

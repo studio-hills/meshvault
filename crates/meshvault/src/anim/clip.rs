@@ -369,7 +369,8 @@ impl Track {
 }
 
 /// Index of the key segment containing `time`: `Err(i)` when `time` is
-/// before the first (`0`) or after the last key (`len - 1`).
+/// before the first (`0`) or after the last key (`len - 1`). `keys` must
+/// not be empty and must be sorted by time.
 fn segment<T>(keys: &[T], time: f32, key_time: impl Fn(&T) -> f32) -> Result<usize, usize> {
 	if time <= key_time(&keys[0]) {
 		return Err(0);
@@ -429,7 +430,8 @@ pub fn pose_ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 
 	}
 }
 
-/// Standard easing curves (as in TweenService) for an "In" shape `f`.
+/// Easing curve for `style`, shaped by `direction`; Roblox-specific cases
+/// are noted below.
 pub fn ease(style: EasingStyle, direction: EasingDirection, t: f32) -> f32 {
 	let f = |x: f32| -> f32 {
 		use std::f32::consts::PI;

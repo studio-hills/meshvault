@@ -58,8 +58,9 @@ fn rigs_rest_pose_and_binding() {
 		"tracks bound {matched}/{tracks}; consistent rigs {consistent}/{}",
 		doc.models.len()
 	);
-	// characters exported mid-animation have offset snapshots (Motor6D.Transform
-	// is not exported), but stored assets should solve back to their CFrames
+	// characters exported mid-animation by schema 1 have offset snapshots (it
+	// does not export Motor6D.Transform; schema 2 does), but stored assets
+	// should solve back to their CFrames
 	assert!(
 		consistent * 4 >= doc.models.len() * 3,
 		"most rigs should solve to their exported pose"

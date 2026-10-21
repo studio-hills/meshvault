@@ -1,6 +1,5 @@
 //! Model records of schema versions 1 and 2: parts, Motor6D joints, bones
-//! and animation clips, as written by the exporter (see the implementation
-//! guides). Version 2 adds the fields marked "schema 2"; they are `None`
+//! and animation clips, as written by the exporters. Version 2 adds the fields marked "schema 2"; they are `None`
 //! when reading version 1. The same types are written back into
 //! workspaces, so a stored model file is itself a model record.
 
@@ -21,7 +20,7 @@ pub struct AnimatedModel {
 	pub joints: Vec<MotorJoint>,
 	pub bones: Vec<BoneInfo>,
 	pub animations: Vec<AnimationClip>,
-	/// The model's classic clothing (exporters from 2026-10 on).
+	/// The model's classic clothing (schema 2; absent in older exports).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub clothing: Option<ClothingInfo>,
 }
@@ -82,18 +81,19 @@ pub struct ModelPart {
 	/// Absent when the part has no SpecialMesh (schema 2).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub special_mesh: Option<SpecialMeshInfo>,
-	/// The part's SurfaceAppearance settings beyond its maps (exporters from
-	/// 2026-10 on); absent without one.
+	/// The part's SurfaceAppearance settings beyond its maps (schema 2);
+	/// absent without one, and in older exports.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub surface_appearance: Option<SurfaceAppearanceInfo>,
-	/// The part's Decals and Textures (exporters from 2026-10 on).
+	/// The part's Decals and Textures (schema 2; absent in older exports).
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	pub decals: Vec<DecalInfo>,
 	/// The MaterialVariant the part shows, its own or MaterialService's
-	/// override for its material (exporters from 2026-10 on).
+	/// override for its material (schema 2; absent in older exports).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub material_variant: Option<MaterialVariantInfo>,
-	/// Lights on the part or its attachments (exporters from 2026-10 on).
+	/// Lights on the part or its attachments (schema 2; absent in older
+	/// exports).
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	pub lights: Vec<LightInfo>,
 }
@@ -201,7 +201,8 @@ pub struct MotorJoint {
 	/// in at that moment, not part of any clip.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub transform: Option<CFrame12>,
-	/// The joint's class (exporters from 2026-10 on): "Motor6D",
+	/// The joint's class (current schema 1 and 2 exporters; absent in older
+	/// exports): "Motor6D",
 	/// "AnimationConstraint", or a weld ("Weld", "WeldConstraint",
 	/// "RigidConstraint", ...) that only holds its parts together. Absent
 	/// means a Motor6D.
@@ -327,7 +328,8 @@ pub struct Pose {
 	pub easing_direction: EasingDirection,
 	pub children: Vec<Pose>,
 	/// Face control values set at this pose (NumberPoses in its
-	/// FaceControls), exporters from 2026-10 on.
+	/// FaceControls), from the current schema 1 and 2 exporters; absent in
+	/// older exports.
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	pub face_controls: Vec<FaceControlPose>,
 }

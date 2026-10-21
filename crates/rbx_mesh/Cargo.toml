@@ -4,7 +4,7 @@ version = "0.8.2"
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-# vendored from https://github.com/krakow10/rbx_mesh, under its licence
+# vendored from https://github.com/krakow10/rbx_mesh at 1ea4cc4, under its licence
 license = "MIT OR Apache-2.0"
 description = "Rust parser for Roblox mesh files."
 authors = ["Rhys Lloyd <krakow20@gmail.com>", "Jaden Hills"]

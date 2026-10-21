@@ -20,7 +20,7 @@ pub enum Revision6 {
 /// Reads the u32 chunk size, parses the payload, and then skips any bytes
 /// the payload did not consume so that the next chunk is read from the
 /// right position.  Reading past the end of the chunk is an error.
-pub(crate) fn sized<T, R>(reader: &mut R, endian: binrw::Endian, args: ()) -> binrw::BinResult<T>
+fn sized<T, R>(reader: &mut R, endian: binrw::Endian, args: ()) -> binrw::BinResult<T>
 where
 	T: for<'a> BinRead<Args<'a> = ()>,
 	R: BinReaderExt,

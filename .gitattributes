@@ -1,0 +1,12 @@
+# Text is LF in the repository and in every checkout, whatever core.autocrlf says
+* text=auto eol=lf
+
+# Windows scripts
+*.ps1 text eol=crlf
+
+# Test fixtures are exact bytes (mesh v1.00 is ASCII with CRLF)
+crates/rbx_mesh/meshes/** binary
+
+*.ttf binary
+*.png binary
+*.glb binary

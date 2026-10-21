@@ -80,6 +80,23 @@ pub struct Workspace {
 	generation: u64,
 }
 
+/// Every image a model uses directly, by asset id: its parts' decals and
+/// MaterialVariant maps, then its clothing. An id can appear more than once.
+fn image_ids(model: &AnimatedModel) -> impl Iterator<Item = u64> + '_ {
+	model
+		.parts
+		.iter()
+		.flat_map(|p| {
+			let variant = p
+				.material_variant
+				.iter()
+				.flat_map(|v| v.maps().map(|(_, id)| id));
+			p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
+		})
+		.chain(model.clothing.iter().flat_map(|c| c.images()))
+		.filter_map(parse_asset_id)
+}
+
 impl Workspace {
 	pub fn create(root: &Path, name: &str) -> Result<Self, String> {
 		if root.join(MANIFEST).exists() {
@@ -286,18 +303,7 @@ impl Workspace {
 		let previous = existing
 			.map(|i| self.manifest.models[i].images.clone())
 			.unwrap_or_default();
-		let images = model
-			.parts
-			.iter()
-			.flat_map(|p| {
-				let variant = p
-					.material_variant
-					.iter()
-					.flat_map(|v| v.maps().map(|(_, id)| id));
-				p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
-			})
-			.chain(model.clothing.iter().flat_map(|c| c.images()))
-			.filter_map(parse_asset_id)
+		let images = image_ids(model)
 			.map(|id| {
 				let state = previous.get(&id).cloned().unwrap_or(AssetState::Pending);
 				(id, state)

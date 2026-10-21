@@ -1,9 +1,9 @@
 //! Switching between an animated model and the meshes it is built from,
 //! shown at the top of the inspector.
 
-use eframe::egui::{self, FontId, Sense, Vec2};
+use eframe::egui::{self, FontId, RichText, Sense, Vec2};
 
-use super::theme::{CONTROL_SM, TITLE, medium, palette};
+use super::theme::{CAPTION, CONTROL_SM, TITLE, display, medium, palette};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -66,15 +66,8 @@ pub(super) fn header(
 	subtitle: &str,
 	subtitle_hover: &str,
 ) -> Option<Switch> {
-	ui.add(
-		egui::Label::new(
-			egui::RichText::new(title)
-				.size(TITLE)
-				.family(super::theme::display()),
-		)
-		.truncate(),
-	)
-	.on_hover_text(title);
+	ui.add(egui::Label::new(RichText::new(title).size(TITLE).family(display())).truncate())
+		.on_hover_text(title);
 	ui.add_space(2.0);
 	ui.add(egui::Label::new(widgets::caption(ui, subtitle)).truncate())
 		.on_hover_text(subtitle_hover);
@@ -91,7 +84,7 @@ pub(super) fn header(
 /// other side has several choices (a model built from several meshes, or a
 /// mesh several models use) it opens a list. Shown only when both sides
 /// exist.
-pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -> Option<Switch> {
+fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -> Option<Switch> {
 	if c.models.is_empty() || c.meshes.is_empty() {
 		return None;
 	}
@@ -135,7 +128,7 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 					} else {
 						targets.len().to_string()
 					},
-					FontId::proportional(crate::ui::theme::CAPTION),
+					FontId::proportional(CAPTION),
 					if current {
 						p.accent.gamma_multiply(0.7)
 					} else {

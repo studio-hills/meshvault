@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Vec2};
 
-use super::theme::{CARD_RADIUS, ROW, palette};
+use super::theme::{BODY_LINE_HEIGHT, CARD_RADIUS, ROW, palette};
 use super::{code, icons, widgets};
 use crate::app::App;
 use crate::studio::link::{self, CodeLayout, CodeMode, Status};
@@ -97,7 +97,7 @@ impl App {
 				egui::Label::new(
 					RichText::new(about)
 						.color(p.text_weak)
-						.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+						.line_height(Some(BODY_LINE_HEIGHT)),
 				)
 				.wrap(),
 			);

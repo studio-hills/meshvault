@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, RichText, Stroke, Vec2};
 
-use super::theme::palette;
+use super::theme::{BODY_LINE_HEIGHT, palette};
 use super::{icons, widgets};
 
 const LIFETIME: Duration = Duration::from_secs(5);
@@ -109,8 +109,8 @@ impl Toasts {
 								ui.label(RichText::new(icon).size(18.0).color(colour));
 								ui.add(
 									egui::Label::new(
-										egui::RichText::new(&toast.text)
-											.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+										RichText::new(&toast.text)
+											.line_height(Some(BODY_LINE_HEIGHT)),
 									)
 									.wrap(),
 								);

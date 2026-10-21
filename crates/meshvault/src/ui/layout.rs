@@ -3,7 +3,7 @@
 use eframe::egui::{self, Frame, Margin};
 
 use super::inspector::header_backdrop;
-use super::theme::palette;
+use super::theme::{Palette, palette};
 use crate::app::App;
 use crate::render::camera::Camera;
 use crate::render::maths::IDENTITY;
@@ -132,7 +132,7 @@ impl App {
 		self.viewport_toolbar(ui.ctx(), rect);
 	}
 
-	pub(crate) fn view_settings(&self, p: &super::theme::Palette) -> ViewSettings {
+	pub(crate) fn view_settings(&self, p: &Palette) -> ViewSettings {
 		ViewSettings {
 			shading: self.shading,
 			cull_backfaces: self.cull_backfaces,

@@ -2,7 +2,9 @@
 
 use eframe::egui::{self, Align2, FontId, RichText, Sense, Vec2};
 
-use super::theme::{CAPTION, CARD_RADIUS, CONTROL_XXS, display, palette, semibold};
+use super::theme::{
+	BODY_LINE_HEIGHT, CAPTION, CARD_RADIUS, CONTROL_XXS, display, palette, semibold,
+};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -309,7 +311,7 @@ fn subtitle(ui: &mut egui::Ui, text: &str) {
 			RichText::new(text)
 				.color(p.text_weak)
 				.size(14.0)
-				.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+				.line_height(Some(BODY_LINE_HEIGHT)),
 		)
 		.wrap(),
 	);

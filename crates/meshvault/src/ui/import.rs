@@ -607,10 +607,7 @@ impl ImportDialog {
 		rows.sort_by(|&a, &b| {
 			let kind = |r: usize| matches!(self.rows[r], Row::Mesh(_));
 			kind(a).cmp(&kind(b)).then_with(|| {
-				crate::ui::tree::natural_cmp(
-					self.row_name(self.rows[a]),
-					self.row_name(self.rows[b]),
-				)
+				tree::natural_cmp(self.row_name(self.rows[a]), self.row_name(self.rows[b]))
 			})
 		});
 		for r in rows {

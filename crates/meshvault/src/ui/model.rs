@@ -3,13 +3,13 @@
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Id, Layout, Order, RichText, Stroke, Vec2};
 
-use super::theme::{CAPTION, CONTROL_RADIUS, ROW, palette, semibold};
+use super::theme::{CAPTION, CONTROL_RADIUS, Palette, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
 use crate::render::camera::{Camera, project};
 use crate::render::viewport;
-use crate::scene::model_view::{ClipSlot, ModelView, PartShape, PartView};
+use crate::scene::model_view::{ClipSlot, Joint, ModelView, PartShape, PartView, Skeleton};
 
 /// Corner radius of the transport bar; the controls in it are rounded to
 /// this less its padding and border.
@@ -28,7 +28,7 @@ fn speed_label(speed: f32) -> String {
 	format!("{}×", (speed * 100.0).round() / 100.0)
 }
 
-fn status_colour(p: &super::theme::Palette, status: ClipStatus) -> Color32 {
+fn status_colour(p: &Palette, status: ClipStatus) -> Color32 {
 	if status.is_playable() {
 		p.accent
 	} else {
@@ -207,7 +207,7 @@ impl App {
 }
 
 /// The model's load warnings, one note each.
-fn warning_list(ui: &mut egui::Ui, p: &super::theme::Palette, warnings: &[String]) {
+fn warning_list(ui: &mut egui::Ui, p: &Palette, warnings: &[String]) {
 	for w in warnings {
 		widgets::note(
 			ui,
@@ -218,7 +218,7 @@ fn warning_list(ui: &mut egui::Ui, p: &super::theme::Palette, warnings: &[String
 }
 
 /// What the chosen clip is and how much of it binds to this model.
-fn clip_details(ui: &mut egui::Ui, p: &super::theme::Palette, slot: &ClipSlot) {
+fn clip_details(ui: &mut egui::Ui, p: &Palette, slot: &ClipSlot) {
 	let clip = slot.clip.as_ref().ok();
 	let mut rows = vec![
 		("Type".to_string(), slot.status.label().to_string()),
@@ -282,7 +282,7 @@ fn clip_details(ui: &mut egui::Ui, p: &super::theme::Palette, slot: &ClipSlot) {
 	}
 }
 
-fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView) {
+fn transport(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
 	ui.spacing_mut().item_spacing.x = 4.0;
 	let has_clip = model.current.is_some();
 	let (icon, tip) = if model.playing {
@@ -407,13 +407,7 @@ fn speed_menu(ui: &mut egui::Ui, model: &mut ModelView) {
 
 /// The seek slider across the remaining width, with a tick for each marker
 /// (named on hover).
-fn scrubber(
-	ui: &mut egui::Ui,
-	p: &super::theme::Palette,
-	model: &mut ModelView,
-	duration: f32,
-	has_clip: bool,
-) {
+fn scrubber(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView, duration: f32, has_clip: bool) {
 	let width = ui.available_width().max(60.0);
 	ui.spacing_mut().slider_width = width;
 	let mut t = model.time;
@@ -456,7 +450,7 @@ fn scrubber(
 	}
 }
 
-fn clip_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView) {
+fn clip_list(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
 	if model.clips.is_empty() {
 		ui.label(RichText::new("This model has no animations.").color(p.text_weak));
 		return;
@@ -487,7 +481,7 @@ fn clip_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
 				ui.label(
 					RichText::new(slot.status.label())
-						.size(crate::ui::theme::CAPTION)
+						.size(CAPTION)
 						.color(status_colour(p, slot.status)),
 				);
 			});
@@ -504,10 +498,10 @@ fn clip_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 /// model. Hovering a mark names it.
 fn draw_skeleton(
 	ui: &egui::Ui,
-	p: &super::theme::Palette,
+	p: &Palette,
 	rect: egui::Rect,
 	camera: &Camera,
-	skeleton: &crate::scene::model_view::Skeleton,
+	skeleton: &Skeleton,
 	bones: bool,
 	joints: bool,
 ) {
@@ -525,7 +519,7 @@ fn draw_skeleton(
 	let pointer = ui
 		.input(|i| i.pointer.hover_pos())
 		.filter(|at| rect.contains(*at));
-	let mut nearest: Option<(f32, egui::Pos2, &crate::scene::model_view::Joint)> = None;
+	let mut nearest: Option<(f32, egui::Pos2, &Joint)> = None;
 	for joint in &skeleton.joints {
 		let Some(at) = project(joint.at) else {
 			continue;
@@ -568,7 +562,7 @@ fn draw_skeleton(
 	}
 }
 
-fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView) {
+fn part_list(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
 	ui.horizontal(|ui| {
 		widgets::compact(ui);
 		if widgets::text_button(ui, "Show all").clicked() {
@@ -614,11 +608,7 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 						rp.path, rp.transparency
 					));
 					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-						ui.label(
-							RichText::new(tag)
-								.size(crate::ui::theme::CAPTION)
-								.color(colour),
-						);
+						ui.label(RichText::new(tag).size(CAPTION).color(colour));
 					});
 				});
 				if ui.rect_contains_pointer(row.response.rect) {
@@ -631,7 +621,7 @@ fn part_list(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 
 /// A part's tag in the list, its colour, and the line its hover text gives
 /// about how it is drawn.
-fn part_tag(part: &PartView, p: &super::theme::Palette) -> (&'static str, Color32, String) {
+fn part_tag(part: &PartView, p: &Palette) -> (&'static str, Color32, String) {
 	match &part.shape {
 		PartShape::Mesh(asset) => match &part.skin {
 			Some(s) => (

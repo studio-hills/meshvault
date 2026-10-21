@@ -5,6 +5,7 @@ use eframe::egui::{
 	Response, RichText, Sense, Stroke, Ui, Vec2, WidgetText,
 };
 
+use super::icons;
 use super::theme::{
 	BODY_LINE_HEIGHT, CAPTION, CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, CONTROL_XS, LIST_TEXT,
 	MODAL_BACKDROP, PILL_RADIUS, Palette, TITLE, dialog_frame, display, medium, palette, semibold,
@@ -369,9 +370,9 @@ pub fn text_segmented<T: PartialEq + Copy>(
 /// `text` in natural case, set in capitals with 0.05em of tracking.
 pub fn overline(text: &str) -> RichText {
 	RichText::new(text.to_uppercase())
-		.size(crate::ui::theme::CAPTION)
+		.size(CAPTION)
 		.family(semibold())
-		.extra_letter_spacing(0.05 * crate::ui::theme::CAPTION)
+		.extra_letter_spacing(0.05 * CAPTION)
 }
 
 /// A collapsible panel section with a small uppercase title.
@@ -385,9 +386,9 @@ pub fn section(ui: &mut Ui, id: &str, title: &str, default_open: bool, body: imp
 	);
 	let header = ui.horizontal(|ui| {
 		let icon = if state.is_open() {
-			super::icons::CARET_DOWN
+			icons::CARET_DOWN
 		} else {
-			super::icons::CARET_RIGHT
+			icons::CARET_RIGHT
 		};
 		let text = overline(&format!("{icon}  {title}")).color(p.text_weak);
 		ui.add(
@@ -482,7 +483,7 @@ pub fn stat_strip(ui: &mut Ui, stats: &[(String, &str)]) {
 					egui::pos2(left, rect.bottom()),
 					Align2::LEFT_BOTTOM,
 					*caption,
-					FontId::proportional(crate::ui::theme::CAPTION),
+					FontId::proportional(CAPTION),
 					p.text_weak,
 				);
 			}
@@ -640,7 +641,7 @@ pub fn scroll_in_margin<R>(
 
 /// A menu item with Blender's logo before its text.
 pub fn blender_item(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
-	match super::icons::blender(ui.ctx()) {
+	match icons::blender(ui.ctx()) {
 		Some(logo) => ui.add(egui::Button::image_and_text(
 			egui::Image::new((logo.id(), Vec2::splat(16.0))),
 			text,

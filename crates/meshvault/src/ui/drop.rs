@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Id, Order, Vec2};
 use super::theme::{palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
+use crate::scene::texture::is_image;
 
 impl App {
 	pub(super) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
@@ -37,7 +38,7 @@ impl App {
 			(icons::PERSON_SIMPLE_RUN, "Open animated model")
 		} else if ext == "json" {
 			(icons::FILE_ARROW_DOWN, "Import export file")
-		} else if crate::scene::texture::is_image(&path) {
+		} else if is_image(&path) {
 			(icons::IMAGE, "Use as material map")
 		} else {
 			(icons::CUBE, "Open model")

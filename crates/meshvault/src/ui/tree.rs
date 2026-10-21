@@ -101,7 +101,7 @@ pub fn child_path(prefix: &str, name: &str) -> String {
 	}
 }
 
-pub fn set_open(ctx: &egui::Context, id: Id, open: bool) {
+fn set_open(ctx: &egui::Context, id: Id, open: bool) {
 	let mut state =
 		egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, false);
 	state.set_open(open);
@@ -109,7 +109,7 @@ pub fn set_open(ctx: &egui::Context, id: Id, open: bool) {
 }
 
 /// Opens or closes every folder below `node`.
-pub fn set_all(ctx: &egui::Context, scope: &str, node: &FolderTree, prefix: &str, open: bool) {
+fn set_all(ctx: &egui::Context, scope: &str, node: &FolderTree, prefix: &str, open: bool) {
 	for (name, child) in &node.folders {
 		let path = child_path(prefix, name);
 		set_open(ctx, folder_id(scope, &path), open);
@@ -118,7 +118,7 @@ pub fn set_all(ctx: &egui::Context, scope: &str, node: &FolderTree, prefix: &str
 }
 
 /// Opens or closes the folder at `path` and everything inside it.
-pub fn set_subtree(ctx: &egui::Context, scope: &str, root: &FolderTree, path: &str, open: bool) {
+fn set_subtree(ctx: &egui::Context, scope: &str, root: &FolderTree, path: &str, open: bool) {
 	let mut node = root;
 	for part in path.split('/') {
 		match node.folders.get(part) {

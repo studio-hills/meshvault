@@ -1,15 +1,16 @@
 //! The right-hand panel describing the open model and its material.
 
-use crate::scene::surface::AlphaMode;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
 use super::format::{format_bytes, format_count};
 use super::layout::PANEL_MARGIN;
-use super::theme::{CARD_RADIUS, CONTROL_XS, ROW, palette, semibold};
+use super::theme::{BODY_LINE_HEIGHT, CARD_RADIUS, CONTROL_XS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::scene::geometry::GroupKind;
 use crate::scene::maps::Slot;
+use crate::scene::surface::AlphaMode;
+use crate::scene::texture::Material;
 use crate::ui::ConfirmAction;
 
 impl App {
@@ -63,7 +64,7 @@ impl App {
 						ui.label(
 							RichText::new(note)
 								.color(p.text_weak)
-								.line_height(Some(super::theme::BODY_LINE_HEIGHT)),
+								.line_height(Some(BODY_LINE_HEIGHT)),
 						);
 					});
 				}
@@ -218,12 +219,7 @@ struct MapActions {
 }
 
 /// One material slot: thumbnail, name, and show/replace/remove controls.
-fn map_row(
-	ui: &mut egui::Ui,
-	slot: Slot,
-	material: &crate::scene::texture::Material,
-	actions: &mut MapActions,
-) {
+fn map_row(ui: &mut egui::Ui, slot: Slot, material: &Material, actions: &mut MapActions) {
 	let p = palette(ui.ctx());
 	Frame::NONE
 		.fill(p.raised)

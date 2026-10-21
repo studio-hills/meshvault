@@ -147,7 +147,9 @@ pub fn input(text: &mut String) -> egui::TextEdit<'_> {
 		.align(Align2::LEFT_CENTER)
 }
 
-/// A row of mutually exclusive icon options, like a radio group.
+/// A row of mutually exclusive icon options, like a radio group, in a
+/// framed track as tall as the other controls in its row (see
+/// [`text_segmented`]).
 pub fn segmented<T: PartialEq + Copy>(
 	ui: &mut Ui,
 	value: &mut T,
@@ -155,13 +157,17 @@ pub fn segmented<T: PartialEq + Copy>(
 ) -> bool {
 	let p = palette(ui.ctx());
 	let mut changed = false;
+	// the track (border + padding) is as tall as a control beside it
+	let pad = 2.0;
+	let height = ui.spacing().interact_size.y - 2.0 * (pad + 1.0);
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(CONTROL_RADIUS + 2))
-		.inner_margin(Margin::same(2))
+		.corner_radius(CornerRadius::same(CONTROL_RADIUS + pad as u8))
+		.inner_margin(Margin::same(pad as i8))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
+			ui.spacing_mut().interact_size.y = height;
 			ui.horizontal(|ui| {
 				for &(option, icon, tooltip) in options {
 					if icon_toggle(ui, icon, tooltip, *value == option).clicked()

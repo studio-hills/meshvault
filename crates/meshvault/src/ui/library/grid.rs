@@ -14,20 +14,25 @@ use crate::workspace::{Item, Workspace};
 const TILE: f32 = 92.0;
 const GAP: f32 = 6.0;
 
-/// The grid's sections, as (title, keys), and each one's hover path: the
-/// animated models in `models` first, then the meshes in `meshes` sorted by
-/// folder and name, one section per folder.
-pub(super) fn grid_sections(
-	items: &[Item],
-	models: Vec<Row>,
-	mut meshes: Vec<usize>,
-) -> (Vec<(String, Vec<Row>)>, Vec<String>) {
-	let mut sections: Vec<(String, Vec<Row>)> = Vec::new();
+/// A run of tiles under one heading.
+#[derive(Debug, PartialEq)]
+struct Section {
+	title: String,
+	/// The folder's whole path, shown on hover; empty for none.
+	path: String,
+	rows: Vec<Row>,
+}
+
+/// The grid's sections: the animated models in `models` first, then the
+/// meshes in `meshes` sorted by folder and name, one section per folder.
+fn grid_sections(items: &[Item], models: Vec<Row>, mut meshes: Vec<usize>) -> Vec<Section> {
+	let mut sections: Vec<Section> = Vec::new();
 	if !models.is_empty() {
-		sections.push((
-			format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
-			models,
-		));
+		sections.push(Section {
+			title: format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
+			path: String::new(),
+			rows: models,
+		});
 	}
 	meshes.sort_by(|&a, &b| {
 		items[a].folder.cmp(&items[b].folder).then_with(|| {
@@ -38,22 +43,21 @@ pub(super) fn grid_sections(
 		})
 	});
 	// a folder's section is titled with its own name; its path is on hover
-	let mut paths: Vec<String> = vec![String::new(); sections.len()];
 	for i in meshes {
 		let path = items[i].folder.join(" / ");
 		match sections.last_mut() {
-			Some((_, keys)) if paths.last() == Some(&path) => keys.push(Row::Mesh(i)),
+			Some(section) if section.path == path => section.rows.push(Row::Mesh(i)),
 			_ => {
 				let name = items[i].folder.last().map_or("", String::as_str);
-				sections.push((
-					format!("{}  {name}", icons::FOLDER_SIMPLE),
-					vec![Row::Mesh(i)],
-				));
-				paths.push(path);
+				sections.push(Section {
+					title: format!("{}  {name}", icons::FOLDER_SIMPLE),
+					path,
+					rows: vec![Row::Mesh(i)],
+				});
 			}
 		}
 	}
-	(sections, paths)
+	sections
 }
 
 impl Browser {
@@ -73,7 +77,7 @@ impl Browser {
 		let meshes: Vec<usize> = (0..items.len())
 			.filter(|&i| self.matches(&items[i]))
 			.collect();
-		let (sections, paths) = grid_sections(items, models, meshes);
+		let sections = grid_sections(items, models, meshes);
 		if sections.is_empty() {
 			nothing_matches(ui);
 			return;
@@ -81,14 +85,14 @@ impl Browser {
 		let width = ui.available_width();
 		let columns = ((width + GAP) / (TILE + GAP)).floor().max(1.0) as usize;
 		let side = (width - GAP * (columns - 1) as f32) / columns as f32;
-		for ((title, keys), path) in sections.into_iter().zip(paths) {
+		for section in sections {
 			ui.add_space(4.0);
-			let label = ui.add(egui::Label::new(widgets::caption(ui, title)).truncate());
-			if !path.is_empty() {
-				label.on_hover_text(path);
+			let label = ui.add(egui::Label::new(widgets::caption(ui, section.title)).truncate());
+			if !section.path.is_empty() {
+				label.on_hover_text(section.path);
 			}
 			ui.add_space(2.0);
-			for row in keys.chunks(columns) {
+			for row in section.rows.chunks(columns) {
 				ui.horizontal(|ui| {
 					ui.spacing_mut().item_spacing.x = GAP;
 					for &key in row {
@@ -222,5 +226,82 @@ impl Browser {
 			Row::Model(i) => self.model_menu(ui, ws, i, actions),
 			Row::Mesh(i) => self.item_menu(ui, ws, i, actions),
 		});
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::ui::library::fixtures::{done, item};
+
+	// ----------------------------------------------------------------- grid
+
+	fn section(title: String, path: &str, rows: &[Row]) -> Section {
+		Section {
+			title,
+			path: path.into(),
+			rows: rows.to_vec(),
+		}
+	}
+
+	fn folder_title(name: &str) -> String {
+		format!("{}  {name}", icons::FOLDER_SIMPLE)
+	}
+
+	fn grid_items() -> Vec<Item> {
+		vec![
+			item("Rock", &["Props"], 1, done("1.mesh")),
+			item("Loose", &[], 2, done("2.mesh")),
+			item("Fish", &["Sea"], 3, done("3.mesh")),
+			item("apple", &["Props"], 4, done("4.mesh")),
+			item("Lamp", &["Props", "Indoor"], 5, done("5.mesh")),
+			item("Zed", &["Props"], 6, done("6.mesh")),
+		]
+	}
+
+	#[test]
+	fn grid_meshes_group_by_folder_in_order() {
+		let items = grid_items();
+		let sections = grid_sections(&items, Vec::new(), (0..items.len()).collect());
+		assert_eq!(
+			sections,
+			[
+				section(folder_title(""), "", &[Row::Mesh(1)]),
+				// names sort without regard to case
+				section(
+					folder_title("Props"),
+					"Props",
+					&[Row::Mesh(3), Row::Mesh(0), Row::Mesh(5)]
+				),
+				section(folder_title("Indoor"), "Props / Indoor", &[Row::Mesh(4)]),
+				section(folder_title("Sea"), "Sea", &[Row::Mesh(2)]),
+			]
+		);
+	}
+
+	#[test]
+	fn grid_puts_models_first_and_root_meshes_with_them_today() {
+		// Bug B32: root-level meshes share the models' empty hover path, so
+		// they land in the "Animated models" section. Flip this when it is
+		// fixed.
+		let items = grid_items();
+		let sections = grid_sections(&items, vec![Row::Model(1), Row::Model(0)], vec![5, 1, 2]);
+		assert_eq!(
+			sections,
+			[
+				section(
+					format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
+					"",
+					&[Row::Model(1), Row::Model(0), Row::Mesh(1)],
+				),
+				section(folder_title("Props"), "Props", &[Row::Mesh(5)]),
+				section(folder_title("Sea"), "Sea", &[Row::Mesh(2)]),
+			]
+		);
+	}
+
+	#[test]
+	fn an_empty_grid_has_no_sections() {
+		assert!(grid_sections(&grid_items(), Vec::new(), Vec::new()).is_empty());
 	}
 }

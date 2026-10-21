@@ -16,7 +16,7 @@ impl Selection {
 	/// Shift selects the rows in `order` from the anchor (added to the
 	/// selection with Ctrl too) and leaves the anchor where it is; without
 	/// an anchor in `order`, it counts as a click without Shift.
-	pub(super) fn click(&mut self, key: Row, shift: bool, command: bool) -> Option<Row> {
+	fn click(&mut self, key: Row, shift: bool, command: bool) -> Option<Row> {
 		if shift
 			&& let Some(anchor) = self.anchor
 			&& let (Some(a), Some(b)) = (
@@ -188,5 +188,114 @@ impl Browser {
 		if clear {
 			s.keys.clear();
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::super::{Row, Selection};
+
+	const M0: Row = Row::Model(0);
+	const I0: Row = Row::Mesh(0);
+	const I1: Row = Row::Mesh(1);
+	const I2: Row = Row::Mesh(2);
+	const I3: Row = Row::Mesh(3);
+
+	/// A selection of `keys` with rows M0, I0, I1, I2 drawn last frame.
+	fn selection(keys: &[Row], anchor: Option<Row>) -> Selection {
+		Selection {
+			keys: keys.iter().copied().collect(),
+			anchor,
+			drawn: Vec::new(),
+			order: vec![M0, I0, I1, I2],
+		}
+	}
+
+	fn keys(s: &Selection) -> Vec<Row> {
+		s.keys.iter().copied().collect()
+	}
+
+	#[test]
+	fn a_plain_click_selects_only_that_row_and_opens_it() {
+		let mut s = selection(&[M0, I1], Some(I1));
+		assert_eq!(s.click(I0, false, false), Some(I0));
+		assert_eq!(keys(&s), [I0]);
+		assert_eq!(s.anchor, Some(I0));
+		// clicking the only selected row opens it again
+		assert_eq!(s.click(I0, false, false), Some(I0));
+		assert_eq!(keys(&s), [I0]);
+	}
+
+	#[test]
+	fn ctrl_toggles_a_row_and_moves_the_anchor() {
+		let mut s = selection(&[I0], Some(I0));
+		assert_eq!(s.click(I2, false, true), None);
+		assert_eq!(keys(&s), [I0, I2]);
+		assert_eq!(s.anchor, Some(I2));
+		assert_eq!(s.click(I0, false, true), None);
+		assert_eq!(keys(&s), [I2]);
+		assert_eq!(s.anchor, Some(I0));
+		// taking the last one away leaves nothing selected
+		assert_eq!(s.click(I2, false, true), None);
+		assert!(s.keys.is_empty());
+		assert_eq!(s.anchor, Some(I2));
+	}
+
+	#[test]
+	fn shift_selects_the_range_from_the_anchor_and_keeps_it() {
+		let mut s = selection(&[M0], Some(I0));
+		assert_eq!(s.click(I2, true, false), None);
+		assert_eq!(keys(&s), [I0, I1, I2]);
+		assert_eq!(s.anchor, Some(I0));
+		// a second Shift-click replaces the range, from the same anchor
+		assert_eq!(s.click(I1, true, false), None);
+		assert_eq!(keys(&s), [I0, I1]);
+		assert_eq!(s.anchor, Some(I0));
+	}
+
+	#[test]
+	fn shift_ranges_run_backwards_too() {
+		let mut s = selection(&[], Some(I2));
+		assert_eq!(s.click(M0, true, false), None);
+		assert_eq!(keys(&s), [M0, I0, I1, I2]);
+		assert_eq!(s.anchor, Some(I2));
+		// the anchor alone
+		assert_eq!(s.click(I2, true, false), None);
+		assert_eq!(keys(&s), [I2]);
+	}
+
+	#[test]
+	fn shift_ctrl_adds_the_range_to_the_selection() {
+		let mut s = selection(&[M0], Some(I2));
+		assert_eq!(s.click(I1, true, true), None);
+		assert_eq!(keys(&s), [M0, I1, I2]);
+		assert_eq!(s.anchor, Some(I2));
+	}
+
+	#[test]
+	fn shift_without_an_anchor_is_a_plain_or_ctrl_click() {
+		let mut s = selection(&[M0], None);
+		assert_eq!(s.click(I1, true, false), Some(I1));
+		assert_eq!(keys(&s), [I1]);
+		assert_eq!(s.anchor, Some(I1));
+
+		let mut s = selection(&[M0], None);
+		assert_eq!(s.click(I1, true, true), None);
+		assert_eq!(keys(&s), [M0, I1]);
+		assert_eq!(s.anchor, Some(I1));
+	}
+
+	#[test]
+	fn shift_with_a_row_not_drawn_is_a_plain_or_ctrl_click() {
+		// the clicked row is not in `order`
+		let mut s = selection(&[M0], Some(I0));
+		assert_eq!(s.click(I3, true, false), Some(I3));
+		assert_eq!(keys(&s), [I3]);
+		assert_eq!(s.anchor, Some(I3));
+		// the anchor is not in `order` any more
+		let mut s = selection(&[M0], Some(I3));
+		assert_eq!(s.click(I1, true, true), None);
+		assert_eq!(keys(&s), [M0, I1]);
+		assert_eq!(s.anchor, Some(I1));
 	}
 }

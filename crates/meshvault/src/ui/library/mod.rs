@@ -3,12 +3,12 @@
 //! actions on several models at once.
 
 mod filter;
+#[cfg(test)]
+mod fixtures;
 mod grid;
 mod list;
 mod menus;
 mod selection;
-#[cfg(test)]
-mod tests;
 mod toolbar;
 
 use std::cell::RefCell;

@@ -638,7 +638,11 @@ impl ModelView {
 		let duration = self.duration();
 		let mut t = self.time + dt * self.speed;
 		if duration <= 0.0 {
+			// nothing to play: a one-shot clip is over at once
 			t = 0.0;
+			if !self.looping {
+				self.playing = false;
+			}
 		} else if self.looping {
 			t = t.rem_euclid(duration);
 		} else if t >= duration {
@@ -979,16 +983,22 @@ mod tests {
 		assert!(!view.playing && !view.tick(1.0));
 	}
 
-	/// A clip of no length stays at time 0. Pinned as it is today: even a
-	/// one-shot one keeps playing, so tick keeps asking for frames (bug
-	/// B24). The fix flips the one-shot half of this test.
+	/// A clip of no length stays at time 0. A looped one keeps playing; a
+	/// one-shot one stops on its first tick, so it does not ask for frames
+	/// forever, and playing it again plays it once more.
 	#[test]
-	fn zero_length_clips_stay_at_the_start_and_keep_playing() {
-		for looped in [true, false] {
-			let mut view = view_with_clip(0.0, looped);
-			assert!(view.tick(0.1), "looped {looped}");
-			assert_eq!((view.time, view.playing), (0.0, true), "looped {looped}");
-		}
+	fn zero_length_clips_stay_at_the_start_and_one_shots_stop() {
+		let mut view = view_with_clip(0.0, true);
+		assert!(view.tick(0.1));
+		assert_eq!((view.time, view.playing), (0.0, true));
+
+		let mut view = view_with_clip(0.0, false);
+		assert!(!view.tick(0.1));
+		assert_eq!((view.time, view.playing), (0.0, false));
+		assert!(!view.tick(0.1), "a stopped clip does not move");
+		view.toggle_play();
+		assert!(view.playing);
+		assert!(!view.tick(0.1));
 	}
 
 	// ---------------------------------------------- characterisation (SCN-11a)

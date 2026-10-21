@@ -21,6 +21,7 @@
 - Export for Blender: animated models and meshes export as binary glTF (`.glb`) with one armature, skin weights, every clip baked at 30 fps, and their maps embedded; checked by importing into Blender 5.2
 - OBJ exports carry texture coordinates, normals and an MTL file with the maps beside it, from the viewer (an animated model as posed now) and the library
 - Save the view as a transparent PNG, or as a turntable GIF that plays the selected clip
+- The Studio exporter can keep the export instead of sending it (`send = false`): it returns the export as a Lua table, with a `send` function for sending it, changed or not, to Meshvault. The Export from Roblox Studio dialog offers this as an Edit first script
 - Lighting presets (Studio, Daylight, Overcast, Sunset, Night, Flat), a screenshot button (F12) and copying the view to the clipboard
 - Skeleton and joint overlays for animated models, and highlighting a part hovered in the parts list
 - See-through parts blend their far side under their near side; cutout maps get smooth edges (alpha to coverage); meshes opened on their own can blend or cut out by their colour map's alpha

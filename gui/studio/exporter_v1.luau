@@ -4,15 +4,22 @@
 -- accessible to the current Studio session.
 --
 -- It returns a function. Called without options it exports the current selection, or, with
--- nothing selected, the whole game except Workspace. Options:
+-- nothing selected, the whole game except Workspace, and sends it to Meshvault. Options:
 --   roots   = { instances to export }            (default: the selection, or { game })
 --   exclude = { instances to leave out, with everything beneath them }
 --             (default: { Workspace } when exporting the whole game, otherwise nothing)
+--   send    = false to keep the export here instead of sending it to Meshvault
 --
 -- Every line it writes to the Output window starts with [Meshvault]; problems are warnings.
--- It returns the problems as a list (empty when there were none), e.g.
---   local issues = loadstring(source)()()
---   for _, i in issues do print(i.Kind, i.Message) end
+-- It returns three things:
+--   issues  the problems, as a list (empty when there were none)
+--   export  the export as a Lua table (nil when there was nothing to export)
+--   send    a function sending an export, this one changed or any other, to Meshvault:
+--           send(export) or send(json text), returning true, or false and why
+-- e.g. to change an export before Meshvault gets it:
+--   local issues, export, send = loadstring(source)()({ send = false })
+--   export.Models = { export.Models[1] }
+--   send(export)    -- or save HttpService:JSONEncode(export) however you like
 
 local SCHEMA = 1
 local MESHVAULT_VERSION = "__MESHVAULT_VERSION__"
@@ -35,6 +42,99 @@ end
 -- "1 part", "2 parts"
 local function count(n, one, many)
     return n .. " " .. (n == 1 and one or many or one .. "s")
+end
+
+
+local HttpService = game:GetService("HttpService")
+
+-- Send an export to Meshvault, which saves it and opens it for import. HttpEnabled is
+-- switched on only while sending and put back afterwards.
+local MESHVAULT_URL = "__MESHVAULT_URL__"
+local SEND_CHUNK = 2 * 1024 * 1024
+
+-- Roblox's HTTP errors, with what to do about them
+local function explain(err)
+    err = tostring(err)
+    if err:find("ConnectFail") then
+        return err .. ": Meshvault is not running, or its Studio link is off (see its status bar)"
+    elseif err:find("game server") then
+        return err .. ": run the line in the Command Bar in Edit mode, not during a play test"
+    elseif err:find("Timedout") or err:find("Timeout") then
+        return err .. ": Meshvault did not answer in time; is it busy or not responding?"
+    elseif err:find("not enabled") or err:find("HttpEnabled") then
+        return err .. ": HttpService.HttpEnabled could not be switched on from here"
+    end
+    return err
+end
+
+local function sendToMeshvault(text)
+    local wasEnabled = HttpService.HttpEnabled
+    local reply
+    local ok, err = pcall(function()
+        local switched, why = pcall(function() HttpService.HttpEnabled = true end)
+        if not switched then
+            error("could not switch HttpService.HttpEnabled on (" .. tostring(why) .. ")", 0)
+        end
+        local id = HttpService:GenerateGUID(false)
+        local count = math.max(1, math.ceil(#text / SEND_CHUNK))
+        local size = #text >= 1048576 and ("%.1f MB"):format(#text / 1048576)
+            or ("%d KB"):format(math.ceil(#text / 1024))
+        log(("sending %s to Meshvault at %s%s"):format(
+            size, MESHVAULT_URL, count > 1 and (" in " .. count .. " pieces") or ""))
+        for i = 1, count do
+            local sentOk, res = pcall(function()
+                return HttpService:RequestAsync({
+                    Url = MESHVAULT_URL,
+                    Method = "POST",
+                    Headers = {
+                        ["Content-Type"] = "application/json",
+                        ["X-Meshvault-Export"] = id,
+                        ["X-Meshvault-Chunk"] = i .. "/" .. count,
+                        ["X-Meshvault-Name"] = game.Name,
+                    },
+                    Body = text:sub((i - 1) * SEND_CHUNK + 1, math.min(i * SEND_CHUNK, #text)),
+                })
+            end)
+            if not sentOk then
+                error(("piece %d of %d did not reach Meshvault: %s"):format(i, count, explain(res)), 0)
+            end
+            if not res.Success then
+                error(("Meshvault refused piece %d of %d (HTTP %d): %s"):format(
+                    i, count, res.StatusCode, tostring(res.Body)), 0)
+            end
+            if count > 1 then
+                log(("  sent piece %d of %d"):format(i, count))
+            end
+            reply = res.Body
+        end
+    end)
+    local restored = pcall(function() HttpService.HttpEnabled = wasEnabled end)
+    if not restored then
+        issue("HttpEnabledNotRestored", "could not switch HttpService.HttpEnabled back to " .. tostring(wasEnabled)
+            .. "; check it in Game Settings > Security")
+    end
+    return ok, ok and reply or err
+end
+
+-- Sends an export to Meshvault: one returned with send = false, changed or not, or its
+-- JSON text. Returns true, or false and why.
+local function send(export)
+    local text = export
+    if type(export) ~= "string" then
+        local encoded, json = pcall(function() return HttpService:JSONEncode(export) end)
+        if not encoded then
+            warn(TAG .. " could not turn the export into JSON: " .. tostring(json))
+            return false, "could not turn the export into JSON: " .. tostring(json)
+        end
+        text = json
+    end
+    local ok, result = sendToMeshvault(text)
+    if ok then
+        log(("Meshvault received the export: %s. Finish the import in Meshvault"):format(tostring(result)))
+    else
+        warn(TAG .. " could not send the export to Meshvault: " .. tostring(result))
+    end
+    return ok, result
 end
 
 local function run(options)
@@ -533,78 +633,14 @@ if #meshes == 0 and #models == 0 then
         .. ". Select a model (or anything inside one) in the Explorer and run the line again")
     return
 end
+if options.send == false then
+    log(("done in %.1fs. Not sent to Meshvault (send = false): change the export it returns, then "
+        .. "send(export), or save HttpService:JSONEncode(export) yourself"):format(os.clock() - started))
+    return payload
+end
 local encoded, json = pcall(function() return HttpService:JSONEncode(payload) end)
 if not encoded then
     error("could not turn the export into JSON: " .. tostring(json), 0)
-end
-
--- Send the export to Meshvault, which saves it and opens it for import. HttpEnabled is
--- switched on only while sending and put back afterwards.
-local MESHVAULT_URL = "__MESHVAULT_URL__"
-local SEND_CHUNK = 2 * 1024 * 1024
-
--- Roblox's HTTP errors, with what to do about them
-local function explain(err)
-    err = tostring(err)
-    if err:find("ConnectFail") then
-        return err .. ": Meshvault is not running, or its Studio link is off (see its status bar)"
-    elseif err:find("game server") then
-        return err .. ": run the line in the Command Bar in Edit mode, not during a play test"
-    elseif err:find("Timedout") or err:find("Timeout") then
-        return err .. ": Meshvault did not answer in time; is it busy or not responding?"
-    elseif err:find("not enabled") or err:find("HttpEnabled") then
-        return err .. ": HttpService.HttpEnabled could not be switched on from here"
-    end
-    return err
-end
-
-local function sendToMeshvault(text)
-    local wasEnabled = HttpService.HttpEnabled
-    local reply
-    local ok, err = pcall(function()
-        local switched, why = pcall(function() HttpService.HttpEnabled = true end)
-        if not switched then
-            error("could not switch HttpService.HttpEnabled on (" .. tostring(why) .. ")", 0)
-        end
-        local id = HttpService:GenerateGUID(false)
-        local count = math.max(1, math.ceil(#text / SEND_CHUNK))
-        local size = #text >= 1048576 and ("%.1f MB"):format(#text / 1048576)
-            or ("%d KB"):format(math.ceil(#text / 1024))
-        log(("sending %s to Meshvault at %s%s"):format(
-            size, MESHVAULT_URL, count > 1 and (" in " .. count .. " pieces") or ""))
-        for i = 1, count do
-            local sentOk, res = pcall(function()
-                return HttpService:RequestAsync({
-                    Url = MESHVAULT_URL,
-                    Method = "POST",
-                    Headers = {
-                        ["Content-Type"] = "application/json",
-                        ["X-Meshvault-Export"] = id,
-                        ["X-Meshvault-Chunk"] = i .. "/" .. count,
-                        ["X-Meshvault-Name"] = game.Name,
-                    },
-                    Body = text:sub((i - 1) * SEND_CHUNK + 1, math.min(i * SEND_CHUNK, #text)),
-                })
-            end)
-            if not sentOk then
-                error(("piece %d of %d did not reach Meshvault: %s"):format(i, count, explain(res)), 0)
-            end
-            if not res.Success then
-                error(("Meshvault refused piece %d of %d (HTTP %d): %s"):format(
-                    i, count, res.StatusCode, tostring(res.Body)), 0)
-            end
-            if count > 1 then
-                log(("  sent piece %d of %d"):format(i, count))
-            end
-            reply = res.Body
-        end
-    end)
-    local restored = pcall(function() HttpService.HttpEnabled = wasEnabled end)
-    if not restored then
-        issue("HttpEnabledNotRestored", "could not switch HttpService.HttpEnabled back to " .. tostring(wasEnabled)
-            .. "; check it in Game Settings > Security")
-    end
-    return ok, ok and reply or err
 end
 
 local sent, result = sendToMeshvault(json)
@@ -622,20 +658,22 @@ else
     end
     print("=== END JSON EXPORT ===")
 end
+return payload
 end
 
 return function(options)
     issues = {}
-    local ok, err = xpcall(run, function(e)
+    local ok, result = xpcall(run, function(e)
         return debug.traceback(tostring(e), 2)
     end, options or {})
+    local export = ok and result or nil
     if not ok then
-        issue("Error", "the export stopped with an error: " .. tostring(err))
+        issue("Error", "the export stopped with an error: " .. tostring(result))
         warn(TAG .. " please report this, with the lines above, to Meshvault's developers "
             .. "(exporter schema " .. SCHEMA .. ", Meshvault " .. MESHVAULT_VERSION .. ")")
     elseif #issues > 0 then
         warn(("%s finished with %d warning(s); see above"):format(TAG, #issues))
     end
-    -- empty when all went well
-    return issues
+    -- issues are empty when all went well; export is nil when there was nothing to export
+    return issues, export, send
 end

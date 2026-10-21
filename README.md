@@ -174,6 +174,19 @@ for _, issue in issues do
 end
 ```
 
+To change an export before Meshvault gets it, or to keep it yourself, pass `send = false`. The export is then not sent, and the function returns it as a Lua table after the problems, with a `send` function that sends an export, changed or not, the same way the line does (in pieces, with its headers). The dialog's Edit first option gives this as a script to paste:
+
+```lua
+local issues, export, send = loadstring(s)()({ send = false })
+
+-- change the export here, e.g. keep only the first model:
+export.Models = { export.Models[1] }
+
+send(export) -- or save h:JSONEncode(export) your own way
+```
+
+`send` also takes the export's JSON text, and returns `true`, or `false` and why. Without `send = false` the export is still returned, after it has been sent. Meshvault checks every export it imports, so a changed one that no longer fits the schema is refused with the reason.
+
 `Kind` is one of `PlayMode`, `AnimationUnavailable`, `CurveAnimationFailed`, `MeshSkipped`, `ModelSkipped` (with the instance's `Path`), `NothingToExport`, `SendFailed`, `HttpEnabledNotRestored` or `Error` (an unexpected error, with its stack trace in `Message`). The animation kinds carry the `AnimationId`.
 
 Everything travels over `http://localhost:34875`: `GET /export.luau` serves the exporter, and `POST /export` takes the export in 2 MB pieces. The line turns `HttpService.HttpEnabled` on only while it talks to Meshvault and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers on exports, which a web page cannot send. Only one program can use the port: if it is taken (usually by another Meshvault), Meshvault warns at startup, the status bar reads "Studio link unavailable", and exporting from Studio is off until the port is free and Meshvault restarts. The exporters live in `gui/studio/` and are built into the app.

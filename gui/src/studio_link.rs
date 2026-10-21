@@ -53,6 +53,12 @@ pub fn exporter(schema: u32) -> Option<String> {
 /// from Meshvault and runs it. `game:HttpGet` is not available everywhere,
 /// so it uses HttpService with HttpEnabled switched on just for the fetch.
 pub fn studio_command(schema: u32) -> String {
+	format!("{} loadstring(s)()()", fetch_exporter(schema))
+}
+
+/// Code fetching the exporter for `schema` from Meshvault into `s`, with
+/// `h` the HttpService. HttpEnabled is on only while fetching.
+fn fetch_exporter(schema: u32) -> String {
 	let query = if schema == LATEST_SCHEMA {
 		String::new()
 	} else {
@@ -61,7 +67,23 @@ pub fn studio_command(schema: u32) -> String {
 	format!(
 		"local h=game:GetService(\"HttpService\") local e=h.HttpEnabled h.HttpEnabled=true \
 		 local ok,s=pcall(h.GetAsync,h,\"http://localhost:{PORT}/export.luau{query}\") h.HttpEnabled=e \
-		 assert(ok,\"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): \"..tostring(s)) loadstring(s)()()"
+		 assert(ok,\"Could not reach Meshvault (is it open, and is Studio in Edit mode, not Play?): \"..tostring(s))"
+	)
+}
+
+/// Code for the Command Bar (or a plugin) that exports without sending:
+/// the export comes back as a table to change, then `send(export)` sends
+/// it to Meshvault, or the user saves its JSON their own way.
+pub fn studio_script(schema: u32) -> String {
+	format!(
+		"{}\n\
+		 local issues, export, send = loadstring(s)()({{ send = false }})\n\
+		 \n\
+		 -- change the export here, e.g. keep only the first model:\n\
+		 -- export.Models = {{ export.Models[1] }}\n\
+		 \n\
+		 send(export) -- or save h:JSONEncode(export) your own way",
+		fetch_exporter(schema)
 	)
 }
 
@@ -443,5 +465,16 @@ mod tests {
 		assert!(command.contains("/export.luau?schema=1"));
 		assert!(command.ends_with("loadstring(s)()()"));
 		assert!(!studio_command(LATEST_SCHEMA).contains("schema="));
+		// exporting without sending: the export comes back, with a sender
+		for v in SCHEMAS {
+			let source = exporter(v).unwrap();
+			assert!(source.contains("if options.send == false then"));
+			assert!(source.contains("return issues, export, send"));
+			assert!(source.contains("local function send(export)"));
+		}
+		let script = studio_script(1);
+		assert!(script.contains("/export.luau?schema=1"));
+		assert!(script.contains("loadstring(s)()({ send = false })"));
+		assert!(script.trim_end().ends_with("your own way"));
 	}
 }

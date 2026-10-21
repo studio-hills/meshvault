@@ -12,13 +12,24 @@ use crate::studio_link::{self, Status};
 
 pub struct StudioDialog {
 	schema: u32,
+	mode: Mode,
 	copied: Option<Instant>,
+}
+
+/// What the exporter does with the export.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+	/// Sends it straight to Meshvault: one Command Bar line.
+	Send,
+	/// Hands it back to change first, then send or save it: a short script.
+	Edit,
 }
 
 impl Default for StudioDialog {
 	fn default() -> Self {
 		Self {
 			schema: studio_link::LATEST_SCHEMA,
+			mode: Mode::Send,
 			copied: None,
 		}
 	}
@@ -48,7 +59,7 @@ impl App {
 				ui.add_space(4.0);
 				ui.label(
 					RichText::new(
-						"Run one line in Studio's Command Bar. Meshvault serves the exporter, \
+						"Run the exporter from Studio's Command Bar. Meshvault serves it, \
 						 receives the export, saves it to Documents/Meshvault/Exports and opens it for import.",
 					)
 					.color(p.text_weak),
@@ -101,11 +112,38 @@ impl App {
 						dialog.copied = None;
 					}
 				});
+				ui.add_space(6.0);
+				ui.horizontal(|ui| {
+					ui.label("Export");
+					let modes = [
+						(Mode::Send, "Send to Meshvault"),
+						(Mode::Edit, "Edit first"),
+					];
+					if widgets::text_segmented(ui, &mut dialog.mode, &modes) {
+						dialog.copied = None;
+					}
+				});
 				ui.add_space(12.0);
 
-				step(ui, 1, "In Studio, open View → Command Bar (in Edit mode, not Play).");
-				step(ui, 2, "Paste this line and press Enter:");
-				let command = studio_link::studio_command(dialog.schema);
+				step(
+					ui,
+					1,
+					"In Studio, open View → Command Bar (in Edit mode, not Play).",
+				);
+				let command = match dialog.mode {
+					Mode::Send => {
+						step(ui, 2, "Paste this line and press Enter:");
+						studio_link::studio_command(dialog.schema)
+					}
+					Mode::Edit => {
+						step(
+							ui,
+							2,
+							"Paste this script, change the export where it says, and press Enter:",
+						);
+						studio_link::studio_script(dialog.schema)
+					}
+				};
 				Frame::NONE
 					.fill(p.raised)
 					.stroke(Stroke::new(1.0, p.border))
@@ -122,7 +160,11 @@ impl App {
 				ui.add_space(6.0);
 				ui.horizontal(|ui| {
 					let copied = dialog.copied.is_some_and(|t| t.elapsed().as_secs() < 2);
-					let label = if copied { "Copied" } else { "Copy command" };
+					let label = match (copied, dialog.mode) {
+						(true, _) => "Copied",
+						(false, Mode::Send) => "Copy command",
+						(false, Mode::Edit) => "Copy script",
+					};
 					let icon = if copied { icons::CHECK } else { icons::COPY };
 					let enabled = self.studio_link.is_listening();
 					if ui
@@ -139,18 +181,37 @@ impl App {
 					}
 				});
 				ui.add_space(10.0);
+				let arrives = match dialog.mode {
+					Mode::Send => "The export arrives here.",
+					Mode::Edit => {
+						"Nothing is sent until send(export) runs; it then arrives here. To keep the \
+						 export yourself instead, save h:JSONEncode(export) your own way."
+					}
+				};
 				step(
 					ui,
 					3,
-					"The export arrives here. Selecting a model, or anything inside one, exports \
-					 that model; with nothing selected, it exports the whole game except Workspace.",
+					&format!(
+						"{arrives} Selecting a model, or anything inside one, exports that model; \
+						 with nothing selected, it exports the whole game except Workspace."
+					),
 				);
 				ui.add_space(4.0);
+				let unreachable = match dialog.mode {
+					Mode::Send => {
+						"If Meshvault cannot be reached while sending, the export is printed in the \
+						 Output window instead."
+					}
+					Mode::Edit => {
+						"If send cannot reach Meshvault it says why in the Output window and returns \
+						 false; the export is still yours to save."
+					}
+				};
 				ui.label(
-					RichText::new(
-						"The line turns HttpService.HttpEnabled on only while it talks to Meshvault. \
-						 If Meshvault cannot be reached while sending, the export is printed in the Output window instead.",
-					)
+					RichText::new(format!(
+						"HttpService.HttpEnabled is on only while the exporter talks to Meshvault. \
+						 {unreachable}"
+					))
 					.size(12.0)
 					.color(p.text_weak),
 				);

@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use eframe::egui;
+
 use super::App;
 use super::task::Task;
 use crate::config::Config;
@@ -43,6 +45,58 @@ fn loaded(ws: &Workspace, version: ModelVersion) -> Loaded {
 		Loaded::Reimported(i)
 	} else {
 		Loaded::Gone
+	}
+}
+
+/// The read of a model, to run on a background thread.
+type Load = Box<dyn FnOnce(&egui::Context) -> Result<ModelView, String> + Send>;
+
+/// What a finished model load leads to.
+enum Finished {
+	/// The model it read, to show.
+	Show(Box<ModelView>),
+	/// Why it could not be read, to tell the user.
+	Failed(String),
+	/// The model at this index was imported again while it loaded, so
+	/// whatever the load gave, it is read again.
+	Restart(usize),
+	/// The model is no longer in the workspace: nothing is shown.
+	Discard,
+}
+
+impl LoadingModel {
+	/// Starts reading the model at `index` of `ws`, `spawn` running `Load`.
+	fn start(
+		ws: &Workspace,
+		index: usize,
+		spawn: impl FnOnce(Load) -> Task<ModelView>,
+	) -> Option<Self> {
+		let item = ws.models().get(index)?;
+		let load = model_loader(ws, index)?;
+		Some(Self {
+			name: item.name.clone(),
+			version: item.version,
+			task: spawn(Box::new(load)),
+		})
+	}
+
+	/// What the load leads to once it has ended, given the workspace now. A
+	/// model removed while it loaded is not shown, one imported again is
+	/// read again, and one that moved up is shown at its new place.
+	fn finish(&self, ws: Option<&Workspace>) -> Option<Finished> {
+		let result = self.task.poll("Reading the model stopped unexpectedly")?;
+		let index = match ws.map(|ws| loaded(ws, self.version)) {
+			Some(Loaded::Current(index)) => index,
+			Some(Loaded::Reimported(index)) => return Some(Finished::Restart(index)),
+			Some(Loaded::Gone) | None => return Some(Finished::Discard),
+		};
+		Some(match result {
+			Ok(mut model) => {
+				model.index = index;
+				Finished::Show(Box::new(model))
+			}
+			Err(e) => Finished::Failed(e),
+		})
 	}
 }
 
@@ -171,20 +225,10 @@ impl App {
 	/// read on a background thread.
 	pub fn open_model(&mut self, index: usize) {
 		let Some(ws) = &self.workspace else { return };
-		let Some(item) = ws.models().get(index) else {
-			return;
-		};
-		let Some(load) = model_loader(ws, index) else {
-			return;
-		};
-		let name = item.name.clone();
-		let version = item.version;
-		let task = Task::spawn(&self.ctx, load);
-		self.loading_model = Some(LoadingModel {
-			name,
-			version,
-			task,
-		});
+		let ctx = &self.ctx;
+		if let Some(loading) = LoadingModel::start(ws, index, |load| Task::spawn(ctx, load)) {
+			self.loading_model = Some(loading);
+		}
 	}
 
 	/// The open workspace's item whose mesh is the file at `path`.
@@ -214,26 +258,19 @@ impl App {
 		let Some(loading) = &self.loading_model else {
 			return;
 		};
-		let Some(result) = loading.task.poll("Reading the model stopped unexpectedly") else {
+		let Some(finished) = loading.finish(self.workspace.as_ref()) else {
 			return;
 		};
-		let version = loading.version;
 		self.loading_model = None;
-		// a model removed while it loaded is not shown, one imported again is
-		// read again, and one that moved up is shown at its new place
-		let index = match self.workspace.as_ref().map(|ws| loaded(ws, version)) {
-			Some(Loaded::Current(index)) => index,
-			Some(Loaded::Reimported(index)) => return self.open_model(index),
-			Some(Loaded::Gone) | None => return,
-		};
-		match result {
-			Ok(mut model) => {
-				model.index = index;
+		match finished {
+			Finished::Show(model) => {
 				self.doc = None;
 				self.open_stem = None;
-				self.model = Some(model);
+				self.model = Some(*model);
 			}
-			Err(e) => self.toasts.error(e),
+			Finished::Failed(e) => self.toasts.error(e),
+			Finished::Restart(index) => self.open_model(index),
+			Finished::Discard => {}
 		}
 	}
 
@@ -418,5 +455,105 @@ mod tests {
 		let before = ws.models()[0].version;
 		let reopened = Workspace::open(&root).unwrap();
 		assert_eq!(loaded(&reopened, before), Loaded::Gone);
+	}
+
+	/// Starts loading the model at `index` as the app does, but reads it now
+	/// and holds the result back: the load ends when the test sends it.
+	fn start(
+		ws: &Workspace,
+		index: usize,
+	) -> (
+		LoadingModel,
+		Result<ModelView, String>,
+		std::sync::mpsc::Sender<Result<ModelView, String>>,
+	) {
+		let (mut read, mut sender) = (None, None);
+		let loading = LoadingModel::start(ws, index, |load| {
+			read = Some(load(&egui::Context::default()));
+			let (tx, task) = Task::waiting();
+			sender = Some(tx);
+			task
+		})
+		.unwrap();
+		(loading, read.unwrap(), sender.unwrap())
+	}
+
+	/// How many parts the model shown has, or what else the load led to.
+	fn outcome(finished: Option<Finished>) -> String {
+		match finished {
+			None => "still loading".into(),
+			Some(Finished::Show(model)) => {
+				format!(
+					"shown at {} with {} parts",
+					model.index,
+					model.rig.parts.len()
+				)
+			}
+			Some(Finished::Failed(e)) => format!("failed: {e}"),
+			Some(Finished::Restart(index)) => format!("read again at {index}"),
+			Some(Finished::Discard) => "discarded".into(),
+		}
+	}
+
+	/// A load that ends after its model was imported again is not shown,
+	/// and neither is its error: the model is read again, and that read is
+	/// shown (once a load was taken for the model with its file name, B13).
+	#[test]
+	fn a_load_that_ends_after_a_reimport_is_read_again_then_shown() {
+		let dir = TempDir::new("loading-model-restart");
+		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
+		ws.add_model(&rig_model("Other", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		let (loading, read, tx) = start(&ws, 1);
+		let (failing, _, failed) = start(&ws, 1);
+		assert_eq!(outcome(loading.finish(Some(&ws))), "still loading");
+
+		ws.add_model(&rig_model("Wolf", 2), &[]).unwrap();
+		tx.send(read).unwrap();
+		assert_eq!(outcome(loading.finish(Some(&ws))), "read again at 1");
+		failed
+			.send(Err("the old rig was cut short".into()))
+			.unwrap();
+		assert_eq!(outcome(failing.finish(Some(&ws))), "read again at 1");
+
+		// the read started again is of the new import, and moves with it
+		let (reloading, read, tx) = start(&ws, 1);
+		ws.remove_models(&[0]).unwrap();
+		tx.send(read).unwrap();
+		assert_eq!(
+			outcome(reloading.finish(Some(&ws))),
+			"shown at 0 with 2 parts"
+		);
+		// and its error, unlike the old load's, is told
+		let (reloading, _, tx) = start(&ws, 0);
+		tx.send(Err("unreadable".into())).unwrap();
+		assert_eq!(outcome(reloading.finish(Some(&ws))), "failed: unreadable");
+	}
+
+	/// A load that ends after its model was removed and another added under
+	/// the same file name is neither shown nor read again, whatever it gave.
+	#[test]
+	fn a_load_that_ends_after_its_file_name_is_reused_is_dropped() {
+		let dir = TempDir::new("loading-model-reused");
+		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		let file = ws.models()[0].file.clone();
+		let (loading, read, tx) = start(&ws, 0);
+		let (failing, _, failed) = start(&ws, 0);
+
+		ws.remove_models(&[0]).unwrap();
+		ws.add_model(&rig_model("Wolf", 3), &[]).unwrap();
+		assert_eq!(ws.models()[0].file, file);
+		tx.send(read).unwrap();
+		assert_eq!(outcome(loading.finish(Some(&ws))), "discarded");
+		failed.send(Err("gone".into())).unwrap();
+		assert_eq!(outcome(failing.finish(Some(&ws))), "discarded");
+		// the new model loads as usual
+		let (loading, read, tx) = start(&ws, 0);
+		tx.send(read).unwrap();
+		assert_eq!(
+			outcome(loading.finish(Some(&ws))),
+			"shown at 0 with 3 parts"
+		);
 	}
 }

@@ -34,6 +34,15 @@ impl<T: Send + 'static> Task<T> {
 		}
 	}
 
+	/// A task whose result is whatever is sent on the returned sender, when
+	/// the test sends it.
+	#[cfg(test)]
+	pub fn waiting() -> (std::sync::mpsc::Sender<Result<T, String>>, Self) {
+		let (tx, rx) = channel();
+		let started = Instant::now();
+		(tx, Self { rx, started })
+	}
+
 	/// The result once the work has ended, or `stopped` as the error if its
 	/// thread ended without one. Drop the task after its first result: a
 	/// thread that has ended reports `stopped` on every later poll.

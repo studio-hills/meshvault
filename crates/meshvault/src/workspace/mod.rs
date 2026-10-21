@@ -789,6 +789,42 @@ mod tests {
 		assert!(!dir.join("Rigs/Workspace/Animals/Wolf.rig.json").exists());
 	}
 
+	/// A model named `name` at `Workspace/<name>` with `parts` parts.
+	fn rig_model(name: &str, parts: usize) -> AnimatedModel {
+		AnimatedModel {
+			name: name.into(),
+			path: format!("Workspace/{name}"),
+			parts: vec![Default::default(); parts],
+			..Default::default()
+		}
+	}
+
+	/// Importing a model again replaces its rig file with a new one rather
+	/// than writing over the old one in place, so a failed write leaves the
+	/// old file whole. A hard link to the old file still sees the old rig.
+	#[test]
+	fn importing_a_model_again_replaces_its_rig_file_whole() {
+		let dir = TempDir::new("ws_rig_replace");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		let rig = dir.join(&ws.models()[0].file);
+		let old = std::fs::read_to_string(&rig).unwrap();
+		let link = dir.join("old.rig.json");
+		std::fs::hard_link(&rig, &link).unwrap();
+
+		ws.add_model(&rig_model("Wolf", 2), &[]).unwrap();
+		assert_eq!(std::fs::read_to_string(&link).unwrap(), old);
+		let new = export_file::parse(&std::fs::read_to_string(&rig).unwrap()).unwrap();
+		assert_eq!(new.models[0].parts.len(), 2);
+
+		// when the new file cannot be written, the old one and its record stay
+		std::fs::create_dir(dir.join("Rigs/Workspace/Wolf.rig.json.tmp")).unwrap();
+		let written = std::fs::read_to_string(&rig).unwrap();
+		assert!(ws.add_model(&rig_model("Wolf", 3), &[]).is_err());
+		assert_eq!(std::fs::read_to_string(&rig).unwrap(), written);
+		assert_eq!(ws.models()[0].parts, 2);
+	}
+
 	/// Decal images are downloaded once per asset into `Images/`, for every
 	/// model using them, and kept when the model is imported again.
 	#[test]

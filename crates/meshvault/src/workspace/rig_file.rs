@@ -1,6 +1,6 @@
 //! Rig files: an animated model written as an export of its own.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
@@ -48,5 +48,15 @@ pub(super) fn write_rig(
 			.map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
 	}
 	let json = serde_json::to_string(&doc).map_err(|e| e.to_string())?;
-	std::fs::write(path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))
+	// write then rename, so a failed write never damages the rig file a
+	// model being imported again already has
+	let mut tmp = path.as_os_str().to_owned();
+	tmp.push(".tmp");
+	let tmp = PathBuf::from(tmp);
+	let result = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path));
+	if let Err(e) = result {
+		let _ = std::fs::remove_file(&tmp);
+		return Err(format!("Could not write {}: {e}", path.display()));
+	}
+	Ok(())
 }

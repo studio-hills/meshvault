@@ -20,20 +20,14 @@ pub(super) fn export_mesh(dir: &Path, name: &str, job: &MeshJob) -> Result<(), S
 		return Err("the mesh has no triangles".into());
 	}
 	let groups = geometry.default_groups();
-	let mut obj = Obj::new(dir, name);
-	let base = job
-		.maps
-		.iter()
-		.find(|(s, _)| *s == Slot::Base)
-		.map(|(_, p)| p.as_path());
-	let normal = job
-		.maps
-		.iter()
-		.find(|(s, _)| *s == Slot::Normal)
-		.map(|(_, p)| p.as_path());
-	let material = obj.material(base, normal, [1.0; 3])?;
-	obj.add(name, &geometry, &groups, &IDENTITY, &material);
-	obj.write()
+	write_one(
+		dir,
+		name,
+		&geometry,
+		&groups,
+		map_of(&job.maps, Slot::Base),
+		map_of(&job.maps, Slot::Normal),
+	)
 }
 
 /// Writes `groups` of a mesh to the OBJ file `path`, with an MTL file and
@@ -45,14 +39,37 @@ pub fn write_mesh(
 	material: &Material,
 ) -> Result<(), String> {
 	let (dir, name) = split(path)?;
-	let mut obj = Obj::new(&dir, &name);
-	let m = obj.material(
+	write_one(
+		&dir,
+		&name,
+		geometry,
+		groups,
 		map_path(material, Slot::Base),
 		map_path(material, Slot::Normal),
-		[1.0; 3],
-	)?;
-	obj.add(&name, geometry, groups, &IDENTITY, &m);
+	)
+}
+
+/// Writes `groups` of one mesh, unmoved, as the OBJ `name` in `dir`, white
+/// or showing the colour map `base`, with the maps copied beside it.
+fn write_one(
+	dir: &Path,
+	name: &str,
+	geometry: &Geometry,
+	groups: &[usize],
+	base: Option<&Path>,
+	normal: Option<&Path>,
+) -> Result<(), String> {
+	let mut obj = Obj::new(dir, name);
+	let material = obj.material(base, normal, [1.0; 3])?;
+	obj.add(name, geometry, groups, &IDENTITY, &material);
 	obj.write()
+}
+
+/// The first of `maps` for `slot`.
+fn map_of(maps: &[(Slot, PathBuf)], slot: Slot) -> Option<&Path> {
+	maps.iter()
+		.find(|(s, _)| *s == slot)
+		.map(|(_, p)| p.as_path())
 }
 
 /// Writes an animated model as posed now to the OBJ file `path`.
@@ -105,7 +122,8 @@ fn map_path(material: &Material, slot: Slot) -> Option<&Path> {
 	material.active(slot).map(|t| t.path.as_path())
 }
 
-/// An OBJ file being written, with its MTL.
+/// An OBJ file being written, with its MTL. Both are built in `String`s,
+/// which `writeln!` cannot fail to write to, so its results are ignored.
 struct Obj {
 	dir: PathBuf,
 	name: String,

@@ -1,0 +1,110 @@
+Roblox Mesh Parser
+==================
+
+Vendored into Meshvault from [krakow10/rbx_mesh](https://github.com/krakow10/rbx_mesh) by Rhys Lloyd and contributors, with mesh v6/v7 and Draco decoding added. See CHANGELOG.md for the changes.
+
+`rbx_mesh` is a collection of deserializers for the different mesh versions in Roblox, and a function to detect the version and invoke the correct deserializer.  The meshes are decoded into a structure that reflects the on-disk format of the particular mesh version, rather than being translated into a catch-all structure.
+
+## Mesh Example
+
+Print the mesh vertices for any mesh version / vertex size
+
+```rust
+use rbx_mesh::read_mesh_versioned;
+use rbx_mesh::mesh::{Chunks6,CoreMeshChunk,Mesh,Vertices2};
+
+let file=std::fs::read("meshes/torso.mesh")?;
+let versioned_mesh=read_mesh_versioned(std::io::Cursor::new(file))?;
+match versioned_mesh{
+	Mesh::V1(mesh)=>println!("{:?}",mesh.vertices),
+	Mesh::V2(mesh)=>{
+		match mesh.vertices{
+			Vertices2::Full(vertices)=>println!("{:?}",vertices),
+			Vertices2::Truncated(vertices_truncated)=>println!("{:?}",vertices_truncated),
+		}
+	},
+	Mesh::V3(mesh)=>{
+		match mesh.vertices{
+			Vertices2::Full(vertices)=>println!("{:?}",vertices),
+			Vertices2::Truncated(vertices_truncated)=>println!("{:?}",vertices_truncated),
+		}
+	},
+	Mesh::V4(mesh)=>println!("{:?}",mesh.vertices),
+	Mesh::V5(mesh)=>println!("{:?}",mesh.vertices),
+	// v6 and v7 are made of chunks; the vertices live in the COREMESH chunk
+	Mesh::V6(mesh)=>{
+		if let Some(CoreMeshChunk::V1(core))=mesh.core_mesh(){
+			println!("{:?}",core.vertices);
+		}
+	},
+	// v7 usually Draco compresses COREMESH (decode needs the default "mesh-v7-draco" feature)
+	Mesh::V7(mesh)=>{
+		match mesh.core_mesh(){
+			Some(CoreMeshChunk::V1(core))=>println!("{:?}",core.vertices),
+			Some(CoreMeshChunk::V2(draco))=>println!("{:?}",draco.decode().unwrap().vertices),
+			_=>(),
+		}
+	},
+}
+# binrw::BinResult::Ok(())
+```
+
+## Union Graphics Example
+```rust
+use rbx_mesh::read_union_graphics_versioned;
+use rbx_mesh::union_graphics::UnionGraphics;
+
+// this data is extracted from the "MeshData" property of UnionOperation
+// the data is not usually contained in the roblox file itself
+// but is sourced from the associated "AssetId" of the UnionOperation
+let mesh_file=std::fs::read("meshes/4500696697_4.meshdata")?;
+let mesh=read_union_graphics_versioned(std::io::Cursor::new(mesh_file))?;
+
+// print mesh vertices or vertex positions
+match mesh{
+	UnionGraphics::CSGK(_)=>(),
+	UnionGraphics::V2(mesh2)=>println!("{:?}",mesh2.mesh.vertices),
+	UnionGraphics::V4(mesh4)=>println!("{:?}",mesh4.mesh.vertices),
+	UnionGraphics::V5(mesh5)=>println!("{:?}",mesh5.positions),
+}
+# binrw::BinResult::Ok(())
+```
+
+## Union Physics Example
+```rust
+use rbx_mesh::read_union_physics_versioned;
+use rbx_mesh::union_physics::UnionPhysics;
+
+// this data is extracted from the "PhysicsData" property of UnionOperation
+let phys_file=std::fs::read("meshes/CSGPHS_3.data")?;
+let mesh=read_union_physics_versioned(std::io::Cursor::new(phys_file))?;
+
+// Meshes contain multiple convex hulls.
+// print vertex positions of the first mesh
+match mesh{
+	// Who writes a uuid as ascii hex in a binary format!?
+	UnionPhysics::CSGK(_csgk)=>println!("CSGK"),
+	UnionPhysics::Block(_block)=>println!("CSGPHS Block"),
+	UnionPhysics::V3(mesh3)=>println!("{:?}",mesh3.meshes[0].positions),
+	UnionPhysics::V5(mesh5)=>println!("{:?}",mesh5.meshes[0].positions),
+	UnionPhysics::V6(mesh6)=>println!("{:?}",mesh6.mesh.positions),
+	UnionPhysics::V7(mesh7)=>println!("{:?}",mesh7.meshes[0].positions),
+	UnionPhysics::V8(mesh8)=>println!("{:?}",mesh8.mesh.hulls.iter_hulls().next().unwrap().positions),
+}
+# binrw::BinResult::Ok(())
+```
+
+#### License
+
+<sup>
+Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
+2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
+</sup>
+
+<br>
+
+<sub>
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.
+</sub>

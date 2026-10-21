@@ -444,7 +444,7 @@ mod tests {
 
 	#[test]
 	fn exports_a_sample_mesh() {
-		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../meshes");
+		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
 		let mesh = std::fs::read_dir(samples)
 			.unwrap()
 			.map(|e| e.unwrap().path())
@@ -479,7 +479,7 @@ mod tests {
 
 	#[test]
 	fn exports_a_sample_mesh_as_glb() {
-		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../meshes");
+		let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes");
 		let mesh = std::fs::read_dir(samples)
 			.unwrap()
 			.map(|e| e.unwrap().path())

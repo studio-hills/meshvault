@@ -1,106 +1,9 @@
-Roblox Mesh Parser
-==================
+# Meshvault
 
-[![Latest version](https://img.shields.io/crates/v/rbx_mesh.svg)](https://crates.io/crates/rbx_mesh)
-![License](https://img.shields.io/crates/l/rbx_mesh.svg)
-
-`rbx_mesh` is a collection of deserializers for the different mesh versions in Roblox, and a function to detect the version and invoke the correct deserializer.  The meshes are decoded into a structure that reflects the on-disk format of the particular mesh version, rather than being translated into a catch-all structure.
-
-## Mesh Example
-
-Print the mesh vertices for any mesh version / vertex size
-
-```rust
-use rbx_mesh::read_mesh_versioned;
-use rbx_mesh::mesh::{Chunks6,CoreMeshChunk,Mesh,Vertices2};
-
-let file=std::fs::read("meshes/torso.mesh")?;
-let versioned_mesh=read_mesh_versioned(std::io::Cursor::new(file))?;
-match versioned_mesh{
-	Mesh::V1(mesh)=>println!("{:?}",mesh.vertices),
-	Mesh::V2(mesh)=>{
-		match mesh.vertices{
-			Vertices2::Full(vertices)=>println!("{:?}",vertices),
-			Vertices2::Truncated(vertices_truncated)=>println!("{:?}",vertices_truncated),
-		}
-	},
-	Mesh::V3(mesh)=>{
-		match mesh.vertices{
-			Vertices2::Full(vertices)=>println!("{:?}",vertices),
-			Vertices2::Truncated(vertices_truncated)=>println!("{:?}",vertices_truncated),
-		}
-	},
-	Mesh::V4(mesh)=>println!("{:?}",mesh.vertices),
-	Mesh::V5(mesh)=>println!("{:?}",mesh.vertices),
-	// v6 and v7 are made of chunks; the vertices live in the COREMESH chunk
-	Mesh::V6(mesh)=>{
-		if let Some(CoreMeshChunk::V1(core))=mesh.core_mesh(){
-			println!("{:?}",core.vertices);
-		}
-	},
-	// v7 usually Draco compresses COREMESH (decode needs the default "mesh-v7-draco" feature)
-	Mesh::V7(mesh)=>{
-		match mesh.core_mesh(){
-			Some(CoreMeshChunk::V1(core))=>println!("{:?}",core.vertices),
-			Some(CoreMeshChunk::V2(draco))=>println!("{:?}",draco.decode().unwrap().vertices),
-			_=>(),
-		}
-	},
-}
-# binrw::BinResult::Ok(())
-```
-
-## Union Graphics Example
-```rust
-use rbx_mesh::read_union_graphics_versioned;
-use rbx_mesh::union_graphics::UnionGraphics;
-
-// this data is extracted from the "MeshData" property of UnionOperation
-// the data is not usually contained in the roblox file itself
-// but is sourced from the associated "AssetId" of the UnionOperation
-let mesh_file=std::fs::read("meshes/4500696697_4.meshdata")?;
-let mesh=read_union_graphics_versioned(std::io::Cursor::new(mesh_file))?;
-
-// print mesh vertices or vertex positions
-match mesh{
-	UnionGraphics::CSGK(_)=>(),
-	UnionGraphics::V2(mesh2)=>println!("{:?}",mesh2.mesh.vertices),
-	UnionGraphics::V4(mesh4)=>println!("{:?}",mesh4.mesh.vertices),
-	UnionGraphics::V5(mesh5)=>println!("{:?}",mesh5.positions),
-}
-# binrw::BinResult::Ok(())
-```
-
-## Union Physics Example
-```rust
-use rbx_mesh::read_union_physics_versioned;
-use rbx_mesh::union_physics::UnionPhysics;
-
-// this data is extracted from the "PhysicsData" property of UnionOperation
-let phys_file=std::fs::read("meshes/CSGPHS_3.data")?;
-let mesh=read_union_physics_versioned(std::io::Cursor::new(phys_file))?;
-
-// Meshes contain multiple convex hulls.
-// print vertex positions of the first mesh
-match mesh{
-	// Who writes a uuid as ascii hex in a binary format!?
-	UnionPhysics::CSGK(_csgk)=>println!("CSGK"),
-	UnionPhysics::Block(_block)=>println!("CSGPHS Block"),
-	UnionPhysics::V3(mesh3)=>println!("{:?}",mesh3.meshes[0].positions),
-	UnionPhysics::V5(mesh5)=>println!("{:?}",mesh5.meshes[0].positions),
-	UnionPhysics::V6(mesh6)=>println!("{:?}",mesh6.mesh.positions),
-	UnionPhysics::V7(mesh7)=>println!("{:?}",mesh7.meshes[0].positions),
-	UnionPhysics::V8(mesh8)=>println!("{:?}",mesh8.mesh.hulls.iter_hulls().next().unwrap().positions),
-}
-# binrw::BinResult::Ok(())
-```
-
-## Meshvault (GUI)
-
-The `gui` crate is Meshvault, a desktop viewer built on `rbx_mesh` and [egui](https://github.com/emilk/egui).  It auto-detects the file type, shows header details (version, vertex/face counts, LODs, bones, FACS, hulls, physics info) and renders the mesh in an orbitable 3D view.
+Meshvault is a desktop viewer built on `rbx_mesh` and [egui](https://github.com/emilk/egui).  It auto-detects the file type, shows header details (version, vertex/face counts, LODs, bones, FACS, hulls, physics info) and renders the mesh in an orbitable 3D view.
 
 ```sh
-cargo run --release -p meshvault -- meshes/sphere.mesh
+cargo run --release -p meshvault -- crates/rbx_mesh/meshes/sphere.mesh
 ```
 
 - Three-pane layout: a library of workspace models, the 3D viewport with a floating toolbar, and an inspector for the model's stats, material and properties; both side panels can be hidden
@@ -123,7 +26,7 @@ cargo run --release -p meshvault -- meshes/sphere.mesh
 - Materials: base color, normal, roughness and metalness maps (Roblox `SurfaceAppearance`).  Maps next to the mesh load automatically by name (`Name.png` or `Name.color.png`, `Name.normal.png`, `Name.roughness.png`, `Name.metalness.png`); otherwise use the inspector's Material section or drop PNG/JPEG/BMP/TGA/WebP files onto the window.  Each map can be toggled to compare with and without it
 - Controls: left-drag to orbit, right/middle-drag to pan, scroll to zoom, double-click or F to frame the model
 
-Meshvault bundles the [Cal Sans](https://github.com/calcom/sans) typeface (SIL Open Font License 1.1) and [Phosphor](https://phosphoricons.com) icons (MIT); see `gui/assets/` for their licenses.
+Meshvault bundles the [Cal Sans](https://github.com/calcom/sans) typeface (SIL Open Font License 1.1) and [Phosphor](https://phosphoricons.com) icons (MIT); see `crates/meshvault/assets/` for their licenses.
 
 ### Workspaces and bulk download
 
@@ -189,7 +92,7 @@ send(export) -- or save h:JSONEncode(export) your own way
 
 `Kind` is one of `PlayMode`, `AnimationUnavailable`, `CurveAnimationFailed`, `MeshSkipped`, `ModelSkipped` (with the instance's `Path`), `NothingToExport`, `SendFailed`, `HttpEnabledNotRestored` or `Error` (an unexpected error, with its stack trace in `Message`). The animation kinds carry the `AnimationId`.
 
-Everything travels over `http://localhost:34875`: `GET /export.luau` serves the exporter, and `POST /export` takes the export in 2 MB pieces. The line turns `HttpService.HttpEnabled` on only while it talks to Meshvault and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers on exports, which a web page cannot send. Only one program can use the port: if it is taken (usually by another Meshvault), Meshvault warns at startup, the status bar reads "Studio link unavailable", and exporting from Studio is off until the port is free and Meshvault restarts. The exporters live in `gui/studio/` and are built into the app.
+Everything travels over `http://localhost:34875`: `GET /export.luau` serves the exporter, and `POST /export` takes the export in 2 MB pieces. The line turns `HttpService.HttpEnabled` on only while it talks to Meshvault and restores it afterwards. Meshvault accepts connections from this machine only, and requires custom headers on exports, which a web page cannot send. Only one program can use the port: if it is taken (usually by another Meshvault), Meshvault warns at startup, the status bar reads "Studio link unavailable", and exporting from Studio is off until the port is free and Meshvault restarts. The exporters live in `crates/meshvault/studio/` and are built into the app.
 
 ### Animated models
 
@@ -210,18 +113,3 @@ Schema 1 exports list animated models in the import dialog; selecting one also s
 - The inspector lists clips, tracks that match nothing in the model, parts with visibility toggles, and warnings such as missing meshes or a rig captured mid-animation
 
 Facial animation plays on FACS heads: clips' face controls (NumberPoses in a keyframe clip's `FaceControls`, FloatCurves in a curve clip's `FaceControls` folder) weight the head's FACS poses and correctives, which move its face bones. The poses' bone movements are applied; their bone rotations are not yet, since applying them as read curls lips far more than Studio does. Material textures (wood grain, metal plates, glass refraction) and shadows are not rendered yet.
-
-#### License
-
-<sup>
-Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
-2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
-</sup>
-
-<br>
-
-<sub>
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
-be dual licensed as above, without any additional terms or conditions.
-</sub>

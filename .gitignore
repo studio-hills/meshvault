@@ -1,1 +1,5 @@
 /target
+
+# local test data, never committed
+/examples/
+crates/rbx_mesh/meshes/personal/

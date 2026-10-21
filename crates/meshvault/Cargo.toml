@@ -1,14 +1,16 @@
 [package]
 name = "meshvault"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.94"
-license = "MIT OR Apache-2.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "MIT"
 description = "Meshvault: view Roblox meshes and their materials, and bulk download a game's models."
+authors = ["Jaden Hills"]
 publish = false
 
 [dependencies]
-rbx_mesh = { path = ".." }
+rbx_mesh = { path = "../rbx_mesh" }
 binrw = "0.15.0"
 eframe = "0.37.0"
 rfd = "0.17.2"

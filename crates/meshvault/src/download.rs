@@ -679,7 +679,7 @@ mod tests {
 		use crate::workspace::{AssetState, Workspace};
 
 		let mesh =
-			std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../meshes/torso.mesh")).unwrap();
+			std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../rbx_mesh/meshes/torso.mesh")).unwrap();
 		let png = b"\x89PNG\r\n\x1a\nFAKE".to_vec();
 		let (cdn, _) = serve(vec![
 			("/cdn/1", 200, vec![], mesh.clone()),

@@ -194,9 +194,27 @@ impl Workspace {
 			dir.push_str(&sanitize(part));
 		}
 		let base = sanitize(name);
+		// an item's maps are written as stem + suffix, so `A`'s normal map and
+		// the texture of `A.normal` would be the same file: a stem is only
+		// free if none of its file names is another stem's
+		let suffixes: Vec<&str> = if top == MODELS_DIR {
+			MapKind::ALL.iter().map(|k| k.file_suffix()).collect()
+		} else {
+			vec![""]
+		};
+		let taken = |stem: &str| {
+			let stem = stem.to_lowercase();
+			suffixes.iter().any(|mine| {
+				let file = format!("{stem}{mine}");
+				suffixes.iter().any(|theirs| {
+					file.strip_suffix(theirs)
+						.is_some_and(|other| self.stems.contains(other))
+				})
+			})
+		};
 		let mut stem = format!("{dir}/{base}");
 		let mut n = 2;
-		while self.stems.contains(&stem.to_lowercase()) {
+		while taken(&stem) {
 			stem = format!("{dir}/{base} ({n})");
 			n += 1;
 		}
@@ -835,6 +853,34 @@ mod tests {
 		ws.add_model(&tiled, &[]).unwrap();
 		let images = &ws.models()[2].images;
 		assert!(images.contains_key(&99) && images.contains_key(&100) && images.contains_key(&77));
+	}
+
+	/// `A`'s normal map is `A.normal.png`, which is also where the texture
+	/// of an item `A.normal` would go, so the second one gets a numbered stem
+	/// whichever comes first, ignoring case.
+	#[test]
+	fn stems_whose_map_files_would_collide_are_numbered() {
+		let dir = TempDir::new("ws_map_names");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add([
+			entry("F", "A", 1, &[(MapKind::Normal, 2)]),
+			entry("F", "a.NORMAL", 3, &[(MapKind::Texture, 4)]),
+			entry("G", "B.color", 5, &[]),
+			entry("G", "B", 6, &[(MapKind::Color, 7)]),
+			// a dot that is not a map suffix is fine
+			entry("G", "B.other", 8, &[]),
+		]);
+		let stems: Vec<_> = ws.items().iter().map(|i| i.stem.as_str()).collect();
+		assert_eq!(
+			stems,
+			[
+				"Models/F/A",
+				"Models/F/a.NORMAL (2)",
+				"Models/G/B.color",
+				"Models/G/B (2)",
+				"Models/G/B.other",
+			]
+		);
 	}
 
 	#[test]

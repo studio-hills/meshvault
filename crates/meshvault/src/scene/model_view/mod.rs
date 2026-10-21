@@ -320,7 +320,7 @@ fn load_warnings(warnings: &mut Vec<String>, counts: &LoadCounts, parts: &[PartV
 		.sum();
 	if unbound > 0 {
 		warnings.push(format!(
-			"{unbound} bones inside skinned meshes (such as face bones) are not in the model. They hold their bind pose unless a clip animates them by name; facial animation (FACS) is not exported."
+			"{unbound} bones inside skinned meshes (such as face bones) are not in the model. They hold their bind pose unless a clip moves them by name or with its face controls (FACS); the export moves them the same way."
 		));
 	}
 }
@@ -998,6 +998,82 @@ mod tests {
 		view.toggle_play();
 		assert!(view.playing);
 		assert!(!view.tick(0.1));
+	}
+
+	/// Bones only a skinned mesh has follow clip tracks by name and FACS
+	/// face controls, in the viewer and in the glTF export alike, and the
+	/// warning says so.
+	#[test]
+	fn unbound_bones_warn_that_clips_and_face_controls_move_them() {
+		use crate::scene::geometry::Skin;
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![placed_part(Some("Part"), Some("Block"), "Head", [0.0; 3])],
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		// JawDrop lowers the Jaw by a stud
+		let facs = crate::scene::geometry::Facs {
+			bones: vec!["Jaw".into()],
+			controls: vec!["JawDrop".into()],
+			columns: vec![vec![0]],
+			poses: vec![[0.0, -1.0, 0.0, 0.0, 0.0, 0.0]],
+		};
+		let skin = Skin {
+			bones: vec!["Head".into(), "Jaw".into(), "LeftLip".into()],
+			parents: vec![None, Some(0), Some(0)],
+			binds: vec![fixtures::cf([0.0; 3]); 3],
+			influences: vec![[(1, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; 3],
+			facs: Some(facs),
+		};
+		let a = fixtures::asset(vec![[0.0; 3]; 3], skin.clone());
+		let fit = ([0.0; 3], [1.0; 3], [0.0; 3]);
+		view.parts[0].skin = Some(PartSkin::build(&skin, &a, &view.rig, &view.rest, 0, fit));
+		let mut warnings = Vec::new();
+		load_warnings(&mut warnings, &LoadCounts::default(), &view.parts);
+		assert_eq!(
+			warnings,
+			[
+				"2 bones inside skinned meshes (such as face bones) are not in the model. They hold their bind pose unless a clip moves them by name or with its face controls (FACS); the export moves them the same way."
+			]
+		);
+
+		// a face-only clip: the exported Jaw node (after the one part)
+		// moves with JawDrop
+		use crate::anim::schema::{AnimationClip, FaceControlPose, Keyframe, Pose};
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![Keyframe {
+				time: 0.0,
+				poses: vec![Pose {
+					name: "Head".into(),
+					face_controls: vec![FaceControlPose {
+						name: "JawDrop".into(),
+						value: 1.0,
+						..Default::default()
+					}],
+					..Default::default()
+				}],
+				markers: vec![],
+			}],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&record).unwrap();
+		view.clips.push(ClipSlot {
+			name: "Talk".into(),
+			status: record.status,
+			priority: String::new(),
+			animation_id: String::new(),
+			binding: view.rig.bind(&clip),
+			clip: Ok(clip),
+			mesh_bone_tracks: 0,
+		});
+		assert_eq!(view.export_nodes()[1].name, "Jaw");
+		assert_eq!(view.export_frame(None, 0.0)[1].pos, [0.0; 3]);
+		assert_eq!(view.export_frame(Some(0), 0.0)[1].pos, [0.0, -1.0, 0.0]);
 	}
 
 	// ---------------------------------------------- characterisation (SCN-11a)

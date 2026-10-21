@@ -1292,23 +1292,15 @@ impl Browser {
 				egui::pos2(rect.left() + 2.0, picture.bottom()),
 				rect.right_bottom() - Vec2::new(2.0, 0.0),
 			);
-			let galley = painter.layout(
-				name.to_string(),
+			// centred, and cut short with an ellipsis when it does not fit
+			let galley = widgets::truncated(
+				&painter,
+				name,
 				FontId::proportional(12.0),
 				if open { p.accent } else { p.text },
-				f32::INFINITY,
+				label.width(),
 			);
-			// centred when it fits, else cut at the right edge
-			let x = if galley.size().x <= label.width() {
-				label.center().x - galley.size().x / 2.0
-			} else {
-				label.left()
-			};
-			painter.with_clip_rect(label).galley(
-				egui::pos2(x, label.center().y - galley.size().y / 2.0),
-				galley,
-				p.text,
-			);
+			painter.galley(label.center() - galley.size() / 2.0, galley, p.text);
 		}
 		let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 		let response = match key {
@@ -1368,12 +1360,17 @@ fn model_row(
 		rect.left_top() + Vec2::new(24.0, 0.0),
 		rect.right_bottom() - Vec2::new(clips_galley.size().x + 16.0, 0.0),
 	);
-	painter.with_clip_rect(text_rect).text(
-		text_rect.left_center(),
-		Align2::LEFT_CENTER,
+	let name = widgets::truncated(
+		&painter,
 		&model.name,
 		FontId::proportional(13.0),
 		if open { p.accent } else { p.text },
+		text_rect.width(),
+	);
+	painter.galley(
+		text_rect.left_center() - Vec2::new(0.0, name.size().y / 2.0),
+		name,
+		p.text,
 	);
 	let pos =
 		rect.right_center() - Vec2::new(10.0 + clips_galley.size().x, clips_galley.size().y / 2.0);
@@ -1405,11 +1402,16 @@ fn item_row(
 		rect.left_top() + Vec2::new(24.0, 0.0),
 		rect.right_bottom() - Vec2::new(right_pad, 0.0),
 	);
-	painter.with_clip_rect(text_rect).text(
-		text_rect.left_center(),
-		Align2::LEFT_CENTER,
+	let name = widgets::truncated(
+		&painter,
 		&item.name,
 		FontId::proportional(13.0),
+		text_colour,
+		text_rect.width(),
+	);
+	painter.galley(
+		text_rect.left_center() - Vec2::new(0.0, name.size().y / 2.0),
+		name,
 		text_colour,
 	);
 	if !item.maps.is_empty() {

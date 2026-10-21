@@ -220,16 +220,21 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 		FontId::new(14.0, semibold()),
 		if hovered { p.accent } else { p.text },
 	);
-	// the path fills what is left, clipped short of the remove button
+	// the path fills what is left, cut short of the remove button
 	let path_clip = egui::Rect::from_min_max(
 		egui::pos2(name_rect.right() + 10.0, rect.top()),
 		egui::pos2(rect.right() - 44.0, rect.bottom()),
 	);
-	painter.with_clip_rect(path_clip).text(
-		egui::pos2(path_clip.left(), rect.center().y),
-		Align2::LEFT_CENTER,
-		root.display().to_string(),
+	let path = widgets::truncated(
+		&painter,
+		&root.display().to_string(),
 		FontId::proportional(crate::ui::theme::CAPTION),
+		p.text_weak,
+		path_clip.width(),
+	);
+	painter.galley(
+		egui::pos2(path_clip.left(), rect.center().y - path.size().y / 2.0),
+		path,
 		p.text_weak,
 	);
 

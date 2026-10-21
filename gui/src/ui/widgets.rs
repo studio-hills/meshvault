@@ -466,6 +466,20 @@ pub fn paint_tabular(
 	}
 }
 
+/// `text` on one line at most `width` wide, ending in "…" when it is cut
+/// short. Whoever draws it keeps the full text on hover.
+pub fn truncated(
+	painter: &egui::Painter,
+	text: &str,
+	font: FontId,
+	colour: Color32,
+	width: f32,
+) -> std::sync::Arc<egui::Galley> {
+	let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, colour);
+	job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
+	painter.layout_job(job)
+}
+
 /// A dashed rounded rectangle, used as a drop target.
 pub fn dashed_rect(ui: &Ui, rect: egui::Rect, colour: Color32) {
 	let r = rect.shrink(1.0);

@@ -49,13 +49,17 @@ pub fn sanitize(name: &str) -> String {
 	if s.is_empty() {
 		return "_".into();
 	}
-	const RESERVED: [&str; 22] = [
+	// Windows also counts the superscript digits as COM and LPT numbers
+	const RESERVED: [&str; 28] = [
 		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-		"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+		"COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7",
+		"LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
 	];
-	let base = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-	if RESERVED.contains(&base.as_str()) {
-		format!("{s}_")
+	// a reserved name is still reserved with an extension (`con.txt`), so
+	// the `_` goes before the first dot
+	let (base, rest) = s.split_at(s.find('.').unwrap_or(s.len()));
+	if RESERVED.contains(&base.to_ascii_uppercase().as_str()) {
+		format!("{base}_{rest}")
 	} else {
 		s
 	}
@@ -71,9 +75,23 @@ mod tests {
 		assert_eq!(sanitize("Demon Egg.013"), "Demon Egg.013");
 		assert_eq!(sanitize("trailing. "), "trailing");
 		assert_eq!(sanitize("CON"), "CON_");
-		assert_eq!(sanitize("con.txt"), "con.txt_");
 		assert_eq!(sanitize("a/b\\c"), "a_b_c");
 		assert_eq!(sanitize("   "), "_");
+	}
+
+	/// Reserved device names are made safe with or without an extension,
+	/// so a stem's `.mesh` or `.png` cannot make one a device again.
+	#[test]
+	fn reserved_names_get_the_underscore_before_the_extension() {
+		assert_eq!(sanitize("con.txt"), "con_.txt");
+		assert_eq!(sanitize("com1.part"), "com1_.part");
+		assert_eq!(sanitize("NUL.a.b"), "NUL_.a.b");
+		assert_eq!(sanitize("COM¹"), "COM¹_");
+		assert_eq!(sanitize("lpt³.png"), "lpt³_.png");
+		// names that only start like one are left alone
+		assert_eq!(sanitize("console.txt"), "console.txt");
+		assert_eq!(sanitize("COM10"), "COM10");
+		assert_eq!(sanitize("CON_"), "CON_");
 	}
 
 	#[test]

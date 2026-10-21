@@ -84,7 +84,7 @@ pub(super) fn header(
 	ui.add(
 		egui::Label::new(
 			egui::RichText::new(title)
-				.size(17.0)
+				.size(16.0)
 				.family(super::theme::display()),
 		)
 		.truncate(),

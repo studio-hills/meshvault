@@ -9,14 +9,15 @@
 //!   (a name for the saved file). Once all `n` pieces have arrived they are
 //!   joined in order and handed to the app.
 //!
-//! What is checked today: the server binds the IPv4 loopback address
+//! What is checked: the server binds the IPv4 loopback address
 //! (127.0.0.1), so only programs on this machine can connect, and pieces
 //! must carry the custom headers above. A web page on another origin can
 //! only send those after a CORS preflight, which is never approved (OPTIONS
-//! gets a 404 without CORS headers). The `Host` header is not checked and
-//! there is no authentication, so a page that reaches the port under its
-//! own origin (DNS rebinding) is not stopped; whether a browser lets it is
-//! up to the browser.
+//! gets a 404 without CORS headers). Every request must also say it is for
+//! `localhost` or `127.0.0.1` on the link's port (its `Host` header), so a
+//! page that reaches the port under its own name (DNS rebinding) is
+//! refused. There is no authentication: any program on this machine can
+//! still send an export.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -242,9 +243,11 @@ impl Reply {
 
 fn serve(listener: TcpListener, tx: Sender<Event>, ctx: egui::Context) {
 	let mut pending: HashMap<String, Pending> = HashMap::new();
+	// the port asked for, or the one the system chose (tests ask for any)
+	let port = listener.local_addr().map_or(PORT, |a| a.port());
 	for stream in listener.incoming().flatten() {
 		let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
-		let reply = match read_request(&stream) {
+		let reply = match read_request(&stream, port) {
 			Ok(request) => route(request, &mut pending, &tx),
 			Err(reply) => reply,
 		};
@@ -268,8 +271,10 @@ fn respond(mut stream: TcpStream, reply: Reply) {
 }
 
 /// Reads a whole request, body included: closing a socket with unread data
-/// resets it, and the sender would never see the reply.
-fn read_request(stream: impl Read) -> Result<Request, Reply> {
+/// resets it, and the sender would never see the reply. A request that is
+/// not for the link (see [`for_the_link`]) is refused before its body is
+/// read.
+fn read_request(stream: impl Read, port: u16) -> Result<Request, Reply> {
 	let mut reader = BufReader::new(stream);
 	let mut line = String::new();
 	reader
@@ -286,6 +291,8 @@ fn read_request(stream: impl Read) -> Result<Request, Reply> {
 		.collect();
 	let path = path.to_string();
 	let mut headers = HashMap::new();
+	// every Host header, so a second one cannot hide behind the last
+	let mut hosts = Vec::new();
 	loop {
 		line.clear();
 		reader
@@ -296,8 +303,15 @@ fn read_request(stream: impl Read) -> Result<Request, Reply> {
 			break;
 		}
 		if let Some((k, v)) = header.split_once(':') {
-			headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+			let name = k.trim().to_ascii_lowercase();
+			if name == "host" {
+				hosts.push(v.trim().to_string());
+			}
+			headers.insert(name, v.trim().to_string());
 		}
+	}
+	if !matches!(hosts.as_slice(), [host] if for_the_link(host, port)) {
+		return Err(Reply::text(403, format!("Host must be localhost:{port}")));
 	}
 	let length: usize = headers
 		.get("content-length")
@@ -317,6 +331,16 @@ fn read_request(stream: impl Read) -> Result<Request, Reply> {
 		headers,
 		body,
 	})
+}
+
+/// Whether a `Host` header names the link: `localhost` or `127.0.0.1` with
+/// the link's port, exactly. A web page whose own name has been pointed at
+/// 127.0.0.1 sends that name instead, so it is refused.
+fn for_the_link(host: &str, port: u16) -> bool {
+	let Some((name, p)) = host.rsplit_once(':') else {
+		return false;
+	};
+	p == port.to_string() && (name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1")
 }
 
 fn route(request: Request, pending: &mut HashMap<String, Pending>, tx: &Sender<Event>) -> Reply {
@@ -447,10 +471,14 @@ mod tests {
 	}
 
 	fn request(port: u16, head: &str, body: &str) -> String {
+		request_to(port, &format!("localhost:{port}"), head, body)
+	}
+
+	fn request_to(port: u16, host: &str, head: &str, body: &str) -> String {
 		let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
 		write!(
 			s,
-			"{head}\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+			"{head}\r\nHost: {host}\r\nContent-Length: {}\r\n\r\n{body}",
 			body.len()
 		)
 		.unwrap();
@@ -634,7 +662,7 @@ mod tests {
 	}
 
 	fn read(bytes: &[u8]) -> Result<Request, Reply> {
-		read_request(std::io::Cursor::new(bytes))
+		read_request(std::io::Cursor::new(bytes), PORT)
 	}
 
 	/// The request, or a panic naming the refusal (`Reply` has no `Debug`).
@@ -664,6 +692,7 @@ mod tests {
 	fn reads_requests() {
 		let r = parsed(
 			b"POST /export?schema=1&a=b=c&flag&=x HTTP/1.1\r\n\
+			  Host: localhost:34875\r\n\
 			  X-MESHVAULT-Export:  id 1 \r\n\
 			  no colon here\r\n\
 			  x-meshvault-chunk: 1/2\r\n\
@@ -693,6 +722,7 @@ mod tests {
 			headers,
 			[
 				(&"content-length".to_string(), &"5".to_string()),
+				(&"host".to_string(), &"localhost:34875".to_string()),
 				(&"x-meshvault-chunk".to_string(), &"2/2".to_string()),
 				(&"x-meshvault-export".to_string(), &"id 1".to_string()),
 			]
@@ -704,22 +734,19 @@ mod tests {
 	#[test]
 	fn reads_requests_leniently() {
 		// bare newlines work, and without Content-Length the body is empty
-		let r = parsed(b"GET /export.luau HTTP/1.1\nHost: x\n\nignored");
+		let r = parsed(b"GET /export.luau HTTP/1.1\nHost: localhost:34875\n\nignored");
 		assert_eq!(
 			(r.method.as_str(), r.path.as_str()),
 			("GET", "/export.luau")
 		);
 		assert!(r.query.is_empty());
 		assert!(r.body.is_empty());
-		// nothing at all, or a stream that ends inside the headers, is an empty request
-		for bytes in [&b""[..], b"GET / HTTP/1.1\r\nHost: x\r\n"] {
-			let r = parsed(bytes);
-			assert!(r.body.is_empty());
-		}
-		assert_eq!(parsed(b"").method, "");
-		assert_eq!(parsed(b"").path, "");
+		// a stream that ends inside the headers is an empty request (pinned until
+		// B10 is fixed; nothing at all is refused now, as it has no Host)
+		let r = parsed(b"GET / HTTP/1.1\r\nHost: localhost:34875\r\n");
+		assert!(r.body.is_empty());
 		// a missing target is an empty path
-		assert_eq!(parsed(b"GET\r\n\r\n").path, "");
+		assert_eq!(parsed(b"GET\r\nHost: localhost:34875\r\n\r\n").path, "");
 	}
 
 	#[test]
@@ -728,22 +755,22 @@ mod tests {
 			(&b"GET \xff HTTP/1.1\r\n\r\n"[..], 400, "bad request"),
 			(b"GET / HTTP/1.1\r\nX-A: \xff\r\n\r\n", 400, "bad headers"),
 			(
-				b"POST / HTTP/1.1\r\nContent-Length: x\r\n\r\n",
+				b"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length: x\r\n\r\n",
 				400,
 				"bad Content-Length",
 			),
 			(
-				b"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+				b"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length: -1\r\n\r\n",
 				400,
 				"bad Content-Length",
 			),
 			(
-				b"POST / HTTP/1.1\r\nContent-Length:\r\n\r\n",
+				b"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length:\r\n\r\n",
 				400,
 				"bad Content-Length",
 			),
 			(
-				b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabc",
+				b"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length: 5\r\n\r\nabc",
 				400,
 				"body shorter than Content-Length",
 			),
@@ -751,7 +778,7 @@ mod tests {
 			assert_eq!(refusal(read(bytes)), (code, text.to_string()));
 		}
 		let over = format!(
-			"POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+			"POST / HTTP/1.1\r\nHost: localhost:34875\r\nContent-Length: {}\r\n\r\n",
 			MAX_CHUNK + 1
 		);
 		assert_eq!(
@@ -760,20 +787,57 @@ mod tests {
 		);
 	}
 
-	// Today's weaknesses, pinned until bugs B09 and B10 are fixed: the Host
-	// header is not checked, and request and header lines have no length limit.
+	// A page whose own name points at 127.0.0.1 (DNS rebinding) sends that
+	// name as its Host, so only the link's own names and port are let in,
+	// before the body is read.
 	#[test]
-	fn reads_any_host_and_any_line_length() {
-		let (tx, _rx) = mpsc::channel();
-		let mut pending = HashMap::new();
-		for host in ["", "Host: evil.example\r\n"] {
-			let r = parsed(format!("GET / HTTP/1.1\r\n{host}\r\n").as_bytes());
-			let reply = route(r, &mut pending, &tx);
-			assert_eq!(reply.code, 200);
-			assert_eq!(reply.body, b"Meshvault Studio link");
+	fn refuses_requests_for_other_hosts() {
+		let refused = (403, "Host must be localhost:34875".to_string());
+		for hosts in [
+			"",
+			"Host: evil.example:34875\r\n",
+			"Host: localhost\r\n",
+			"Host: localhost:80\r\n",
+			"Host: localhost:034875\r\n",
+			"Host: localhost.evil.example:34875\r\n",
+			"Host: evil.localhost:34875\r\n",
+			"Host: 127.0.0.2:34875\r\n",
+			"Host: [::1]:34875\r\n",
+			"Host: \r\n",
+			// a second Host, either way round
+			"Host: localhost:34875\r\nHost: evil.example:34875\r\n",
+			"Host: evil.example:34875\r\nHost: localhost:34875\r\n",
+		] {
+			// the body is never read, so its absence is not the refusal
+			let bytes = format!("POST /export HTTP/1.1\r\n{hosts}Content-Length: 9\r\n\r\n");
+			assert_eq!(refusal(read(bytes.as_bytes())), refused, "{hosts:?}");
 		}
+		for host in ["localhost:34875", "LocalHost:34875", "127.0.0.1:34875"] {
+			let r = parsed(format!("GET / HTTP/1.1\r\nhost: {host}\r\n\r\n").as_bytes());
+			assert_eq!(r.headers["host"], host);
+		}
+		// and over a socket, with the port the server listens on
+		let (port, _rx) = start();
+		let wrong = request_to(port, "evil.example", "GET / HTTP/1.1", "");
+		assert!(wrong.starts_with("HTTP/1.1 403"), "{wrong}");
+		assert!(
+			wrong.ends_with(&format!("Host must be localhost:{port}")),
+			"{wrong}"
+		);
+		let ip = request_to(port, &format!("127.0.0.1:{port}"), "GET / HTTP/1.1", "");
+		assert!(ip.starts_with("HTTP/1.1 200"), "{ip}");
+		assert!(ip.ends_with("Meshvault Studio link"), "{ip}");
+	}
+
+	// Pinned until bug B10 is fixed: request and header lines have no length
+	// limit.
+	#[test]
+	fn reads_any_line_length() {
 		let long = "a".repeat(1 << 20);
-		let r = parsed(format!("GET /{long} HTTP/1.1\r\nX-Long: {long}\r\n\r\n").as_bytes());
+		let r = parsed(
+			format!("GET /{long} HTTP/1.1\r\nHost: localhost:34875\r\nX-Long: {long}\r\n\r\n")
+				.as_bytes(),
+		);
 		assert_eq!(r.path.len(), long.len() + 1);
 		assert_eq!(r.headers["x-long"].len(), long.len());
 	}

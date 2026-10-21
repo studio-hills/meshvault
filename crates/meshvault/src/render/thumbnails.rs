@@ -54,6 +54,13 @@ enum State {
 	Failed,
 }
 
+/// A subject's state, and the workspace generation it was last checked
+/// against: after the workspace changes it is checked again.
+struct Entry {
+	state: State,
+	generation: u64,
+}
+
 /// What to draw a subject from, once it is downloaded.
 enum Source {
 	Mesh {
@@ -76,12 +83,17 @@ enum Prepared {
 struct Job {
 	subject: Subject,
 	file: PathBuf,
+	/// What it is drawn from, and the workspace generation then.
+	files: Vec<PathBuf>,
+	generation: u64,
 	rx: Receiver<Result<Prepared, String>>,
 }
 
 pub struct Thumbnails {
 	dir: PathBuf,
-	states: HashMap<Subject, State>,
+	states: HashMap<Subject, Entry>,
+	/// The workspace generation at the last update.
+	generation: u64,
 	/// Asked for this frame, in the order shown.
 	wanted: Vec<Subject>,
 	job: Option<Job>,
@@ -92,35 +104,48 @@ impl Thumbnails {
 		Self {
 			dir: root.join(CACHE_DIR).join("thumbnails"),
 			states: HashMap::new(),
+			generation: 0,
 			wanted: Vec::new(),
 			job: None,
 		}
 	}
 
 	/// The thumbnail of `subject` when it is ready; otherwise it is loaded
-	/// or drawn over the next frames.
+	/// or drawn over the next frames. One checked before the workspace last
+	/// changed is shown while it is checked again (and redrawn if stale).
 	pub fn get(&mut self, subject: &Subject) -> Option<egui::TextureHandle> {
-		match self.states.get(subject) {
-			Some(State::Ready(texture)) => Some(texture.clone()),
-			Some(State::Failed) => None,
-			None => {
-				self.wanted.push(subject.clone());
-				None
-			}
+		let Some(entry) = self.states.get(subject) else {
+			self.wanted.push(subject.clone());
+			return None;
+		};
+		if entry.generation != self.generation {
+			self.wanted.push(subject.clone());
 		}
+		match &entry.state {
+			State::Ready(texture) => Some(texture.clone()),
+			State::Failed => None,
+		}
+	}
+
+	/// The cached thumbnail of `subject`.
+	fn file(&self, subject: &Subject) -> PathBuf {
+		self.dir.join(format!("{:016x}.png", fnv1a(&subject.key())))
 	}
 
 	/// Loads or draws what was asked for this frame. Call once a frame,
 	/// after the library is drawn.
 	pub fn update(&mut self, ctx: &egui::Context, ws: &Workspace, renderer: Option<&GpuRenderer>) {
 		let wanted = std::mem::take(&mut self.wanted);
+		self.generation = ws.generation();
 		self.finish_job(ctx, renderer);
 		let mut loads = 0;
 		let mut waiting = false;
 		for subject in wanted {
-			if self.states.contains_key(&subject)
-				|| self.job.as_ref().is_some_and(|j| j.subject == subject)
-			{
+			let checked = self
+				.states
+				.get(&subject)
+				.is_some_and(|e| e.generation == self.generation);
+			if checked || self.job.as_ref().is_some_and(|j| j.subject == subject) {
 				continue;
 			}
 			// not downloaded yet: asked for again once it is
@@ -132,21 +157,38 @@ impl Thumbnails {
 				continue;
 			}
 			loads += 1;
-			let file = self.dir.join(format!("{:016x}.png", fnv1a(&subject.key())));
-			if is_fresh(&file, &files)
-				&& let Some(texture) = load_png(ctx, &file, &subject)
-			{
-				self.states.insert(subject, State::Ready(texture));
-				continue;
+			let file = self.file(&subject);
+			let generation = self.generation;
+			if is_fresh(&file, &files) {
+				// what is shown is still what the cache holds
+				if let Some(entry) = self.states.get_mut(&subject)
+					&& matches!(entry.state, State::Ready(_))
+				{
+					entry.generation = generation;
+					continue;
+				}
+				if let Some(texture) = load_png(ctx, &file, &subject) {
+					let state = State::Ready(texture);
+					self.states.insert(subject, Entry { state, generation });
+					continue;
+				}
 			}
 			match renderer {
 				Some(_) if self.job.is_none() => {
-					self.job = Some(spawn(ctx, ws, subject, file, source));
+					let rx = spawn(ctx, ws, source);
+					self.job = Some(Job {
+						subject,
+						file,
+						files,
+						generation,
+						rx,
+					});
 				}
 				Some(_) => waiting = true,
 				// without a GPU nothing is drawn
 				None => {
-					self.states.insert(subject, State::Failed);
+					let state = State::Failed;
+					self.states.insert(subject, Entry { state, generation });
 				}
 			}
 		}
@@ -165,7 +207,7 @@ impl Thumbnails {
 		let Some(job) = self.job.take() else { return };
 		let state = match (result, renderer) {
 			(Ok(prepared), Some(renderer)) => {
-				match keep(&self.dir, &job.file, draw(renderer, prepared)) {
+				match keep(&self.dir, &job.file, &job.files, draw(renderer, prepared)) {
 					Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
 					None => State::Failed,
 				}
@@ -173,24 +215,38 @@ impl Thumbnails {
 			// the reader's (or the GPU's) reason is not shown anywhere
 			_ => State::Failed,
 		};
-		self.states.insert(job.subject, state);
+		let generation = job.generation;
+		self.states.insert(job.subject, Entry { state, generation });
 	}
 }
 
-/// The thumbnail `drawn`, saved to `file` in `dir` for later runs. One the
-/// GPU could not hand back is neither saved nor shown, so it is drawn again
-/// rather than kept as a black square.
+/// The thumbnail `drawn` from `files`, saved to `file` in `dir` for later
+/// runs, with the list of `files` beside it. One the GPU could not hand
+/// back is neither saved nor shown, so it is drawn again rather than kept
+/// as a black square.
 fn keep(
 	dir: &Path,
 	file: &Path,
+	files: &[PathBuf],
 	drawn: Result<image::RgbaImage, String>,
 ) -> Option<image::RgbaImage> {
 	let image = drawn.ok()?;
-	// a thumbnail that cannot be saved is still shown
-	if std::fs::create_dir_all(dir).is_ok() {
-		let _ = image.save(file);
+	// a thumbnail that cannot be saved is still shown (and drawn again
+	// next time); one whose list cannot be saved is drawn again next run
+	if std::fs::create_dir_all(dir).is_ok() && image.save(file).is_ok() {
+		let _ = std::fs::write(drawn_from(file), list(files));
 	}
 	Some(image)
+}
+
+/// The file beside the thumbnail `file` listing what it was drawn from.
+fn drawn_from(file: &Path) -> PathBuf {
+	file.with_extension("from")
+}
+
+fn list(files: &[PathBuf]) -> String {
+	let lines: Vec<_> = files.iter().map(|f| f.to_string_lossy()).collect();
+	lines.join("\n")
 }
 
 /// What `subject` is drawn from, and the files whose changes make its
@@ -219,17 +275,28 @@ fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 				};
 				match &item.mesh {
 					AssetState::Pending => return None,
-					AssetState::Done { path } => files.push(ws.root.join(path)),
+					AssetState::Done { path } => {
+						files.push(ws.root.join(path));
+						files.extend(item_maps(&ws.root, item).into_iter().map(|(_, p)| p));
+					}
 					AssetState::Failed { .. } => {}
 				}
 			}
+			// maps and images still downloading are drawn without; the
+			// thumbnail is drawn again once they are here
+			let images = model.images.values().filter_map(AssetState::done_path);
+			files.extend(images.map(|p| ws.root.join(p)));
 			Some((Source::Model(index), files))
 		}
 	}
 }
 
-/// Whether the thumbnail at `file` is newer than everything it shows.
+/// Whether the thumbnail at `file` was drawn from just these `files` and
+/// is newer than each of them.
 fn is_fresh(file: &Path, files: &[PathBuf]) -> bool {
+	if std::fs::read_to_string(drawn_from(file)).ok() != Some(list(files)) {
+		return false;
+	}
 	let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
 	let Some(drawn) = modified(file) else {
 		return false;
@@ -259,10 +326,8 @@ fn texture(
 fn spawn(
 	ctx: &egui::Context,
 	ws: &Workspace,
-	subject: Subject,
-	file: PathBuf,
 	source: Source,
-) -> Job {
+) -> Receiver<Result<Prepared, String>> {
 	let (tx, rx) = std::sync::mpsc::channel();
 	let ctx = ctx.clone();
 	match source {
@@ -281,7 +346,7 @@ fn spawn(
 			});
 		}
 	}
-	Job { subject, file, rx }
+	rx
 }
 
 fn read_mesh(
@@ -401,6 +466,7 @@ mod tests {
 
 	use super::*;
 	use crate::render::maths::IDENTITY;
+	use crate::scene::maps::MapKind;
 	use crate::scene::surface::{DecalDraw, Surface};
 	use crate::test_support::TempDir;
 
@@ -412,6 +478,61 @@ mod tests {
 		assert_eq!(
 			fnv1a(&Subject::Item("abc".into()).key()),
 			0xdaa7_b814_1855_7efc
+		);
+	}
+
+	/// A workspace in a temp dir with the mesh `A` (its mesh and colour map
+	/// in the given states) and the model `M` using it, with one decal
+	/// image in `image`'s state.
+	fn workspace(mesh: AssetState, map: AssetState, image: AssetState) -> (TempDir, Workspace) {
+		let dir = TempDir::new("thumb_ws");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let item = serde_json::from_value(serde_json::json!({
+			"name": "A",
+			"folder": [],
+			"mesh_id": 1,
+			"stem": "A",
+			"mesh": mesh,
+			"maps": { "color": { "id": 2, "state": map } },
+		}))
+		.unwrap();
+		let model = serde_json::from_value(serde_json::json!({
+			"name": "M",
+			"path": "Workspace.M",
+			"folder": [],
+			"file": "Rigs/M.rig.json",
+			"meshes": { "1": "A" },
+			"parts": 1,
+			"clips": 0,
+			"playable_clips": 0,
+			"images": { "7": image },
+		}))
+		.unwrap();
+		ws.set_contents(vec![item], vec![model]);
+		(dir, ws)
+	}
+
+	fn done(path: &str) -> AssetState {
+		AssetState::Done { path: path.into() }
+	}
+
+	/// A model's thumbnail shows its meshes' maps and its decal images too,
+	/// so they are among the files that make it stale (B30).
+	#[test]
+	fn a_model_depends_on_its_meshes_maps_and_images() {
+		let (_dir, ws) = workspace(done("A.mesh"), done("A.png"), done("Images/7.png"));
+		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into())).unwrap();
+		let expected: Vec<PathBuf> = ["Rigs/M.rig.json", "A.mesh", "A.png", "Images/7.png"]
+			.iter()
+			.map(|f| ws.root.join(f))
+			.collect();
+		assert_eq!(files, expected);
+		// maps and images not downloaded yet are drawn without, not waited for
+		let (_dir, ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into())).unwrap();
+		assert_eq!(
+			files,
+			[ws.root.join("Rigs/M.rig.json"), ws.root.join("A.mesh")]
 		);
 	}
 
@@ -506,11 +627,76 @@ mod tests {
 	fn only_drawn_thumbnails_are_kept() {
 		let dir = TempDir::new("thumb_keep");
 		let (cache, file) = (dir.join("cache"), dir.join("cache").join("t.png"));
-		assert_eq!(keep(&cache, &file, Err("lost".into())), None);
-		assert!(!file.exists());
+		let files = [dir.join("a.mesh")];
+		assert_eq!(keep(&cache, &file, &files, Err("lost".into())), None);
+		assert!(!file.exists() && !drawn_from(&file).exists());
 		let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
-		assert_eq!(keep(&cache, &file, Ok(image.clone())), Some(image.clone()));
+		assert_eq!(
+			keep(&cache, &file, &files, Ok(image.clone())),
+			Some(image.clone())
+		);
 		assert_eq!(image::open(&file).unwrap().to_rgba8(), image);
+		assert!(is_fresh(&file, &files));
+	}
+
+	/// A thumbnail drawn before a map or image arrived (or after one went)
+	/// is stale even though no file it was drawn from changed (B30).
+	#[test]
+	fn is_fresh_needs_the_files_it_was_drawn_from() {
+		let dir = TempDir::new("thumb_from");
+		let (thumb, mesh, map) = (dir.join("t.png"), dir.join("a.mesh"), dir.join("a.png"));
+		touch(&mesh, SystemTime::now() - Duration::from_secs(60));
+		touch(&map, SystemTime::now() - Duration::from_secs(60));
+		touch(&thumb, SystemTime::now());
+		let (just_mesh, both) = ([mesh.clone()], [mesh.clone(), map.clone()]);
+		// a thumbnail cached before the list was kept is drawn again once
+		assert!(!is_fresh(&thumb, &just_mesh));
+		std::fs::write(drawn_from(&thumb), list(&just_mesh)).unwrap();
+		assert!(is_fresh(&thumb, &just_mesh));
+		assert!(!is_fresh(&thumb, &both));
+		assert!(!is_fresh(&thumb, &[]));
+	}
+
+	/// A thumbnail in memory is checked again when the workspace changes,
+	/// and kept only while it is fresh: once the mesh's colour map has
+	/// arrived, it is drawn again (here, without a GPU, it fails) instead
+	/// of staying as it was for the rest of the session (B30).
+	#[test]
+	fn a_shown_thumbnail_is_checked_again_when_the_workspace_changes() {
+		let (dir, mut ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		touch(
+			&dir.join("A.mesh"),
+			SystemTime::now() - Duration::from_secs(60),
+		);
+		let ctx = egui::Context::default();
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let (_, files) = source(&ws, &subject).unwrap();
+		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let cache = thumbnails.dir.clone();
+		keep(&cache, &thumbnails.file(&subject), &files, Ok(picture));
+		assert!(thumbnails.get(&subject).is_none());
+		thumbnails.update(&ctx, &ws, None);
+		let shown = thumbnails.get(&subject).expect("read from the cache");
+		// a change that leaves its files as they were keeps it
+		ws.add([]);
+		assert!(thumbnails.get(&subject).is_some());
+		thumbnails.update(&ctx, &ws, None);
+		assert_eq!(thumbnails.get(&subject).map(|t| t.id()), Some(shown.id()));
+		// the colour map arrives
+		touch(
+			&dir.join("A.png"),
+			SystemTime::now() - Duration::from_secs(60),
+		);
+		let mut item = ws.items()[0].clone();
+		item.maps.get_mut(&MapKind::Color).unwrap().state = done("A.png");
+		let models = ws.models().to_vec();
+		ws.set_contents(vec![item], models);
+		ws.add([]);
+		// still shown until it has been checked
+		assert!(thumbnails.get(&subject).is_some());
+		thumbnails.update(&ctx, &ws, None);
+		assert!(thumbnails.get(&subject).is_none());
 	}
 
 	#[test]
@@ -518,16 +704,17 @@ mod tests {
 		let dir = TempDir::new("thumb_fresh");
 		let now = SystemTime::now();
 		let (thumb, mesh, map) = (dir.join("t.png"), dir.join("a.mesh"), dir.join("a.png"));
+		let files = [mesh.clone(), map.clone()];
+		std::fs::write(drawn_from(&thumb), list(&files)).unwrap();
 		// no thumbnail yet
-		assert!(!is_fresh(&thumb, &[]));
+		assert!(!is_fresh(&thumb, &files));
 		touch(&thumb, now);
 		touch(&mesh, now - Duration::from_secs(60));
 		touch(&map, now);
 		// as new as the thumbnail still counts as fresh
-		assert!(is_fresh(&thumb, &[mesh.clone(), map.clone()]));
-		assert!(is_fresh(&thumb, &[]));
+		assert!(is_fresh(&thumb, &files));
 		touch(&map, now + Duration::from_secs(60));
-		assert!(!is_fresh(&thumb, &[mesh.clone(), map.clone()]));
+		assert!(!is_fresh(&thumb, &files));
 	}
 
 	/// Files that cannot be read are left out of the comparison rather than
@@ -537,6 +724,8 @@ mod tests {
 		let dir = TempDir::new("thumb_missing");
 		let thumb = dir.join("t.png");
 		touch(&thumb, SystemTime::now());
-		assert!(is_fresh(&thumb, &[dir.join("gone.mesh")]));
+		let files = [dir.join("gone.mesh")];
+		std::fs::write(drawn_from(&thumb), list(&files)).unwrap();
+		assert!(is_fresh(&thumb, &files));
 	}
 }

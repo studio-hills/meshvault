@@ -2,8 +2,9 @@
 //! list of placed meshes on the GPU, or with the CPU rasteriser in
 //! [`crate::render::cpu`] as a fallback.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, Rect, Sense, Stroke, Vec2};
 
+use crate::render::camera::{HALF_FOV_DEGREES, View};
 use crate::render::cpu::draw_cpu;
 use crate::render::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms};
 use crate::render::lighting::{Lighting, SceneLight, light_uniforms};
@@ -65,6 +66,17 @@ pub struct ScenePart<'a> {
 	pub highlight: bool,
 }
 
+/// Radians the camera turns per point dragged.
+const ORBIT_SPEED: f32 = 0.01;
+/// How far the camera may look up or down, in radians: just short of
+/// straight (π/2), where the camera basis has no right vector.
+const MAX_PITCH: f32 = 1.55;
+/// How fast scrolling zooms: the distance scales by `exp(-scroll * ZOOM_SPEED)`.
+const ZOOM_SPEED: f32 = 0.002;
+/// The closest and farthest the camera may be, in bounding radii.
+const MIN_ZOOM: f32 = 0.05;
+const MAX_ZOOM: f32 = 50.0;
+
 pub(super) const WIRE_ONLY: Color32 = Color32::from_rgb(140, 200, 255);
 
 pub(super) fn group_colour(i: usize) -> Color32 {
@@ -91,8 +103,8 @@ pub fn show(
 	// --- input ---
 	if response.dragged_by(egui::PointerButton::Primary) {
 		let d = response.drag_delta();
-		camera.yaw -= d.x * 0.01;
-		camera.pitch = (camera.pitch + d.y * 0.01).clamp(-1.55, 1.55);
+		camera.yaw -= d.x * ORBIT_SPEED;
+		camera.pitch = (camera.pitch + d.y * ORBIT_SPEED).clamp(-MAX_PITCH, MAX_PITCH);
 	}
 	if response.dragged_by(egui::PointerButton::Secondary)
 		|| response.dragged_by(egui::PointerButton::Middle)
@@ -107,8 +119,8 @@ pub fn show(
 	if response.hovered() {
 		let scroll = ui.input(|i| i.smooth_scroll_delta.y);
 		if scroll != 0.0 {
-			camera.distance = (camera.distance * (-scroll * 0.002).exp())
-				.clamp(camera.radius * 0.05, camera.radius * 50.0);
+			camera.distance = (camera.distance * (-scroll * ZOOM_SPEED).exp())
+				.clamp(camera.radius * MIN_ZOOM, camera.radius * MAX_ZOOM);
 		}
 	}
 	if response.double_clicked() {
@@ -153,21 +165,8 @@ pub fn show(
 /// A ground grid under the model, drawn before the mesh so the mesh covers it.
 /// Spacing adapts to the model's size (1, 2 or 5 times a power of ten).
 fn draw_grid(painter: &egui::Painter, rect: Rect, camera: &Camera, colour: Color32) {
-	let (right, up, forward) = camera.basis();
-	let eye = camera.eye();
-	let focal = rect.height() * 0.5 / 35f32.to_radians().tan();
-	let near = camera.radius * 0.01;
-	let centre = rect.center();
-	let to_view = |p: V3| {
-		let d = sub(p, eye);
-		[dot(d, right), dot(d, up), dot(d, forward)]
-	};
-	let project = |v: V3| {
-		Pos2::new(
-			centre.x + v[0] / v[2] * focal,
-			centre.y - v[1] / v[2] * focal,
-		)
-	};
+	let view = View::new(camera, rect);
+	let near = camera.near();
 
 	let raw = camera.radius / 4.0;
 	let magnitude = 10f32.powf(raw.log10().floor());
@@ -191,7 +190,7 @@ fn draw_grid(painter: &egui::Painter, rect: Rect, camera: &Camera, colour: Color
 			([cx + o, y, cz - half], [cx + o, y, cz + half]),
 			([cx - half, y, cz + o], [cx + half, y, cz + o]),
 		] {
-			let (mut va, mut vb) = (to_view(a), to_view(b));
+			let (mut va, mut vb) = (view.to_view(a), view.to_view(b));
 			// clip the segment to in front of the camera
 			if va[2] < near && vb[2] < near {
 				continue;
@@ -209,7 +208,7 @@ fn draw_grid(painter: &egui::Painter, rect: Rect, camera: &Camera, colour: Color
 					vb = hit;
 				}
 			}
-			painter.line_segment([project(va), project(vb)], stroke);
+			painter.line_segment([view.project(va), view.project(vb)], stroke);
 		}
 	}
 }
@@ -286,8 +285,8 @@ fn mesh_callback(
 		[0.0, 0.0, 0.0, 1.0],
 	];
 	// perspective with a 70° vertical field of view, depth mapped to 0..1
-	let f = 1.0 / 35f32.to_radians().tan();
-	let near = camera.radius * 0.01;
+	let f = 1.0 / HALF_FOV_DEGREES.to_radians().tan();
+	let near = camera.near();
 	let far = camera.distance + camera.radius * 4.0;
 	let proj = [
 		[f / aspect, 0.0, 0.0, 0.0],

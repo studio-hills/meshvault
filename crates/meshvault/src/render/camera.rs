@@ -5,6 +5,14 @@ use eframe::egui::{Pos2, Rect};
 use crate::render::maths::{V3, cross, dot, normalize, sub};
 use crate::scene::geometry::Geometry;
 
+/// Half the vertical field of view, in degrees (70° top to bottom).
+pub(super) const HALF_FOV_DEGREES: f32 = 35.0;
+/// How far from its target a framed camera starts, in bounding radii.
+const FRAMING_DISTANCE: f32 = 1.9;
+/// The near plane, in bounding radii: points, the grid and the GPU's
+/// depth range start here.
+const NEAR_FACTOR: f32 = 0.01;
+
 #[derive(Clone)]
 pub struct Camera {
 	pub yaw: f32,
@@ -41,7 +49,7 @@ impl Camera {
 			// Roblox models face -Z, so start from a front three-quarter view
 			yaw: std::f32::consts::PI - 0.6,
 			pitch: 0.4,
-			distance: radius * 1.9,
+			distance: radius * FRAMING_DISTANCE,
 			target,
 			radius,
 			floor,
@@ -66,23 +74,65 @@ impl Camera {
 			self.target[2] - f[2] * self.distance,
 		]
 	}
+
+	/// The distance to the near plane.
+	pub(super) fn near(&self) -> f32 {
+		self.radius * NEAR_FACTOR
+	}
+}
+
+/// A camera looking into a view `rect`, worked out once per draw so each
+/// point costs a few products rather than the camera's trigonometry.
+pub(super) struct View {
+	right: V3,
+	up: V3,
+	forward: V3,
+	eye: V3,
+	/// Screen points per unit of view-space height at unit depth.
+	focal: f32,
+	centre: Pos2,
+}
+
+impl View {
+	pub(super) fn new(camera: &Camera, rect: Rect) -> Self {
+		let (right, up, forward) = camera.basis();
+		Self {
+			right,
+			up,
+			forward,
+			eye: camera.eye(),
+			focal: rect.height() * 0.5 / HALF_FOV_DEGREES.to_radians().tan(),
+			centre: rect.center(),
+		}
+	}
+
+	/// The world point `p` in view space: along right, up and forward from
+	/// the eye. In front of the camera z is positive.
+	pub(super) fn to_view(&self, p: V3) -> V3 {
+		let d = sub(p, self.eye);
+		[dot(d, self.right), dot(d, self.up), dot(d, self.forward)]
+	}
+
+	/// Where the view-space point `v` lands on screen. It does not check
+	/// that `v` is in front of the camera; each caller rejects or clips
+	/// points nearer than its own limit first.
+	pub(super) fn project(&self, v: V3) -> Pos2 {
+		Pos2::new(
+			self.centre.x + v[0] / v[2] * self.focal,
+			self.centre.y - v[1] / v[2] * self.focal,
+		)
+	}
 }
 
 /// Where the world point `p` lands in the view `rect`, if it is in front
 /// of the camera.
 pub fn project(camera: &Camera, rect: Rect, p: V3) -> Option<Pos2> {
-	let (right, up, forward) = camera.basis();
-	let d = sub(p, camera.eye());
-	let z = dot(d, forward);
-	if z <= camera.radius * 0.01 {
+	let view = View::new(camera, rect);
+	let v = view.to_view(p);
+	if v[2] <= camera.near() {
 		return None;
 	}
-	let focal = rect.height() * 0.5 / 35f32.to_radians().tan();
-	let centre = rect.center();
-	Some(Pos2::new(
-		centre.x + dot(d, right) / z * focal,
-		centre.y - dot(d, up) / z * focal,
-	))
+	Some(view.project(v))
 }
 
 #[cfg(test)]
@@ -133,7 +183,7 @@ mod tests {
 		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
 		let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 200.0));
 		let (right, up, _) = camera.basis();
-		let focal = 100.0 / 35f32.to_radians().tan();
+		let focal = 100.0 / HALF_FOV_DEGREES.to_radians().tan();
 		let shift = focal / camera.distance;
 		let to_right = project(&camera, rect, add(camera.target, right)).unwrap();
 		assert!((to_right.x - (150.0 + shift)).abs() < 1e-3);

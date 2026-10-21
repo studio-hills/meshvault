@@ -3,13 +3,17 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
-use crate::render::camera::Camera;
+use crate::render::camera::{Camera, View};
 use crate::render::maths::{V3, apply, cross, dot, normalize, sub};
 use crate::render::viewport::{ScenePart, Shading, ViewSettings, WIRE_ONLY, group_colour};
 use crate::scene::maps::Slot;
 
 const BASE: Color32 = Color32::from_rgb(170, 185, 205);
 const WIRE: Color32 = Color32::from_rgba_premultiplied(20, 24, 30, 200);
+/// Triangles with a corner nearer than this many bounding radii are
+/// dropped whole (the rasteriser does not clip them). It is smaller than
+/// the camera's own near plane, which points and the grid use.
+const CPU_NEAR_FACTOR: f32 = 1e-3;
 
 fn shade(c: Color32, light: f32) -> Color32 {
 	let f = |v: u8| (v as f32 * light).clamp(0.0, 255.0) as u8;
@@ -25,19 +29,8 @@ pub(super) fn draw_cpu(
 	camera: &Camera,
 	settings: &ViewSettings,
 ) -> bool {
-	// --- projection ---
-	let (right, up, forward) = camera.basis();
-	let eye = camera.eye();
-	let focal = rect.height() * 0.5 / (35f32.to_radians()).tan();
-	let near = camera.radius * 1e-3;
-	let centre = rect.center();
-
-	let project = |v: V3| {
-		Pos2::new(
-			centre.x + v[0] / v[2] * focal,
-			centre.y - v[1] / v[2] * focal,
-		)
-	};
+	let view = View::new(camera, rect);
+	let near = camera.radius * CPU_NEAR_FACTOR;
 
 	// headlight slightly above and to the left of the camera
 	let light = normalize([-0.4, 0.5, -1.0]);
@@ -60,13 +53,10 @@ pub(super) fn draw_cpu(
 	// the software renderer draws no decals
 	for part in parts.iter().filter(|p| p.decal.is_none()) {
 		let geometry = part.geometry;
-		let view: Vec<V3> = geometry
+		let in_view: Vec<V3> = geometry
 			.positions
 			.iter()
-			.map(|&p| {
-				let d = sub(apply(&part.transform, p), eye);
-				[dot(d, right), dot(d, up), dot(d, forward)]
-			})
+			.map(|&p| view.to_view(apply(&part.transform, p)))
 			.collect();
 		for &g in part.groups {
 			let Some(range) = geometry.groups.get(g) else {
@@ -82,7 +72,7 @@ pub(super) fn draw_cpu(
 				part.colour
 			};
 			for t in &geometry.triangles[range.clone()] {
-				let v = t.map(|i| view[i as usize]);
+				let v = t.map(|i| in_view[i as usize]);
 				if v.iter().any(|v| v[2] <= near) {
 					continue;
 				}
@@ -103,7 +93,7 @@ pub(super) fn draw_cpu(
 				};
 				tris.push(Tri {
 					depth: v[0][2] + v[1][2] + v[2][2],
-					pts: v.map(project),
+					pts: v.map(|v| view.project(v)),
 					uvs,
 					colour,
 				});

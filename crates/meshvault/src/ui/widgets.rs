@@ -5,7 +5,10 @@ use eframe::egui::{
 	Sense, Stroke, Ui, Vec2, WidgetText,
 };
 
-use super::theme::{CONTROL_RADIUS, CONTROL_SM, display, medium, palette, semibold};
+use super::theme::{
+	CARD_RADIUS, CONTROL_RADIUS, CONTROL_SM, LIST_TEXT, PILL_RADIUS, TITLE, display, medium,
+	palette, semibold,
+};
 
 /// Shows a pointing hand while hovering something clickable. egui does this
 /// for buttons by itself (see `interact_cursor` in the theme); checkboxes,
@@ -205,6 +208,9 @@ pub fn segmented<T: PartialEq + Copy>(
 	changed
 }
 
+/// Padding between a segmented track's border and its options.
+const TRACK_PAD: f32 = 2.0;
+
 /// A row of mutually exclusive text options in a framed track, as tall as
 /// the other controls. Radii are concentric: option = track − padding.
 pub fn text_segmented<T: PartialEq + Copy>(
@@ -215,17 +221,16 @@ pub fn text_segmented<T: PartialEq + Copy>(
 	let p = palette(ui.ctx());
 	let mut changed = false;
 	// the track (border + padding) is as tall as an input beside it
-	let pad = 2.0;
-	let height = ui.spacing().interact_size.y - 2.0 * (pad + 1.0);
+	let height = ui.spacing().interact_size.y - 2.0 * (TRACK_PAD + 1.0);
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(CONTROL_RADIUS + pad as u8))
-		.inner_margin(Margin::same(pad as i8))
+		.corner_radius(CornerRadius::same(CONTROL_RADIUS + TRACK_PAD as u8))
+		.inner_margin(Margin::same(TRACK_PAD as i8))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 2.0;
 			ui.spacing_mut().interact_size.y = height;
-			nest(ui, CONTROL_RADIUS + pad as u8, pad + 1.0);
+			nest(ui, CONTROL_RADIUS + TRACK_PAD as u8, TRACK_PAD + 1.0);
 			ui.horizontal(|ui| {
 				// rows inside a right-to-left layout fill from the right; keep the
 				// options in reading order either way
@@ -235,7 +240,7 @@ pub fn text_segmented<T: PartialEq + Copy>(
 				}
 				for &&(option, label) in &ordered {
 					let selected = *value == option;
-					let font = FontId::new(13.0, medium());
+					let font = FontId::new(LIST_TEXT, medium());
 					let width = ui
 						.painter()
 						.layout_no_wrap(label.to_string(), font.clone(), p.text)
@@ -323,7 +328,7 @@ pub fn section<R>(
 pub fn badge(ui: &mut Ui, text: impl Into<WidgetText>, colour: Color32) -> Response {
 	Frame::NONE
 		.fill(colour.gamma_multiply(0.18))
-		.corner_radius(CornerRadius::same(255))
+		.corner_radius(CornerRadius::same(PILL_RADIUS))
 		.inner_margin(Margin::symmetric(8, 2))
 		.show(ui, |ui| {
 			let text: WidgetText = text.into();
@@ -360,7 +365,7 @@ pub fn stat_strip(ui: &mut Ui, stats: &[(String, &str)]) {
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(8))
+		.corner_radius(CornerRadius::same(CARD_RADIUS))
 		.inner_margin(Margin::symmetric(12, 10))
 		.show(ui, |ui| {
 			let (rect, _) =
@@ -377,7 +382,7 @@ pub fn stat_strip(ui: &mut Ui, stats: &[(String, &str)]) {
 					egui::pos2(left, rect.top()),
 					Align2::LEFT_TOP,
 					value,
-					FontId::new(16.0, display()),
+					FontId::new(TITLE, display()),
 					p.text,
 				);
 				painter.text(

@@ -12,7 +12,7 @@ use crate::export::obj::Format;
 use crate::render::gpu::GpuRenderer;
 use crate::render::thumbnails::{Subject, Thumbnails};
 use crate::scene::maps::MapKind;
-use crate::ui::theme::{Palette, ROW, display, palette};
+use crate::ui::theme::{CONTROL_XXS, Palette, ROW, display, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::{icons, widgets};
 use crate::workspace::facts::Facts;
@@ -539,7 +539,7 @@ impl Browser {
 				// its buttons sit 2 px from its top and bottom edges
 				widgets::nest(ui, 8, 2.0);
 				ui.horizontal(|ui| {
-					ui.spacing_mut().interact_size.y = 28.0;
+					ui.spacing_mut().interact_size.y = CONTROL_XXS;
 					ui.label(RichText::new(format!("{n} selected")).color(p.accent));
 					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 						ui.spacing_mut().item_spacing.x = 0.0;
@@ -808,7 +808,7 @@ impl Browser {
 			}
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 				ui.spacing_mut().item_spacing.x = 0.0;
-				ui.spacing_mut().interact_size.y = 28.0;
+				ui.spacing_mut().interact_size.y = CONTROL_XXS;
 				if self.view == View::List {
 					if widgets::icon_button(
 						ui,
@@ -887,7 +887,7 @@ impl Browser {
 		let pending = count(|i| i.has_pending() && !i.has_failure());
 		ui.horizontal_wrapped(|ui| {
 			ui.spacing_mut().item_spacing.x = 4.0;
-			ui.spacing_mut().interact_size.y = 28.0;
+			ui.spacing_mut().interact_size.y = CONTROL_XXS;
 			ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
 			// room before the label for the chip's status marker
 			let font = FontId::proportional(12.0);

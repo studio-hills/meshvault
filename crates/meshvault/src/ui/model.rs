@@ -5,7 +5,7 @@ use eframe::egui::{
 	self, Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Order, RichText, Stroke, Vec2,
 };
 
-use super::theme::{BODY_LINE_HEIGHT, CONTROL_RADIUS, ROW, palette, semibold};
+use super::theme::{BODY_LINE_HEIGHT, CAPTION, CONTROL_RADIUS, CONTROL_XS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
@@ -16,6 +16,13 @@ use crate::scene::model_view::{ModelView, PartShape};
 /// Corner radius of the transport bar; the controls in it are rounded to
 /// this less its padding and border.
 const TRANSPORT_RADIUS: u8 = CONTROL_RADIUS + 4;
+/// The transport bar's widest, however wide the viewport.
+const TRANSPORT_MAX_WIDTH: f32 = 760.0;
+/// The least room the transport bar leaves across the viewport, both sides
+/// together.
+const TRANSPORT_INSET: f32 = 24.0;
+/// How far the transport bar's top sits above the viewport's bottom edge.
+const TRANSPORT_LIFT: f32 = 60.0;
 
 const SPEEDS: [f32; 6] = [0.1, 0.25, 0.5, 1.0, 1.5, 2.0];
 
@@ -73,11 +80,11 @@ impl App {
 	fn transport_bar(&mut self, ctx: &egui::Context, rect: egui::Rect) {
 		let p = palette(ctx);
 		let Some(model) = &mut self.model else { return };
-		let width = (rect.width() - 24.0).min(760.0);
+		let width = (rect.width() - TRANSPORT_INSET).min(TRANSPORT_MAX_WIDTH);
 		egui::Area::new(Id::unique("transport_bar"))
 			.fixed_pos(egui::pos2(
 				rect.center().x - width / 2.0,
-				rect.bottom() - 60.0,
+				rect.bottom() - TRANSPORT_LIFT,
 			))
 			.order(Order::Middle)
 			.show(ctx, |ui| {
@@ -90,8 +97,9 @@ impl App {
 					.inner_margin(Margin::same(4))
 					.shadow(ctx.global_style().visuals.popup_shadow)
 					.show(ui, |ui| {
+						// the content, inside the 4px margin on either side
 						ui.set_width(width - 8.0);
-						ui.spacing_mut().interact_size.y = 30.0;
+						ui.spacing_mut().interact_size.y = CONTROL_XS;
 						// the controls' corners are concentric with the bar's
 						widgets::nest(ui, TRANSPORT_RADIUS, 4.0 + 1.0);
 						ui.horizontal(|ui| transport(ui, &p, model));
@@ -358,6 +366,7 @@ fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 	let duration = model.duration();
 	let time_text = format!("{:.2} / {:.2} s", model.time, duration);
 	ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+		// 12.5 is off the type scale on purpose; kept as it was
 		ui.menu_button(RichText::new(speed_label(model.speed)).size(12.5), |ui| {
 			widgets::menu_style(ui);
 			for s in SPEEDS {
@@ -379,7 +388,7 @@ fn transport(ui: &mut egui::Ui, p: &super::theme::Palette, model: &mut ModelView
 		ui.add_space(12.0);
 		// a slot as wide as the clip's own length, so the time (and the
 		// scrubber beside it) does not shift as it counts
-		let font = egui::FontId::new(12.0, semibold());
+		let font = egui::FontId::new(CAPTION, semibold());
 		let widest = format!("{duration:.2} / {duration:.2} s");
 		let size = widgets::tabular_size(ui, &widest, &font);
 		let (slot, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -534,7 +543,7 @@ fn draw_skeleton(
 		} else {
 			format!("{} (weld)", joint.name)
 		};
-		let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.0), p.text);
+		let galley = painter.layout_no_wrap(text, egui::FontId::proportional(CAPTION), p.text);
 		let label = egui::Rect::from_min_size(
 			at + Vec2::new(10.0, -10.0 - galley.size().y),
 			galley.size() + Vec2::new(12.0, 6.0),

@@ -2,11 +2,11 @@
 //! exporter from Meshvault and runs it in Studio's Command Bar, and the
 //! state of the Studio link.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, CornerRadius, Frame, Id, Layout, Margin, RichText, Stroke, Vec2};
 
-use super::theme::{dialog_frame, display, palette};
+use super::theme::{CARD_RADIUS, MODAL_BACKDROP, ROW, dialog_frame, display, palette};
 use super::{code, icons, widgets};
 use crate::app::App;
 use crate::studio::link::{self, CodeLayout, CodeMode, Status};
@@ -35,7 +35,11 @@ pub fn unavailable_text(why: &str) -> String {
 }
 
 /// Width of the dialog's content.
-const WIDTH: f32 = 560.0;
+const DIALOG_WIDTH: f32 = 560.0;
+/// How long the Copy button says "Copied" after a click.
+const COPIED_FOR: Duration = Duration::from_secs(2);
+/// How often the dialog redraws while it says "Copied", to turn it back.
+const COPIED_REPAINT: Duration = Duration::from_millis(500);
 
 impl App {
 	pub(super) fn studio_dialog(&mut self, ctx: &egui::Context) {
@@ -46,9 +50,9 @@ impl App {
 		let listening = self.studio_link.is_listening();
 		let modal = egui::Modal::new(Id::unique("studio_export"))
 			.frame(dialog_frame(ctx))
-			.backdrop_color(egui::Color32::from_black_alpha(140))
+			.backdrop_color(MODAL_BACKDROP)
 			.show(ctx, |ui| {
-				ui.set_width(WIDTH);
+				ui.set_width(DIALOG_WIDTH);
 				ui.label(
 					RichText::new("Export from Roblox Studio")
 						.size(18.0)
@@ -65,7 +69,7 @@ impl App {
 					Frame::NONE
 						.fill(p.warning.gamma_multiply(0.12))
 						.stroke(Stroke::new(1.0, p.warning.gamma_multiply(0.5)))
-						.corner_radius(CornerRadius::same(8))
+						.corner_radius(CornerRadius::same(CARD_RADIUS))
 						.inner_margin(Margin::symmetric(12, 10))
 						.show(ui, |ui| {
 							ui.horizontal_top(|ui| {
@@ -143,7 +147,7 @@ impl App {
 						dialog.copied = None;
 					}
 					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-						let copied = dialog.copied.is_some_and(|t| t.elapsed().as_secs() < 2);
+						let copied = dialog.copied.is_some_and(|t| t.elapsed() < COPIED_FOR);
 						let label = if copied {
 							format!("{}  Copied", icons::CHECK)
 						} else {
@@ -157,8 +161,7 @@ impl App {
 							dialog.copied = Some(Instant::now());
 						}
 						if copied {
-							ui.ctx()
-								.request_repaint_after(std::time::Duration::from_millis(500));
+							ui.ctx().request_repaint_after(COPIED_REPAINT);
 						}
 						widgets::text_button(ui, "Close").clicked()
 					})
@@ -185,7 +188,7 @@ fn code_card(ui: &mut egui::Ui, layout: &mut CodeLayout, source: &str, mode: Cod
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(8))
+		.corner_radius(CornerRadius::same(CARD_RADIUS))
 		.show(ui, |ui| {
 			ui.set_width(ui.available_width());
 			// the bar
@@ -198,7 +201,7 @@ fn code_card(ui: &mut egui::Ui, layout: &mut CodeLayout, source: &str, mode: Cod
 				})
 				.show(ui, |ui| {
 					ui.horizontal(|ui| {
-						ui.spacing_mut().interact_size.y = 26.0;
+						ui.spacing_mut().interact_size.y = ROW;
 						ui.label(widgets::overline("Luau").color(p.text_weak));
 						ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
 							let unreachable = match mode {

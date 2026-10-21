@@ -4,7 +4,7 @@ use crate::render::viewport::AlphaMode;
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Vec2};
 
 use super::format::{format_bytes, format_count};
-use super::theme::{ROW, palette, semibold};
+use super::theme::{CARD_RADIUS, CONTROL_XS, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::scene::geometry::GroupKind;
@@ -208,10 +208,6 @@ impl App {
 	}
 }
 
-/// Corner radius of a map's card; its thumbnail and buttons are rounded
-/// to this less its padding and border.
-const MAP_CARD_RADIUS: u8 = 8;
-
 /// One material slot: thumbnail, name, and show/replace/remove controls.
 fn map_row(
 	ui: &mut egui::Ui,
@@ -225,14 +221,16 @@ fn map_row(
 	Frame::NONE
 		.fill(p.raised)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(MAP_CARD_RADIUS))
+		// the thumbnail and buttons are rounded to the card's radius less its
+		// padding and border (see the `nest` below)
+		.corner_radius(CornerRadius::same(CARD_RADIUS))
 		.inner_margin(Margin::same(6))
 		.show(ui, |ui| {
 			ui.set_width(ui.available_width());
 			// small icon buttons inside the card row, their corners (and the
 			// thumbnail's) concentric with the card's
-			ui.spacing_mut().interact_size.y = 30.0;
-			widgets::nest(ui, MAP_CARD_RADIUS, 6.0 + 1.0);
+			ui.spacing_mut().interact_size.y = CONTROL_XS;
+			widgets::nest(ui, CARD_RADIUS, 6.0 + 1.0);
 			ui.horizontal(|ui| {
 				let thumb = Vec2::splat(40.0);
 				match material.maps.get(&slot) {

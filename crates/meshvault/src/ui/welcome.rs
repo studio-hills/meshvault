@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Align2, FontId, RichText, Sense, Vec2};
 
-use super::theme::{display, palette, semibold};
+use super::theme::{CONTROL_XXS, display, palette, semibold};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -265,12 +265,12 @@ fn recent_row(ui: &mut egui::Ui, root: &std::path::Path) -> RowAction {
 	if hovered {
 		let button = egui::Rect::from_center_size(
 			rect.right_center() - Vec2::new(22.0, 0.0),
-			Vec2::splat(28.0),
+			Vec2::splat(CONTROL_XXS),
 		);
 		// a detached child: scope_builder would move the parent's cursor to the
 		// button's bottom edge and shift everything below the row on hover
 		let mut child = ui.new_child(egui::UiBuilder::new().max_rect(button));
-		child.spacing_mut().interact_size.y = 28.0;
+		child.spacing_mut().interact_size.y = CONTROL_XXS;
 		if widgets::danger_icon_button(&mut child, icons::X, "Remove from recent workspaces")
 			.clicked()
 		{

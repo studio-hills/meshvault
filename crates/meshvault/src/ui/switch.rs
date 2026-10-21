@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, CornerRadius, FontId, Frame, Margin, Sense, Stroke, Vec2};
 
-use super::theme::{CONTROL_RADIUS, CONTROL_SM, medium, palette};
+use super::theme::{CONTROL_RADIUS, CONTROL_SM, TITLE, medium, palette};
 use super::{icons, widgets};
 use crate::app::App;
 
@@ -84,7 +84,7 @@ pub(super) fn header(
 	ui.add(
 		egui::Label::new(
 			egui::RichText::new(title)
-				.size(16.0)
+				.size(TITLE)
 				.family(super::theme::display()),
 		)
 		.truncate(),
@@ -164,6 +164,7 @@ pub(super) fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -
 					// list) a caret, quieter, centred together
 					let many = !current && targets.len() > 1;
 					let painter = ui.painter();
+					// 12.5 is off the type scale on purpose; kept as it was
 					let name = painter.layout_no_wrap(
 						format!("{icon}  {label}"),
 						FontId::new(12.5, medium()),

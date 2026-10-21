@@ -56,9 +56,12 @@ pub fn caption_buttons(ui: &mut Ui) {
 	}
 }
 
+/// Width of each caption button.
+const CAPTION_WIDTH: f32 = 40.0;
+
 fn caption_button(ui: &mut Ui, kind: Caption, tooltip: &str) -> Response {
 	let p = palette(ui.ctx());
-	let size = vec2(40.0, ui.spacing().interact_size.y);
+	let size = vec2(CAPTION_WIDTH, ui.spacing().interact_size.y);
 	let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 	let response = pointer(response);
 	let hovered = response.hovered();

@@ -48,6 +48,8 @@ pub struct Palette {
 	/// Text drawn on top of `accent`.
 	pub on_accent: Color32,
 	pub accent_soft: Color32,
+	/// egui's `faint_bg_color`: the faint background of striped grids.
+	pub faint: Color32,
 	pub success: Color32,
 	pub warning: Color32,
 	pub danger: Color32,
@@ -67,7 +69,8 @@ const DARK: Palette = Palette {
 	text_weak: hex(0x8E929C),
 	accent: hex(0x7C8CFF),
 	on_accent: hex(0x0E1020),
-	accent_soft: Color32::from_rgba_premultiplied(0x23, 0x28, 0x4A, 0xFF),
+	accent_soft: hex(0x23284A),
+	faint: hex(0x1B1C20),
 	success: hex(0x4CC38A),
 	warning: hex(0xE5B454),
 	danger: hex(0xF0716A),
@@ -87,6 +90,7 @@ const LIGHT: Palette = Palette {
 	accent: hex(0x4F5FE8),
 	on_accent: hex(0xFFFFFF),
 	accent_soft: hex(0xE3E6FD),
+	faint: hex(0xF2F3F6),
 	success: hex(0x1F9D63),
 	warning: hex(0xB7811A),
 	danger: hex(0xD64541),
@@ -121,16 +125,44 @@ pub fn medium() -> FontFamily {
 pub const CONTROL: f32 = 36.0;
 /// Height of small controls: toolbars, menus and buttons inside cards.
 pub const CONTROL_SM: f32 = 32.0;
+/// Height of the controls in floating bars and in cards.
+pub const CONTROL_XS: f32 = 30.0;
+/// Height of the compact controls in the library and on the welcome screen.
+pub const CONTROL_XXS: f32 = 28.0;
 /// Height of rows in trees and lists.
 pub const ROW: f32 = 26.0;
+
+// The type scale.
 /// Size of captions, counts and small labels: `TextStyle::Small`, and the
 /// smallest interface text.
 pub const CAPTION: f32 = 12.0;
+/// Size of the names in library lists, and of segmented-control labels.
+pub const LIST_TEXT: f32 = 13.0;
+/// Size of body text (`TextStyle::Body` and `Button`; shadcn's `text-sm`).
+pub const BODY: f32 = 14.0;
+/// Size of panel titles (the inspector's and the library's) and stat values.
+pub const TITLE: f32 = 16.0;
+/// Size of dialog titles: `TextStyle::Heading`.
+pub const HEADING: f32 = 18.0;
+
 /// Line height of body text that can wrap to several lines: 20px at 14px
 /// (about 1.43). Cal Sans's own is 1.145, too tight for paragraphs.
 pub const BODY_LINE_HEIGHT: f32 = 20.0;
 /// Corner radius of buttons and inputs (`rounded-md`).
 pub const CONTROL_RADIUS: u8 = 6;
+/// Corner radius of cards: the stat strip, map cards, tiles, callouts.
+pub const CARD_RADIUS: u8 = 8;
+/// Corner radius of popup menus.
+pub const MENU_RADIUS: u8 = 10;
+/// Corner radius of windows (egui's `window_corner_radius`).
+pub const WINDOW_RADIUS: u8 = 12;
+/// Corner radius of modal dialogs.
+pub const DIALOG_RADIUS: u8 = 14;
+/// Corner radius of pills: fully round ends at any height.
+pub const PILL_RADIUS: u8 = u8::MAX;
+
+/// What a modal dialog dims the window behind it with.
+pub const MODAL_BACKDROP: Color32 = Color32::from_black_alpha(140);
 
 /// Display text: the brand mark, titles and headings.
 pub fn display() -> FontFamily {
@@ -143,7 +175,7 @@ pub fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
 	egui::Frame::NONE
 		.fill(p.panel)
 		.stroke(Stroke::new(1.0, p.border))
-		.corner_radius(CornerRadius::same(14))
+		.corner_radius(CornerRadius::same(DIALOG_RADIUS))
 		.inner_margin(Margin::same(24))
 		.shadow(ctx.global_style().visuals.window_shadow)
 }
@@ -208,12 +240,11 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 		text_styles: [
 			(
 				TextStyle::Small,
-				FontId::new(12.0, FontFamily::Proportional),
+				FontId::new(CAPTION, FontFamily::Proportional),
 			),
-			// shadcn's `text-sm`
-			(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-			(TextStyle::Button, FontId::new(14.0, medium())),
-			(TextStyle::Heading, FontId::new(18.0, display())),
+			(TextStyle::Body, FontId::new(BODY, FontFamily::Proportional)),
+			(TextStyle::Button, FontId::new(BODY, medium())),
+			(TextStyle::Heading, FontId::new(HEADING, display())),
 			(
 				TextStyle::Monospace,
 				FontId::new(12.5, FontFamily::Monospace),
@@ -264,11 +295,11 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	v.window_fill = p.panel;
 	v.extreme_bg_color = p.raised;
 	v.text_edit_bg_color = Some(p.raised);
-	v.faint_bg_color = if dark { hex(0x1B1C20) } else { hex(0xF2F3F6) };
+	v.faint_bg_color = p.faint;
 	v.code_bg_color = p.raised;
 	v.window_stroke = Stroke::new(1.0, p.border);
-	v.window_corner_radius = CornerRadius::same(12);
-	v.menu_corner_radius = CornerRadius::same(10);
+	v.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
+	v.menu_corner_radius = CornerRadius::same(MENU_RADIUS);
 	v.window_shadow = Shadow {
 		offset: [0, 12],
 		blur: 36,

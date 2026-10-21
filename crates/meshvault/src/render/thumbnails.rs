@@ -215,7 +215,8 @@ impl Thumbnails {
 		}
 	}
 
-	/// Takes the job's result once it is read, drawing it with `draw`.
+	/// Takes the job's result once it is read, drawing it with `draw`. The
+	/// workspace generation must already be noted in `self.generation`.
 	fn finish_job(
 		&mut self,
 		ctx: &egui::Context,
@@ -228,10 +229,13 @@ impl Thumbnails {
 			Err(TryRecvError::Disconnected) => Err("the reader stopped".into()),
 		};
 		let Some(job) = self.job.take() else { return };
-		// a file changed while it was read (a re-import, say): what was read
-		// is out of date, and saved now the picture would look newer than
-		// the change, so it is dropped and drawn again
-		if versions(&job.files) != job.read {
+		// the workspace changed (a re-import, say) or a file changed while it
+		// was read: what was read may be out of date, and saved now the
+		// picture would look newer than the change, so it is dropped and
+		// drawn again. A file's length and modified time can stay the same
+		// through a re-import, so they alone are not enough; they still catch
+		// changes made outside the app.
+		if job.generation != self.generation || versions(&job.files) != job.read {
 			return;
 		}
 		let state = match result {
@@ -791,6 +795,81 @@ mod tests {
 		let tx = start(&mut thumbnails);
 		tx.send(prepared()).unwrap();
 		thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+		assert!(thumbnails.get(&subject).is_some());
+		assert!(is_fresh(&file, std::slice::from_ref(&rig)));
+	}
+
+	/// A model re-imported while its thumbnail is read is drawn again even
+	/// when its rig file keeps its length and modified time (the same size
+	/// of change, written within the file system's time resolution): the
+	/// import changed the workspace, so what was read may be out of date.
+	#[test]
+	fn a_job_read_before_a_reimport_is_not_kept_even_if_the_rig_looks_the_same() {
+		let dir = TempDir::new("thumb_reimport");
+		let mut ws = Workspace::create(&dir.join("ws"), "Test").unwrap();
+		let rig_model = |size| crate::anim::schema::AnimatedModel {
+			name: "M".into(),
+			path: "Workspace/M".into(),
+			parts: vec![crate::anim::schema::ModelPart {
+				size,
+				..Default::default()
+			}],
+			..Default::default()
+		};
+		ws.add_model(&rig_model([1.0, 2.0, 3.0]), &[]).unwrap();
+		let rig = ws.root.join(&ws.models()[0].file);
+		let then = SystemTime::now() - Duration::from_secs(60);
+		let set_modified = || {
+			let file = std::fs::File::options().write(true).open(&rig).unwrap();
+			file.set_modified(then).unwrap();
+		};
+		set_modified();
+		let ctx = egui::Context::default();
+		let subject = Subject::Model("Workspace/M".into());
+		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let file = thumbnails.file(&subject);
+		// a job started on the rig as it is, and the result it sends
+		let start = |thumbnails: &mut Thumbnails, ws: &Workspace| {
+			let (tx, rx) = std::sync::mpsc::channel();
+			let (_, files) = source(ws, &subject).unwrap();
+			thumbnails.job = Some(Job {
+				subject: subject.clone(),
+				file: thumbnails.file(&subject),
+				read: versions(&files),
+				files,
+				generation: ws.generation(),
+				rx,
+			});
+			let geometry = geometry();
+			let groups = geometry.default_groups();
+			tx.send(Ok(Prepared::Mesh {
+				geometry,
+				groups,
+				material: Material::default(),
+			}))
+			.unwrap();
+		};
+		// the result is taken as `update` takes it, after noting the generation
+		let finish = |thumbnails: &mut Thumbnails, ws: &Workspace| {
+			thumbnails.generation = ws.generation();
+			thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+			assert!(thumbnails.job.is_none());
+		};
+		start(&mut thumbnails, &ws);
+		let read = thumbnails.job.as_ref().unwrap().read.clone();
+		let old = std::fs::read(&rig).unwrap();
+		// re-imported with the part's size changed, before the result is taken
+		ws.add_model(&rig_model([3.0, 2.0, 1.0]), &[]).unwrap();
+		set_modified();
+		assert_ne!(std::fs::read(&rig).unwrap(), old);
+		assert_eq!(versions(std::slice::from_ref(&rig)), read);
+		finish(&mut thumbnails, &ws);
+		assert!(!file.exists() && !drawn_from(&file).exists());
+		assert!(thumbnails.get(&subject).is_none());
+		// a job read after the re-import is kept, and fresh
+		start(&mut thumbnails, &ws);
+		finish(&mut thumbnails, &ws);
 		assert!(thumbnails.get(&subject).is_some());
 		assert!(is_fresh(&file, std::slice::from_ref(&rig)));
 	}

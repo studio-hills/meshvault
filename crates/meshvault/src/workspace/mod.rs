@@ -204,7 +204,7 @@ pub struct ModelItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Manifest {
+struct Manifest {
 	pub version: u32,
 	pub name: String,
 	pub items: Vec<Item>,
@@ -214,7 +214,7 @@ pub struct Manifest {
 
 pub struct Workspace {
 	pub root: PathBuf,
-	pub manifest: Manifest,
+	manifest: Manifest,
 	/// Lower-cased stems in use, since Windows paths are case-insensitive.
 	stems: HashSet<String>,
 	dirty: bool,
@@ -403,6 +403,14 @@ impl Workspace {
 		let added = entries.into_iter().filter(|e| self.add_entry(e).1).count();
 		self.generation += 1;
 		added
+	}
+
+	/// Test helper: replaces the items and models outright, without the
+	/// stem or generation bookkeeping, for fixtures that need exact contents.
+	#[cfg(test)]
+	pub(crate) fn set_contents(&mut self, items: Vec<Item>, models: Vec<ModelItem>) {
+		self.manifest.items = items;
+		self.manifest.models = models;
 	}
 
 	/// Adds one export entry; its `maps` should already be filtered to the

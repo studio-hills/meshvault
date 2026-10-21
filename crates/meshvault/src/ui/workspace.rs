@@ -1553,8 +1553,7 @@ mod tests {
 	) -> (TempDir, Workspace, Browser) {
 		let dir = TempDir::new("library_ui");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
-		ws.manifest.items = items;
-		ws.manifest.models = models;
+		ws.set_contents(items, models);
 		if let Some(facts) = facts {
 			let known: HashMap<&str, serde_json::Value> = facts
 				.iter()

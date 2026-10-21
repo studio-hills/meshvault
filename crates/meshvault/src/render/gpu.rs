@@ -449,36 +449,7 @@ impl GpuRenderer {
 		let black = self.render_over(callback, size, wgpu::Color::BLACK);
 		let white = self.render_over(callback, size, wgpu::Color::WHITE);
 		// an sRGB target blends in linear light and stores encoded values
-		let srgb = self.target_format.is_srgb();
-		let decode = |c: u8| {
-			if srgb {
-				srgb_to_linear(c)
-			} else {
-				c as f32 / 255.0
-			}
-		};
-		let encode = |v: f32| {
-			let v = v.clamp(0.0, 1.0);
-			let v = if srgb { linear_to_srgb(v) } else { v };
-			(v * 255.0).round() as u8
-		};
-		let mut out = image::RgbaImage::new(size[0], size[1]);
-		for ((o, b), w) in out.pixels_mut().zip(black.pixels()).zip(white.pixels()) {
-			let b = [0, 1, 2].map(|k| decode(b[k]));
-			let w = [0, 1, 2].map(|k| decode(w[k]));
-			// over black a surface leaves c·a, over white c·a + (1 − a)
-			let alpha = (1.0 - (0..3).map(|k| w[k] - b[k]).sum::<f32>() / 3.0).clamp(0.0, 1.0);
-			if alpha < 0.5 / 255.0 {
-				continue;
-			}
-			*o = image::Rgba([
-				encode(b[0] / alpha),
-				encode(b[1] / alpha),
-				encode(b[2] / alpha),
-				(alpha * 255.0).round() as u8,
-			]);
-		}
-		out
+		unblend(&black, &white, size, self.target_format.is_srgb())
 	}
 
 	fn render_over(
@@ -583,24 +554,75 @@ impl GpuRenderer {
 			self.target_format,
 			wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
 		);
-		let mut image = image::RgbaImage::new(width, height);
-		// a failed readback leaves the image blank
-		if let Ok(data) = buffer.slice(..).get_mapped_range() {
-			for (y, line) in data.chunks(row as usize).take(height as usize).enumerate() {
-				for x in 0..width as usize {
-					let p = &line[x * 4..x * 4 + 4];
-					let rgba = if bgra {
-						[p[2], p[1], p[0], p[3]]
-					} else {
-						[p[0], p[1], p[2], p[3]]
-					};
-					image.put_pixel(x as u32, y as u32, image::Rgba(rgba));
-				}
-			}
-		}
+		// A failed readback is not reported: the map callback's result and
+		// the poll's error are dropped above, and an unmapped buffer leaves
+		// the image blank (every byte zero). Fixing that is a separate change.
+		let image = match buffer.slice(..).get_mapped_range() {
+			Ok(data) => read_rows(&data, row as usize, [width, height], bgra),
+			Err(_) => image::RgbaImage::new(width, height),
+		};
 		buffer.unmap();
 		image
 	}
+}
+
+/// Turns a readback buffer, `row` bytes per line, into an RGBA image,
+/// swapping the channels of a BGRA target.
+fn read_rows(data: &[u8], row: usize, [width, height]: [u32; 2], bgra: bool) -> image::RgbaImage {
+	let mut image = image::RgbaImage::new(width, height);
+	for (y, line) in data.chunks(row).take(height as usize).enumerate() {
+		for x in 0..width as usize {
+			let p = &line[x * 4..x * 4 + 4];
+			let rgba = if bgra {
+				[p[2], p[1], p[0], p[3]]
+			} else {
+				[p[0], p[1], p[2], p[3]]
+			};
+			image.put_pixel(x as u32, y as u32, image::Rgba(rgba));
+		}
+	}
+	image
+}
+
+/// Recovers a transparent `size` image from the same scene drawn over
+/// black and over white. Where both are blank (a failed readback, see
+/// `render_over`) the two agree, so the result is opaque black, not empty.
+/// `srgb`: the images hold sRGB-encoded values of a linear blend.
+fn unblend(
+	black: &image::RgbaImage,
+	white: &image::RgbaImage,
+	size: [u32; 2],
+	srgb: bool,
+) -> image::RgbaImage {
+	let decode = |c: u8| {
+		if srgb {
+			srgb_to_linear(c)
+		} else {
+			c as f32 / 255.0
+		}
+	};
+	let encode = |v: f32| {
+		let v = v.clamp(0.0, 1.0);
+		let v = if srgb { linear_to_srgb(v) } else { v };
+		(v * 255.0).round() as u8
+	};
+	let mut out = image::RgbaImage::new(size[0], size[1]);
+	for ((o, b), w) in out.pixels_mut().zip(black.pixels()).zip(white.pixels()) {
+		let b = [0, 1, 2].map(|k| decode(b[k]));
+		let w = [0, 1, 2].map(|k| decode(w[k]));
+		// over black a surface leaves c·a, over white c·a + (1 − a)
+		let alpha = (1.0 - (0..3).map(|k| w[k] - b[k]).sum::<f32>() / 3.0).clamp(0.0, 1.0);
+		if alpha < 0.5 / 255.0 {
+			continue;
+		}
+		*o = image::Rgba([
+			encode(b[0] / alpha),
+			encode(b[1] / alpha),
+			encode(b[2] / alpha),
+			(alpha * 255.0).round() as u8,
+		]);
+	}
+	out
 }
 
 fn linear_to_srgb(c: f32) -> f32 {
@@ -986,5 +1008,86 @@ mod tests {
 			assert_eq!(bytemuck::bytes_of(&vertices[0]), bytemuck::bytes_of(&zero));
 			assert!(groups.iter().all(|r| r.is_empty()), "{groups:?}");
 		}
+	}
+
+	use super::{linear_to_srgb, read_rows, unblend};
+
+	/// One pixel drawn over black and over white, unblended.
+	fn unblend_one(black: [u8; 3], white: [u8; 3], srgb: bool) -> [u8; 4] {
+		let image =
+			|[r, g, b]: [u8; 3]| image::RgbaImage::from_pixel(1, 1, image::Rgba([r, g, b, 255]));
+		unblend(&image(black), &image(white), [1, 1], srgb)
+			.get_pixel(0, 0)
+			.0
+	}
+
+	fn near(actual: [u8; 4], expected: [u8; 4], by: u8) {
+		let ok = (0..4).all(|k| actual[k].abs_diff(expected[k]) <= by);
+		assert!(ok, "{actual:?} is not within {by} of {expected:?}");
+	}
+
+	#[test]
+	fn unblend_leaves_the_background_transparent() {
+		for srgb in [false, true] {
+			assert_eq!(unblend_one([0; 3], [255; 3], srgb), [0; 4]);
+		}
+		// a difference under half a step is still background
+		assert_eq!(unblend_one([0; 3], [255, 255, 254], false), [0; 4]);
+	}
+
+	#[test]
+	fn unblend_keeps_opaque_colour() {
+		for srgb in [false, true] {
+			let c = [200, 30, 90];
+			assert_eq!(unblend_one(c, c, srgb), [200, 30, 90, 255]);
+		}
+	}
+
+	#[test]
+	fn unblend_recovers_partial_alpha() {
+		// unorm: 200/255 at half alpha leaves 100 over black, 227.5 over white
+		near(
+			unblend_one([100; 3], [228; 3], false),
+			[200, 200, 200, 127],
+			1,
+		);
+		// sRGB: linear 0.5 at a quarter alpha, blended in linear light
+		let encode = |v: f32| (linear_to_srgb(v) * 255.0).round() as u8;
+		let (black, white) = (encode(0.125), encode(0.875));
+		let expected = encode(0.5);
+		near(
+			unblend_one([black; 3], [white; 3], true),
+			[expected, expected, expected, 64],
+			2,
+		);
+	}
+
+	/// White darker than black (not a real blend) clamps to opaque.
+	#[test]
+	fn unblend_clamps_alpha_to_opaque() {
+		assert_eq!(unblend_one([100; 3], [50; 3], false), [100, 100, 100, 255]);
+	}
+
+	/// Two blank readbacks agree everywhere, so they read as opaque black.
+	#[test]
+	fn unblend_of_two_blank_images_is_opaque_black() {
+		let blank = image::RgbaImage::new(2, 2);
+		let out = unblend(&blank, &blank, [2, 2], true);
+		assert!(out.pixels().all(|p| p.0 == [0, 0, 0, 255]));
+	}
+
+	#[test]
+	fn read_rows_skips_row_padding_and_swaps_bgra() {
+		// two pixels per line, padded to 12 bytes
+		let data = [
+			1, 2, 3, 4, 5, 6, 7, 8, 99, 99, 99, 99, //
+			9, 10, 11, 12, 13, 14, 15, 16, 99, 99, 99, 99,
+		];
+		let rgba = read_rows(&data, 12, [2, 2], false);
+		assert_eq!(rgba.get_pixel(1, 0).0, [5, 6, 7, 8]);
+		assert_eq!(rgba.get_pixel(0, 1).0, [9, 10, 11, 12]);
+		let bgra = read_rows(&data, 12, [2, 2], true);
+		assert_eq!(bgra.get_pixel(0, 0).0, [3, 2, 1, 4]);
+		assert_eq!(bgra.get_pixel(1, 1).0, [15, 14, 13, 16]);
 	}
 }

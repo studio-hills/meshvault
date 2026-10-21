@@ -104,8 +104,11 @@ impl App {
 	pub fn export_glb(&mut self) {
 		if let Some(model) = &self.model {
 			let Some(ws) = &self.workspace else { return };
-			// a stale index still panics here, as before (bug B13)
-			let load = model_loader(ws, model.index).expect("the open model is in the workspace");
+			let Some(load) = model_loader(ws, model.index) else {
+				self.toasts
+					.error("The open model is no longer in the workspace.");
+				return;
+			};
 			let name = model.name.clone();
 			let Some(path) = self.save_dialog("Export for Blender", "glb", "glTF binary") else {
 				return;

@@ -15,7 +15,15 @@ use crate::workspace::{self, AssetKind, AssetState, Workspace};
 /// An animated model being read on a background thread.
 pub struct LoadingModel {
 	pub name: String,
+	/// The model's record file. Unlike its index, which shifts when models
+	/// before it are removed, this stays its own while it loads.
+	file: String,
 	pub task: Task<ModelView>,
+}
+
+/// Where the model stored in `file` is now, if it is still in the workspace.
+fn model_with_file(ws: &Workspace, file: &str) -> Option<usize> {
+	ws.models().iter().position(|m| m.file == file)
 }
 
 impl App {
@@ -150,8 +158,9 @@ impl App {
 			return;
 		};
 		let name = item.name.clone();
+		let file = item.file.clone();
 		let task = Task::spawn(&self.ctx, load);
-		self.loading_model = Some(LoadingModel { name, task });
+		self.loading_model = Some(LoadingModel { name, file, task });
 	}
 
 	/// The open workspace's item whose mesh is the file at `path`.
@@ -184,9 +193,20 @@ impl App {
 		let Some(result) = loading.task.poll("Reading the model stopped unexpectedly") else {
 			return;
 		};
+		let file = loading.file.clone();
 		self.loading_model = None;
 		match result {
-			Ok(model) => {
+			Ok(mut model) => {
+				// a model removed while it loaded is not shown, and one that
+				// moved up is shown at its new place
+				let Some(index) = self
+					.workspace
+					.as_ref()
+					.and_then(|ws| model_with_file(ws, &file))
+				else {
+					return;
+				};
+				model.index = index;
 				self.doc = None;
 				self.open_stem = None;
 				self.model = Some(model);
@@ -269,5 +289,42 @@ impl App {
 				} => self.export_library(&items, &models, format),
 			}
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::BTreeMap;
+
+	use super::*;
+	use crate::test_support::TempDir;
+
+	fn model(file: &str) -> workspace::ModelItem {
+		workspace::ModelItem {
+			name: file.into(),
+			path: file.into(),
+			folder: Vec::new(),
+			file: file.into(),
+			meshes: BTreeMap::new(),
+			parts: 0,
+			clips: 0,
+			playable_clips: 0,
+			images: BTreeMap::new(),
+		}
+	}
+
+	#[test]
+	fn a_loading_model_is_found_by_its_file_after_removals() {
+		let dir = TempDir::new("loading-model");
+		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
+		let files = ["Rigs/a.rig.json", "Rigs/b.rig.json", "Rigs/c.rig.json"];
+		ws.set_contents(Vec::new(), files.iter().map(|f| model(f)).collect());
+		// c was loading at index 2 when a was removed
+		ws.remove_models(&[0]);
+		assert_eq!(model_with_file(&ws, files[2]), Some(1));
+		// and once c itself is removed it is not shown at all
+		ws.remove_models(&[1]);
+		assert_eq!(model_with_file(&ws, files[2]), None);
+		assert_eq!(model_with_file(&ws, files[1]), Some(0));
 	}
 }

@@ -475,22 +475,60 @@ fn respond(stream: &TcpStream, reply: Reply) {
 /// to it, rather than a timeout for each read or write: a sender that
 /// trickles bytes, or a reader that takes them slowly, cannot hold the
 /// link past it.
-struct Deadline<'a> {
-	stream: &'a TcpStream,
+struct Deadline<'a, S: Timed = TcpStream> {
+	stream: &'a S,
 	until: Instant,
 }
 
-impl<'a> Deadline<'a> {
-	fn new(stream: &'a TcpStream, within: Duration) -> Self {
+/// A connection a [`Deadline`] can be put on: a [`TcpStream`], or in tests
+/// a script with its own clock.
+trait Timed {
+	fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+	fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+	fn read_some(&self, buf: &mut [u8]) -> std::io::Result<usize>;
+	fn write_some(&self, buf: &[u8]) -> std::io::Result<usize>;
+	fn flush_all(&self) -> std::io::Result<()>;
+	fn now(&self) -> Instant {
+		Instant::now()
+	}
+}
+
+impl Timed for TcpStream {
+	fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+		TcpStream::set_read_timeout(self, timeout)
+	}
+
+	fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+		TcpStream::set_write_timeout(self, timeout)
+	}
+
+	fn read_some(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+		let mut stream = self;
+		stream.read(buf)
+	}
+
+	fn write_some(&self, buf: &[u8]) -> std::io::Result<usize> {
+		let mut stream = self;
+		stream.write(buf)
+	}
+
+	fn flush_all(&self) -> std::io::Result<()> {
+		let mut stream = self;
+		stream.flush()
+	}
+}
+
+impl<'a, S: Timed> Deadline<'a, S> {
+	fn new(stream: &'a S, within: Duration) -> Self {
 		Self {
 			stream,
-			until: Instant::now() + within,
+			until: stream.now() + within,
 		}
 	}
 
 	/// The time left, or an error once there is none.
 	fn left(&self) -> std::io::Result<Duration> {
-		let left = self.until.saturating_duration_since(Instant::now());
+		let left = self.until.saturating_duration_since(self.stream.now());
 		if left.is_zero() {
 			return Err(ErrorKind::TimedOut.into());
 		}
@@ -498,24 +536,21 @@ impl<'a> Deadline<'a> {
 	}
 }
 
-impl Read for Deadline<'_> {
+impl<S: Timed> Read for Deadline<'_, S> {
 	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
 		self.stream.set_read_timeout(Some(self.left()?))?;
-		let mut stream = self.stream;
-		stream.read(buf)
+		self.stream.read_some(buf)
 	}
 }
 
-impl Write for Deadline<'_> {
+impl<S: Timed> Write for Deadline<'_, S> {
 	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
 		self.stream.set_write_timeout(Some(self.left()?))?;
-		let mut stream = self.stream;
-		stream.write(buf)
+		self.stream.write_some(buf)
 	}
 
 	fn flush(&mut self) -> std::io::Result<()> {
-		let mut stream = self.stream;
-		stream.flush()
+		self.stream.flush_all()
 	}
 }
 
@@ -1192,31 +1227,136 @@ mod tests {
 		(client, server)
 	}
 
+	/// A connection that follows a script on a clock of its own: each read
+	/// or write takes `step` and moves one header line or one byte, and a
+	/// timeout shorter than `step` runs out as a socket's would.
+	struct Script {
+		clock: std::cell::Cell<Instant>,
+		step: Duration,
+		timeout: std::cell::Cell<Option<Duration>>,
+		/// The timeout each read or write was given.
+		given: std::cell::RefCell<Vec<Duration>>,
+	}
+
+	impl Script {
+		fn new(step: Duration) -> Self {
+			Self {
+				clock: std::cell::Cell::new(Instant::now()),
+				step,
+				timeout: std::cell::Cell::default(),
+				given: std::cell::RefCell::default(),
+			}
+		}
+
+		/// Takes one step, or times out if the timeout is shorter.
+		fn take_step(&self) -> std::io::Result<()> {
+			let timeout = self.timeout.get().expect("a timeout is set first");
+			self.given.borrow_mut().push(timeout);
+			if timeout < self.step {
+				self.clock.set(self.clock.get() + timeout);
+				return Err(ErrorKind::TimedOut.into());
+			}
+			self.clock.set(self.clock.get() + self.step);
+			Ok(())
+		}
+	}
+
+	impl Timed for Script {
+		fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+			self.timeout.set(timeout);
+			Ok(())
+		}
+
+		fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+			self.timeout.set(timeout);
+			Ok(())
+		}
+
+		/// The request line, then a header every step, never the blank line.
+		fn read_some(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+			let first = self.given.borrow().is_empty();
+			self.take_step()?;
+			let line: &[u8] = if first {
+				b"GET / HTTP/1.1\r\nHost: localhost:34875\r\n"
+			} else {
+				b"X-A: b\r\n"
+			};
+			buf[..line.len()].copy_from_slice(line);
+			Ok(line.len())
+		}
+
+		fn write_some(&self, buf: &[u8]) -> std::io::Result<usize> {
+			self.take_step()?;
+			Ok(buf.len().min(1))
+		}
+
+		fn flush_all(&self) -> std::io::Result<()> {
+			Ok(())
+		}
+
+		fn now(&self) -> Instant {
+			self.clock.get()
+		}
+	}
+
 	// The deadline is for the whole request, so a sender that keeps sending a
-	// little at a time, each piece well within it, is still cut off.
+	// little at a time, each piece well within it, is still cut off: every
+	// read is given only what is left. With a timeout for each read instead,
+	// each would be given the full 200 ms and the trickle would go on until
+	// the head was too large (431).
 	#[test]
 	fn a_request_that_trickles_in_is_cut_off_at_the_deadline() {
+		let ms = Duration::from_millis;
+		let script = Script::new(ms(30));
+		let result = read_request(Deadline::new(&script, ms(200)), PORT);
+		assert_eq!(refusal(result), (408, "request took too long".to_string()));
+		// six reads in time, then the seventh has only 20 ms left
+		assert_eq!(
+			*script.given.borrow(),
+			[200, 170, 140, 110, 80, 50, 20].map(ms)
+		);
+	}
+
+	// The reply's deadline is for the whole reply too: a reader that takes a
+	// byte at a time is cut off.
+	#[test]
+	fn a_reply_taken_slowly_is_cut_off_at_the_deadline() {
+		let ms = Duration::from_millis;
+		let script = Script::new(ms(30));
+		let mut out = Deadline::new(&script, ms(100));
+		assert_eq!(
+			out.write_all(b"HTTP/1.1 200 OK").unwrap_err().kind(),
+			ErrorKind::TimedOut
+		);
+		assert_eq!(*script.given.borrow(), [100, 70, 40, 10].map(ms));
+		// and nothing more is tried once it has passed
+		assert_eq!(out.write(b"x").unwrap_err().kind(), ErrorKind::TimedOut);
+		assert_eq!(script.given.borrow().len(), 4);
+	}
+
+	// The same over a real socket, as a smoke test: the reader starts only
+	// once the sender has begun, and the sender keeps going until told.
+	#[test]
+	fn a_request_trickling_over_a_socket_is_cut_off() {
 		let (mut client, server) = connected();
 		let (stop, stopped) = mpsc::channel::<()>();
+		let (began, begun) = mpsc::channel::<()>();
 		let sender = std::thread::spawn(move || {
 			write!(client, "GET / HTTP/1.1\r\nHost: localhost:34875\r\n").unwrap();
-			// a header every 10 ms, never the blank line, for up to 5 s
-			for _ in 0..500 {
-				if stopped.try_recv().is_ok() || client.write_all(b"X-A: b\r\n").is_err() {
+			began.send(()).unwrap();
+			// a header every 10 ms, never the blank line, until stopped
+			while stopped.try_recv().is_err() {
+				if client.write_all(b"X-A: b\r\n").is_err() {
 					return;
 				}
 				std::thread::sleep(Duration::from_millis(10));
 			}
 		});
-		let started = Instant::now();
+		begun.recv().unwrap();
 		let result = read_request(Deadline::new(&server, Duration::from_millis(200)), PORT);
-		let took = started.elapsed();
-		let _ = stop.send(());
+		stop.send(()).unwrap();
 		sender.join().unwrap();
-		// had there been no deadline, the request would have ended with the
-		// sender, as an incomplete one
 		assert_eq!(refusal(result), (408, "request took too long".to_string()));
-		assert!(took < Duration::from_secs(4), "{took:?}");
 	}
 
 	#[test]

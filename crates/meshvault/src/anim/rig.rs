@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::clip::{Clip, TargetKey};
-use super::math::{CFrame, V3};
+use super::math::{CFrame, V3, distance};
 use super::schema::AnimatedModel;
 
 #[derive(Clone, Debug)]
@@ -183,31 +183,38 @@ impl Rig {
 		rig
 	}
 
+	/// Which parts are animation roots: a part that drives animated joints
+	/// but that no animated joint drives, like HumanoidRootPart.
+	fn animation_roots(&self) -> Vec<bool> {
+		let n = self.parts.len();
+		let (mut drives, mut driven) = (vec![false; n], vec![false; n]);
+		for m in self.motors.iter().filter(|m| m.animated) {
+			drives[m.part0] = true;
+			driven[m.part1] = true;
+		}
+		drives.iter().zip(driven).map(|(&d, n)| d && !n).collect()
+	}
+
 	/// Orders the joints outward from each assembly's root, so each is
 	/// solved from whichever of its parts is placed first. The animation
-	/// root (a part that drives animated joints but none drives, like
-	/// HumanoidRootPart) is the root where there is one. Welds may point
-	/// back towards it: an accessory's weld runs from its Handle to the Head.
+	/// root is the root where there is one. Welds may point back towards
+	/// it: an accessory's weld runs from its Handle to the Head.
 	fn solve_order(&mut self) -> Vec<(usize, bool)> {
 		let n = self.parts.len();
+		let animation_root = self.animation_roots();
 		let mut joints_of: Vec<Vec<usize>> = vec![Vec::new(); n];
-		let (mut drives_animated, mut driven_animated, mut driven) =
-			(vec![false; n], vec![false; n], vec![false; n]);
+		let mut driven = vec![false; n];
 		for (i, m) in self.motors.iter().enumerate() {
 			joints_of[m.part0].push(i);
 			if m.part1 != m.part0 {
 				joints_of[m.part1].push(i);
 			}
 			driven[m.part1] = true;
-			if m.animated {
-				drives_animated[m.part0] = true;
-				driven_animated[m.part1] = true;
-			}
 		}
 		let mut roots: Vec<usize> = (0..n).collect();
 		// stable: among equals, the export's order
 		roots.sort_by_key(|&p| {
-			if drives_animated[p] && !driven_animated[p] {
+			if animation_root[p] {
 				0
 			} else if !driven[p] {
 				1
@@ -261,6 +268,7 @@ impl Rig {
 			while let BoneParent::Bone(p) = self.bones[i].parent {
 				i = p;
 				d += 1;
+				// a parent cycle in bad data must not hang
 				if d > self.bones.len() {
 					break;
 				}
@@ -277,18 +285,18 @@ impl Rig {
 	/// the one whose Part0 or parent has that name.
 	pub fn bind(&self, clip: &Clip) -> Binding {
 		let mut binding = Binding::default();
+		let animation_root = self.animation_roots();
 		for track in &clip.tracks {
 			let target = self.find_target(&track.target);
-			// a pose on the assembly root (a part that drives others but that no
-			// joint drives) has nothing to move; it only groups the poses below
-			// it. A part no joint touches at all is a real miss: a rig whose
-			// joints were not exported would otherwise look fully bound.
+			// a pose on an animation root has nothing to move; it only groups
+			// the poses below it. Any root part of that name counts, not just
+			// this track's own. A part no joint touches at all is a real miss: a
+			// rig whose joints were not exported would otherwise look fully bound.
 			let is_root_part = || {
-				self.parts.iter().enumerate().any(|(i, p)| {
-					p.name == track.target.name
-						&& self.motors.iter().any(|m| m.animated && m.part0 == i)
-						&& !self.motors.iter().any(|m| m.animated && m.part1 == i)
-				})
+				self.parts
+					.iter()
+					.zip(&animation_root)
+					.any(|(p, &root)| root && p.name == track.target.name)
 			};
 			if target.is_none() && !is_root_part() {
 				binding.unmatched.push(track.target.name.clone());
@@ -456,14 +464,7 @@ impl Rig {
 			.parts
 			.iter()
 			.zip(&self.parts)
-			.map(|(a, b)| {
-				let d = [
-					a.pos[0] - b.rest.pos[0],
-					a.pos[1] - b.rest.pos[1],
-					a.pos[2] - b.rest.pos[2],
-				];
-				(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-			})
+			.map(|(a, b)| distance(a.pos, b.rest.pos))
 			.fold(0.0, f32::max)
 	}
 }

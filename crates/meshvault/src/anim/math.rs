@@ -26,8 +26,16 @@ fn add(a: V3, b: V3) -> V3 {
 fn scale(a: V3, s: f32) -> V3 {
 	[a[0] * s, a[1] * s, a[2] * s]
 }
+pub fn sub(a: V3, b: V3) -> V3 {
+	[a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+/// The straight-line distance between two points.
+pub fn distance(a: V3, b: V3) -> f32 {
+	let d = sub(a, b);
+	(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
 fn lerp3(a: V3, b: V3, t: f32) -> V3 {
-	add(a, scale([b[0] - a[0], b[1] - a[1], b[2] - a[2]], t))
+	add(a, scale(sub(b, a), t))
 }
 
 impl CFrame {

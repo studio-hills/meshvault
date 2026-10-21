@@ -87,7 +87,7 @@ fn rigs_rest_pose_and_binding() {
 #[test]
 #[ignore]
 fn matches_studio_samples() {
-	use super::math::CFrame;
+	use super::math::{CFrame, distance};
 	use super::rig::Target;
 	use std::collections::{BTreeMap, HashMap};
 
@@ -150,10 +150,7 @@ fn matches_studio_samples() {
 				.flat_map(|r| (0..3).map(move |c| (r, c)))
 				.map(|(r, c)| (ours.rot[r][c] - theirs.rot[r][c]).abs())
 				.fold(0.0, f32::max);
-			let pos = (0..3)
-				.map(|k| (ours.pos[k] - theirs.pos[k]).powi(2))
-				.sum::<f32>()
-				.sqrt();
+			let pos = distance(ours.pos, theirs.pos);
 			if rot > self.rot.0 {
 				self.rot = (rot, what.clone());
 			}

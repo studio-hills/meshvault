@@ -1,10 +1,15 @@
 //! Rendering the view offscreen to copy it or save it as a PNG or GIF.
 
+use std::f32::consts::TAU;
+
 use eframe::egui;
 
 use super::App;
 use crate::render::camera::Camera;
+use crate::render::maths::IDENTITY;
+use crate::render::viewport::{ScenePart, render_image};
 use crate::scene::geometry::GroupKind;
+use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::ui::theme;
 
 impl App {
@@ -26,7 +31,7 @@ impl App {
 		let plain = (!self.show_maps).then_some(&plain_material);
 		let turn = |camera: &Camera, k: usize| {
 			let mut camera = camera.clone();
-			camera.yaw += std::f32::consts::TAU * k as f32 / frames as f32;
+			camera.yaw += TAU * k as f32 / frames as f32;
 			camera
 		};
 		let mut out = Vec::with_capacity(frames);
@@ -39,7 +44,7 @@ impl App {
 				}
 				settings.lights = model.scene_lights();
 				let mut parts = model.scene_parts(plain);
-				out.push(crate::render::viewport::render_image(
+				out.push(render_image(
 					&mut parts,
 					&turn(&camera, k),
 					&settings,
@@ -52,23 +57,23 @@ impl App {
 			let groups = doc.visible_groups();
 			let geometry = &doc.loaded.geometry;
 			for k in 0..frames {
-				let mut parts = [crate::render::viewport::ScenePart {
+				let mut parts = [ScenePart {
 					geometry,
 					groups: &groups,
-					transform: crate::render::maths::IDENTITY,
+					transform: IDENTITY,
 					material: plain.unwrap_or(&doc.material),
 					colour_groups: geometry.group_kind == GroupKind::Hull,
-					colour: crate::scene::surface::PART_COLOUR,
+					colour: PART_COLOUR,
 					scene: &mut doc.gpu,
 					moved: false,
-					surface: crate::scene::surface::Surface {
+					surface: Surface {
 						alpha_mode: doc.alpha,
-						..crate::scene::surface::Surface::OPAQUE
+						..Surface::OPAQUE
 					},
 					decal: None,
 					highlight: false,
 				}];
-				out.push(crate::render::viewport::render_image(
+				out.push(render_image(
 					&mut parts,
 					&turn(&doc.camera, k),
 					&settings,

@@ -6,6 +6,7 @@ use std::time::Instant;
 use super::App;
 use super::task::Task;
 use crate::config::Config;
+use crate::platform;
 use crate::scene::model_view::ModelView;
 use crate::ui::{self, ConfirmAction, NewWorkspaceDialog};
 use crate::workspace::view_loader::{item_maps, model_loader};
@@ -242,7 +243,7 @@ impl App {
 				}
 				ui::library::Action::Reveal(path) => {
 					// a failure to start the file browser is not shown yet
-					let _ = crate::platform::reveal(&path);
+					let _ = platform::reveal(&path);
 				}
 				ui::library::Action::RemoveSelection { items, models } => {
 					self.ask(ConfirmAction::RemoveSelection { items, models })

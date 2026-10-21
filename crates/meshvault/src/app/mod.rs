@@ -17,9 +17,11 @@ use eframe::egui;
 use crate::config::Config;
 use crate::render::camera::Camera;
 use crate::render::gpu::GpuRenderer;
+use crate::render::lighting::Lighting;
 use crate::render::viewport::Shading;
 use crate::scene::model_view::ModelView;
 use crate::scene::texture::Material;
+use crate::studio::link::{self, StudioLink};
 use crate::ui::import::ImportDialog;
 use crate::ui::settings::SettingsDialog;
 use crate::ui::theme;
@@ -71,7 +73,7 @@ pub struct App {
 	pub model: Option<ModelView>,
 	pub loading_model: Option<LoadingModel>,
 	/// Receives exports sent from Roblox Studio.
-	pub studio_link: crate::studio::link::StudioLink,
+	pub studio_link: StudioLink,
 	pub studio_dialog: Option<StudioDialog>,
 	/// Pieces of an export from Studio received so far, out of how many, and when.
 	pub studio_progress: Option<(usize, usize, Instant)>,
@@ -94,7 +96,7 @@ impl App {
 		let config = Config::load();
 		theme::install_fonts(&ctx);
 		theme::apply(&ctx, config.theme);
-		let studio_link = crate::studio::link::StudioLink::start(&ctx);
+		let studio_link = StudioLink::start(&ctx);
 		let mut app = Self {
 			ctx,
 			config,
@@ -131,8 +133,8 @@ impl App {
 			viewport: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(16.0, 9.0)),
 			last_save: Instant::now(),
 		};
-		if let crate::studio::link::Status::Unavailable(why) = &app.studio_link.status {
-			app.toasts.warning(crate::ui::unavailable_text(why));
+		if let link::Status::Unavailable(why) = &app.studio_link.status {
+			app.toasts.warning(ui::unavailable_text(why));
 		}
 		// reopen the last workspace
 		if let Some(root) = app.config.recent_workspaces.first().cloned()
@@ -169,7 +171,7 @@ impl App {
 		}
 	}
 
-	pub fn set_lighting(&mut self, lighting: crate::render::lighting::Lighting) {
+	pub fn set_lighting(&mut self, lighting: Lighting) {
 		self.config.lighting = lighting;
 		// a failed save is not reported yet (bug B08)
 		let _ = self.config.save();

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::App;
 use super::task::Task;
-use crate::studio::export_file;
+use crate::studio::{export_file, link};
 use crate::ui::format::format_bytes;
 use crate::ui::import::{self, ImportDialog};
 
@@ -120,11 +120,11 @@ impl App {
 	pub(super) fn poll_studio_link(&mut self) {
 		for event in self.studio_link.poll() {
 			let received = match event {
-				crate::studio::link::Event::Progress { done, count } => {
+				link::Event::Progress { done, count } => {
 					self.studio_progress = Some((done, count, Instant::now()));
 					continue;
 				}
-				crate::studio::link::Event::Received(received) => received,
+				link::Event::Received(received) => received,
 			};
 			self.studio_progress = None;
 			// the export is here, so the instructions are no longer needed

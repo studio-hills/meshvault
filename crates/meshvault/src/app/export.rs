@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use super::App;
-use crate::export::Format;
+use crate::export::{self, Format, MeshJob, ModelJob, gltf, obj};
+use crate::scene::surface::PART_COLOUR;
 use crate::ui::format::plural;
 use crate::workspace::view_loader::{item_maps, model_loader};
 use crate::workspace::{self, AssetKind};
@@ -12,7 +13,6 @@ impl App {
 	/// Exports library meshes and animated models into a folder the user
 	/// picks, on a background thread.
 	pub fn export_library(&mut self, items: &[usize], models: &[usize], format: Format) {
-		use crate::export::{MeshJob, ModelJob};
 		let Some(ws) = &self.workspace else { return };
 		let meshes: Vec<MeshJob> = items
 			.iter()
@@ -57,7 +57,7 @@ impl App {
 			));
 		}
 		self.in_background(move |ctx| {
-			let report = crate::export::export(ctx, &dir, meshes, models, format);
+			let report = export::export(ctx, &dir, meshes, models, format);
 			let written = plural(report.written, "model", "models");
 			if report.failed.is_empty() {
 				Ok(format!(
@@ -112,7 +112,7 @@ impl App {
 			};
 			self.in_background(move |ctx| {
 				let model = load(ctx)?;
-				crate::export::gltf::export_model(&model, &path)?;
+				gltf::export_model(&model, &path)?;
 				Ok(format!(
 					"Exported {name} with {} for Blender to {}. In Blender: File › Import › glTF 2.0.",
 					plural(
@@ -129,11 +129,11 @@ impl App {
 			};
 			let Some(doc) = &self.doc else { return };
 			let name = self.shown_name();
-			let result = crate::export::gltf::export_mesh(
+			let result = gltf::export_mesh(
 				&doc.loaded.geometry,
 				&doc.visible_groups(),
 				&doc.material,
-				crate::scene::surface::PART_COLOUR,
+				PART_COLOUR,
 				&name,
 				&path,
 			);
@@ -157,9 +157,9 @@ impl App {
 			return;
 		};
 		let result = if let Some(model) = &mut self.model {
-			crate::export::obj::write_model(&path, model)
+			obj::write_model(&path, model)
 		} else if let Some(doc) = &self.doc {
-			crate::export::obj::write_mesh(
+			obj::write_mesh(
 				&path,
 				&doc.loaded.geometry,
 				&doc.visible_groups(),

@@ -8,6 +8,7 @@ use crate::render::camera::Camera;
 use crate::render::gpu::GpuScene;
 use crate::scene::geometry::{self, GroupKind, Loaded};
 use crate::scene::maps::Slot;
+use crate::scene::surface::AlphaMode;
 use crate::scene::texture::{self, Material};
 
 pub struct Document {
@@ -23,7 +24,7 @@ pub struct Document {
 	/// The mesh uploaded to the GPU, created on first draw.
 	pub gpu: Option<GpuScene>,
 	/// What the colour map's alpha does.
-	pub alpha: crate::scene::surface::AlphaMode,
+	pub alpha: AlphaMode,
 }
 
 impl Document {
@@ -145,7 +146,7 @@ impl App {
 					hull_visible,
 					material: Material::default(),
 					gpu: None,
-					alpha: crate::scene::surface::AlphaMode::Overlay,
+					alpha: AlphaMode::Overlay,
 				});
 				true
 			}

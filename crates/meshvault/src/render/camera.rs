@@ -171,27 +171,22 @@ mod tests {
 	}
 
 	#[test]
-	fn project_puts_the_target_at_the_centre() {
-		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
-		let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(300.0, 200.0));
-		let p = project(&camera, rect, camera.target).unwrap();
-		assert!(close(p.x, rect.center().x) && close(p.y, rect.center().y));
-	}
-
-	#[test]
 	fn project_follows_the_camera_basis() {
 		let camera = Camera::framing_bounds(Some(([-1.0; 3], [1.0; 3])));
-		let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 200.0));
+		// a rect away from the origin, so its centre is not its half size
+		let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(300.0, 200.0));
 		let (right, up, _) = camera.basis();
 		let focal = 100.0 / HALF_FOV_DEGREES.to_radians().tan();
 		let shift = focal / camera.distance;
+		let centre = project(&camera, rect, camera.target).unwrap();
+		assert!((centre.x - 160.0).abs() < 1e-3 && (centre.y - 120.0).abs() < 1e-3);
 		let to_right = project(&camera, rect, add(camera.target, right)).unwrap();
-		assert!((to_right.x - (150.0 + shift)).abs() < 1e-3);
-		assert!((to_right.y - 100.0).abs() < 1e-3);
+		assert!((to_right.x - (160.0 + shift)).abs() < 1e-3);
+		assert!((to_right.y - 120.0).abs() < 1e-3);
 		// screen y grows downwards
 		let above = project(&camera, rect, add(camera.target, up)).unwrap();
-		assert!((above.x - 150.0).abs() < 1e-3);
-		assert!((above.y - (100.0 - shift)).abs() < 1e-3);
+		assert!((above.x - 160.0).abs() < 1e-3);
+		assert!((above.y - (120.0 - shift)).abs() < 1e-3);
 	}
 
 	#[test]
@@ -208,6 +203,20 @@ mod tests {
 		assert_eq!(project(&camera, rect, just_inside), None);
 		let just_beyond = add(eye, forward.map(|f| f * near * 2.0));
 		assert!(project(&camera, rect, just_beyond).is_some());
+		// exactly on the near plane is rejected, the next f32 beyond it is not:
+		// looking down -Z from the origin, a radius of 100 puts it at depth 1
+		let camera = Camera {
+			yaw: 0.0,
+			pitch: 0.0,
+			distance: 0.0,
+			target: [0.0; 3],
+			radius: 100.0,
+			floor: 0.0,
+		};
+		assert_eq!(camera.near(), 1.0);
+		assert_eq!(project(&camera, rect, [0.0, 0.0, -1.0]), None);
+		let beyond = project(&camera, rect, [0.0, 0.0, -(1.0 + f32::EPSILON)]);
+		assert!(beyond.is_some());
 	}
 
 	fn add(a: V3, b: V3) -> V3 {

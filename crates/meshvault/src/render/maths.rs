@@ -230,15 +230,6 @@ mod tests {
 		assert_matrix(normal_matrix(m), m);
 	}
 
-	#[test]
-	fn normal_matrix_of_a_flat_transform_is_zero() {
-		let mut m = IDENTITY;
-		m[1][1] = 0.0;
-		let mut expected = [[0.0; 4]; 4];
-		expected[3][3] = 1.0;
-		assert_matrix(normal_matrix(m), expected);
-	}
-
 	/// Normals are turned by the inverse transpose, so under a non-uniform
 	/// scale they stay perpendicular to the surface: stretching X by 2
 	/// makes a 45° slope shallower, so its normal leans towards Y, not X

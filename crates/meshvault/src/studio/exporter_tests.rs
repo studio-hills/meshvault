@@ -357,6 +357,14 @@ fn keeping_the_export_then_sending_it() {
 		let (sent, reply): (bool, String) = send.call(text.as_str()).unwrap();
 		assert!(sent, "schema {v}: {reply}");
 		assert_eq!(studio.received(), text, "schema {v}");
+
+		// text over the 2 MB a request carries goes in pieces, which the
+		// link joins back in order
+		let long = format!("{text}{}", " ".repeat(2 * 1024 * 1024));
+		let (sent, reply): (bool, String) = send.call(long.as_str()).unwrap();
+		assert!(sent, "schema {v}: {reply}");
+		assert_eq!(studio.received(), long, "schema {v}");
+		assert_eq!(studio.posts(), 4, "schema {v}: two pieces");
 	}
 }
 

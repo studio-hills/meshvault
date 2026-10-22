@@ -358,42 +358,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::BTreeMap;
-
 	use super::*;
 	use crate::anim::schema::AnimatedModel;
 	use crate::test_support::TempDir;
-
-	fn model(file: &str) -> workspace::ModelItem {
-		workspace::ModelItem {
-			name: file.into(),
-			path: file.into(),
-			folder: Vec::new(),
-			file: file.into(),
-			meshes: BTreeMap::new(),
-			parts: 0,
-			clips: 0,
-			playable_clips: 0,
-			images: BTreeMap::new(),
-			version: Default::default(),
-		}
-	}
-
-	#[test]
-	fn a_loading_model_is_found_again_after_removals() {
-		let dir = TempDir::new("loading-model");
-		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
-		let files = ["Rigs/a.rig.json", "Rigs/b.rig.json", "Rigs/c.rig.json"];
-		ws.set_contents(Vec::new(), files.iter().map(|f| model(f)).collect());
-		let (b, c) = (ws.models()[1].version, ws.models()[2].version);
-		// c was loading at index 2 when a was removed
-		ws.remove_models(&[0]).unwrap();
-		assert_eq!(loaded(&ws, c), Loaded::Current(1));
-		// and once c itself is removed it is not shown at all
-		ws.remove_models(&[1]).unwrap();
-		assert_eq!(loaded(&ws, c), Loaded::Gone);
-		assert_eq!(loaded(&ws, b), Loaded::Current(0));
-	}
 
 	fn rig_model(name: &str, parts: usize) -> AnimatedModel {
 		AnimatedModel {
@@ -402,45 +369,6 @@ mod tests {
 			parts: vec![Default::default(); parts],
 			..Default::default()
 		}
-	}
-
-	/// A model imported again while it loads keeps its file name, but what
-	/// the load read may be the old rig (or the new rig with the old
-	/// meshes), so it is read again rather than shown (once bug B13).
-	#[test]
-	fn a_model_imported_again_while_it_loads_is_read_again() {
-		let dir = TempDir::new("loading-model-reimport");
-		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
-		ws.add_model(&rig_model("Other", 1), &[]).unwrap();
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
-		let loading = ws.models()[1].version;
-		let file = ws.models()[1].file.clone();
-		assert!(model_loader(&ws, 1).is_some());
-
-		assert!(!ws.add_model(&rig_model("Wolf", 2), &[]).unwrap());
-		assert_eq!(ws.models()[1].file, file);
-		assert_eq!(loaded(&ws, loading), Loaded::Reimported(1));
-		// the load started again is for the new import, and moves with it
-		let reloading = ws.models()[1].version;
-		ws.remove_models(&[0]).unwrap();
-		assert_eq!(loaded(&ws, reloading), Loaded::Current(0));
-		assert_eq!(loaded(&ws, loading), Loaded::Reimported(0));
-	}
-
-	/// A model removed while it loads, and another added under the same file
-	/// name before the load ends, is a different model: nothing is shown.
-	#[test]
-	fn a_model_added_under_a_removed_models_file_name_is_not_the_one_loaded() {
-		let dir = TempDir::new("loading-model-reuse");
-		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
-		let loading = ws.models()[0].version;
-		let file = ws.models()[0].file.clone();
-
-		ws.remove_models(&[0]).unwrap();
-		assert!(ws.add_model(&rig_model("Wolf", 3), &[]).unwrap());
-		assert_eq!(ws.models()[0].file, file);
-		assert_eq!(loaded(&ws, loading), Loaded::Gone);
 	}
 
 	/// A model read again from the manifest is a new version, so a load
@@ -506,6 +434,8 @@ mod tests {
 		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
 		let (loading, read, tx) = start(&ws, 1);
 		let (failing, _, failed) = start(&ws, 1);
+		// one more read of the old import, still going after the removal below
+		let (late, late_read, late_tx) = start(&ws, 1);
 		assert_eq!(outcome(loading.finish(Some(&ws))), "still loading");
 
 		ws.add_model(&rig_model("Wolf", 2), &[]).unwrap();
@@ -524,14 +454,18 @@ mod tests {
 			outcome(reloading.finish(Some(&ws))),
 			"shown at 0 with 2 parts"
 		);
-		// and its error, unlike the old load's, is told
+		// the old import's read ending now is read again at the model's new place
+		late_tx.send(late_read).unwrap();
+		assert_eq!(outcome(late.finish(Some(&ws))), "read again at 0");
+		// and the new import's error, unlike the old load's, is told
 		let (reloading, _, tx) = start(&ws, 0);
 		tx.send(Err("unreadable".into())).unwrap();
 		assert_eq!(outcome(reloading.finish(Some(&ws))), "failed: unreadable");
 	}
 
 	/// A load that ends after its model was removed and another added under
-	/// the same file name is neither shown nor read again, whatever it gave.
+	/// the same file name is neither shown nor read again, whatever it gave,
+	/// and nor is one whose model was only removed.
 	#[test]
 	fn a_load_that_ends_after_its_file_name_is_reused_is_dropped() {
 		let dir = TempDir::new("loading-model-reused");
@@ -555,5 +489,13 @@ mod tests {
 			outcome(loading.finish(Some(&ws))),
 			"shown at 0 with 3 parts"
 		);
+		// and a load whose model is removed with nothing put in its place is
+		// dropped too, though another model now has its place
+		ws.add_model(&rig_model("Other", 1), &[]).unwrap();
+		let (loading, read, tx) = start(&ws, 0);
+		ws.remove_models(&[0]).unwrap();
+		assert_eq!(ws.models().len(), 1);
+		tx.send(read).unwrap();
+		assert_eq!(outcome(loading.finish(Some(&ws))), "discarded");
 	}
 }

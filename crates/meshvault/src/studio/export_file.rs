@@ -312,9 +312,11 @@ mod tests {
 		assert_eq!(special.mesh_type, "Head");
 		assert_eq!(special.offset, [0.0, 0.1, 0.0]);
 		assert_eq!(m.joints[0].transform.unwrap()[8], -1.0);
-		// a version 1 record leaves them all unset
+		// both versions are read into the same records, so a version 1 header
+		// with these fields still keeps them
 		let v1 = parse(&json.replace("\"SchemaVersion\":2", "\"SchemaVersion\":1")).unwrap();
 		assert_eq!(v1.models.len(), 1);
+		assert_eq!(v1.models[0].scale, Some(0.25));
 	}
 
 	#[test]

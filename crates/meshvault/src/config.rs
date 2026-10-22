@@ -438,16 +438,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_failed_save_says_why() {
-		let dir = TempDir::new("config");
-		// a folder where the file should be cannot be written over
-		let path = dir.join("config.json");
-		std::fs::create_dir_all(&path).unwrap();
-		let err = Config::default().save_to(&path).unwrap_err();
-		assert!(err.contains("config.json"), "{err}");
-	}
-
-	#[test]
 	fn old_settings_are_carried_over_to_the_new_path() {
 		let dir = TempDir::new("config");
 		let primary = dir.join("meshvault").join("config.json");
@@ -575,7 +565,9 @@ mod tests {
 		// a failed save does not leave its half-made file either
 		let blocked = dir.join("blocked.json");
 		std::fs::create_dir_all(&blocked).unwrap();
-		config.save_to(&blocked).unwrap_err();
+		let err = config.save_to(&blocked).unwrap_err();
+		// and says which file it could not save
+		assert!(err.contains("blocked.json"), "{err}");
 		assert_eq!(names(&dir), ["blocked.json", "config.json"]);
 	}
 

@@ -894,53 +894,194 @@ mod tests {
 		}
 	}
 
+	/// A token's text, without the spaces and comments around it.
+	fn token_text(token: &full_moon::tokenizer::TokenReference) -> String {
+		token.token().to_string()
+	}
+
+	/// The name an expression is, when it is just a name.
+	fn plain_name(e: &full_moon::ast::Expression) -> Option<String> {
+		match e {
+			full_moon::ast::Expression::Var(full_moon::ast::Var::Name(n)) => Some(token_text(n)),
+			_ => None,
+		}
+	}
+
+	/// A function's parameter names.
+	fn parameters(body: &full_moon::ast::FunctionBody) -> Vec<String> {
+		body.parameters()
+			.iter()
+			.map(|p| match p {
+				full_moon::ast::Parameter::Name(n) => token_text(n),
+				other => other.to_string(),
+			})
+			.collect()
+	}
+
+	/// The names a block's `return` gives, or None if it ends otherwise or
+	/// returns anything but names.
+	fn returned_names(block: &full_moon::ast::Block) -> Option<Vec<String>> {
+		let full_moon::ast::LastStmt::Return(r) = block.last_stmt()? else {
+			return None;
+		};
+		r.returns().iter().map(plain_name).collect()
+	}
+
+	/// Whether `e` is `<param>.send == false`.
+	fn is_send_false(e: &full_moon::ast::Expression, param: &str) -> bool {
+		use full_moon::ast::{BinOp, Expression, Index, Prefix, Suffix, Var};
+		let Expression::BinaryOperator {
+			lhs,
+			binop: BinOp::TwoEqual(_),
+			rhs,
+		} = e
+		else {
+			return false;
+		};
+		let Expression::Var(Var::Expression(var)) = &**lhs else {
+			return false;
+		};
+		let suffixes: Vec<_> = var.suffixes().collect();
+		matches!(var.prefix(), Prefix::Name(n) if token_text(n) == param)
+			&& matches!(&suffixes[..], [Suffix::Index(Index::Dot { name, .. })] if token_text(name) == "send")
+			&& matches!(&**rhs, Expression::Symbol(s) if token_text(s) == "false")
+	}
+
+	// What the code for Studio relies on, read from the exporters' syntax
+	// tree, so comments and local names do not count: the script returns a
+	// function of options, which returns the problems, the export and a
+	// sender; `send = false` gives back the export the run made, which says
+	// its schema.
 	#[test]
 	fn exporters_are_functions_of_options() {
+		use full_moon::ast::{BinOp, Expression, Field, FunctionArgs, LastStmt, Stmt, Suffix};
 		for v in SCHEMAS {
 			let source = exporter(v).unwrap();
-			assert!(source.contains("return function(options)"));
-			// the problems are returned to the caller, an empty list when none
-			assert!(source.contains("return issues"));
-			// a clip that never loads must not stall the export
+			let parsed = full_moon::parse_fallible(&source, full_moon::LuaVersion::luau());
+			assert!(parsed.errors().is_empty(), "schema {v}");
+			let chunk = parsed.ast().nodes();
+			let local_function = |name: &str| {
+				chunk.stmts().find_map(|s| match s {
+					Stmt::LocalFunction(f) if token_text(f.name()) == name => Some(f.body()),
+					_ => None,
+				})
+			};
+			let local_value = |block: &full_moon::ast::Block, name: &str| {
+				block.stmts().find_map(|s| match s {
+					Stmt::LocalAssignment(a) => a
+						.names()
+						.iter()
+						.position(|n| token_text(n) == name)
+						.and_then(|i| a.expressions().iter().nth(i).cloned()),
+					_ => None,
+				})
+			};
+
+			// the script returns a function of one argument, the options
+			let Some(LastStmt::Return(script)) = chunk.last_stmt() else {
+				panic!("schema {v}: the script does not end with a return");
+			};
+			let returned: Vec<_> = script.returns().iter().collect();
+			let [Expression::Function(entry)] = &returned[..] else {
+				panic!("schema {v}: the script does not return one function");
+			};
+			let [options] = &parameters(entry.body())[..] else {
+				panic!("schema {v}: the function does not take just the options");
+			};
+			// which returns three things: the problems (a list made at the
+			// top), the export and a function of one argument sending it
+			let entry_block = entry.body().block();
+			let out = returned_names(entry_block).expect("the function returns names");
+			let [issues, _export, send] = &out[..] else {
+				panic!("schema {v}: the function returns {out:?}");
+			};
+			assert!(
+				matches!(
+					local_value(chunk, issues),
+					Some(Expression::TableConstructor(_))
+				),
+				"schema {v}: {issues} is not a list made at the top"
+			);
+			let sender = local_function(send).expect("the sender is a local function");
+			assert_eq!(parameters(sender).len(), 1, "schema {v}: send(export)");
+
+			// the run it makes is a local function, called with the options
+			let run = entry_block
+				.stmts()
+				.find_map(|s| {
+					let Stmt::LocalAssignment(a) = s else {
+						return None;
+					};
+					let Some(Expression::FunctionCall(call)) = a.expressions().iter().next() else {
+						return None;
+					};
+					let Some(Suffix::Call(full_moon::ast::Call::AnonymousCall(args))) =
+						call.suffixes().next()
+					else {
+						return None;
+					};
+					let FunctionArgs::Parentheses { arguments, .. } = &**args else {
+						return None;
+					};
+					let args: Vec<_> = arguments.iter().collect();
+					// `options`, or `options or {}`
+					let passes_options = args.iter().skip(1).any(|a| match a {
+						Expression::BinaryOperator {
+							lhs,
+							binop: BinOp::Or(_),
+							..
+						} => plain_name(lhs).as_ref() == Some(options),
+						a => plain_name(a).as_ref() == Some(options),
+					});
+					passes_options.then(|| plain_name(args[0])).flatten()
+				})
+				.and_then(|name| local_function(&name))
+				.unwrap_or_else(|| panic!("schema {v}: the options are not passed to a run"));
+			let [run_options, ..] = &parameters(run)[..] else {
+				panic!("schema {v}: the run takes no options");
+			};
+			let run_block = run.block();
+			let made = returned_names(run_block).expect("the run ends returning its export");
+			let [made] = &made[..] else {
+				panic!("schema {v}: the run returns {made:?}");
+			};
+			// with send = false it returns that same export before sending it
+			let kept = run_block.stmts().find_map(|s| match s {
+				Stmt::If(i) if is_send_false(i.condition(), run_options) => {
+					returned_names(i.block())
+				}
+				_ => None,
+			});
+			assert_eq!(kept.as_deref(), Some(&[made.clone()][..]), "schema {v}");
+			// and the export is a table whose SchemaVersion is this schema
+			let Some(Expression::TableConstructor(export)) = local_value(run_block, made) else {
+				panic!("schema {v}: {made} is not made as a table");
+			};
+			let schema = export
+				.fields()
+				.iter()
+				.find_map(|f| match f {
+					Field::NameKey { key, value, .. } if token_text(key) == "SchemaVersion" => {
+						Some(value.clone())
+					}
+					_ => None,
+				})
+				.unwrap_or_else(|| panic!("schema {v}: the export has no SchemaVersion"));
+			let schema = match plain_name(&schema) {
+				Some(name) => local_value(chunk, &name).expect("the schema is a local"),
+				None => *schema,
+			};
+			let Expression::Number(schema) = schema else {
+				panic!("schema {v}: the SchemaVersion is not a number");
+			};
+			assert_eq!(token_text(&schema), v.to_string(), "schema {v}");
+
+			// text checks only, the one guard each of these has: a clip that
+			// never loads must not stall the export, and current avatars'
+			// limbs are AnimationConstraints
 			assert!(source.contains("local ok, clip = loadClip(animationId)"));
-			// current avatars' limbs are AnimationConstraints
 			assert!(source.contains("inst:IsA(\"AnimationConstraint\")"));
-			// the declared schema, and the payload saying it
-			assert!(source.contains(&format!("local SCHEMA = {v}\n")));
-			assert!(source.contains("local payload = {SchemaVersion=SCHEMA,"));
-			assert!(source.trim_end().ends_with("end"));
 		}
-		let command = studio_code(1, CodeMode::Send, CodeLayout::OneLine);
-		assert!(command.contains("/export.luau?schema=1"));
-		assert!(command.ends_with("loadstring(s)()()"));
-		assert!(
-			!studio_code(LATEST_SCHEMA, CodeMode::Send, CodeLayout::OneLine).contains("schema=")
-		);
-		// exporting without sending: the export comes back, with a sender
-		for v in SCHEMAS {
-			let source = exporter(v).unwrap();
-			assert!(source.contains("if options.send == false then"));
-			assert!(source.contains("return issues, export, send"));
-			assert!(source.contains("local function send(export)"));
-		}
-		// every mode and layout fetches the same exporter and runs it
-		for mode in [CodeMode::Send, CodeMode::Edit] {
-			for layout in [CodeLayout::OneLine, CodeLayout::Formatted] {
-				let code = studio_code(1, mode, layout);
-				assert!(code.contains("/export.luau?schema=1"), "{code}");
-				assert_eq!(
-					code.contains('\n'),
-					layout == CodeLayout::Formatted,
-					"{code}"
-				);
-				let edits = code.contains("send = false") || code.contains("send=false");
-				assert_eq!(edits, mode == CodeMode::Edit, "{code}");
-			}
-		}
-		let script = studio_code(1, CodeMode::Edit, CodeLayout::Formatted);
-		assert!(script.contains("loadstring(source)()({ send = false })"));
-		assert!(script.trim_end().ends_with("your own way"));
-		assert!(studio_code(1, CodeMode::Edit, CodeLayout::OneLine).ends_with("send(export)"));
 	}
 
 	// The exact code users paste into Studio, for every mode and layout.
@@ -1783,15 +1924,18 @@ mod tests {
 	}
 
 	// Two exports with the same name (or names that are made safe alike)
-	// finishing in the same second must not be saved over each other.
+	// finishing in the same second must not be saved over each other. The
+	// stamp is the clock's, so pairs are completed until one pair lands in
+	// the same second: a pair split by a new second proves nothing.
 	#[test]
 	fn exports_with_the_same_name_get_their_own_files() {
 		let mut exports = exports();
-		let mut paths = Vec::new();
-		for (id, name) in [("a", "Place"), ("b", "Place"), ("c", "a/b"), ("d", "a\\b")] {
+		let mut ids = 0..;
+		let mut complete = |name: &str| {
+			let id = ids.next().unwrap().to_string();
 			let named = piece(
 				&[
-					("x-meshvault-export", id),
+					("x-meshvault-export", &id),
 					("x-meshvault-chunk", "1/1"),
 					("x-meshvault-name", name),
 				],
@@ -1800,10 +1944,27 @@ mod tests {
 			let Ok(Some(done)) = receive_piece(named, &mut exports) else {
 				panic!("one piece is the whole export");
 			};
-			paths.push(done.path);
+			done.path
+		};
+		// the second a file name carries, after `stem-`
+		let stamp = |path: &PathBuf, stem: &str| -> u64 {
+			let file = path.file_name().unwrap().to_str().unwrap();
+			let rest = file.strip_prefix(&format!("{stem}-")).expect(file);
+			let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+			digits.parse().expect(file)
+		};
+		// only a watchdog: a pair almost always lands in one second
+		let watchdog = Instant::now() + Duration::from_secs(20);
+		for (first, second, stem) in [("Place", "Place", "Place"), ("a/b", r"a\b", "a_b")] {
+			loop {
+				assert!(Instant::now() < watchdog, "no {stem} pair in one second");
+				let (a, b) = (complete(first), complete(second));
+				if stamp(&a, stem) == stamp(&b, stem) {
+					assert_ne!(a, b, "{first:?} and {second:?}");
+					break;
+				}
+			}
 		}
-		assert_ne!(paths[0], paths[1]);
-		assert_ne!(paths[2], paths[3]);
 	}
 
 	#[test]

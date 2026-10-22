@@ -2,4 +2,6 @@
 //! link that receives exports, and parsing the export files.
 
 pub mod export_file;
+#[cfg(test)]
+mod exporter_tests;
 pub mod link;

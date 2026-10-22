@@ -481,6 +481,11 @@ mod tests {
 		assert_eq!(normalize([3.0, 0.0, 4.0]), [0.6, 0.0, 0.8]);
 		assert_eq!(normalize([0.0; 3]), [0.0; 3]);
 		assert_eq!(normalize([1e-13, 0.0, 0.0]), [1e-13, 0.0, 0.0]);
+		// the threshold is strict: a length of exactly 1e-12 is kept
+		let v = [1e-12_f32, 0.0, 0.0];
+		let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+		assert_eq!(len, 1e-12, "the length must be exactly the threshold");
+		assert_eq!(normalize(v), v);
 		// just over the threshold it normalises
 		let n = normalize([1e-11, 0.0, 0.0]);
 		assert!(
@@ -489,14 +494,5 @@ mod tests {
 		);
 		let nan = normalize([f32::NAN, 1.0, 0.0]);
 		assert!(nan[0].is_nan() && nan[1] == 1.0 && nan[2] == 0.0);
-	}
-
-	/// The skinning threshold is strict: a length of exactly 1e-12 is kept.
-	#[test]
-	fn normalize_keeps_a_vector_of_exactly_the_threshold() {
-		let v = [1e-12_f32, 0.0, 0.0];
-		let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-		assert_eq!(len, 1e-12, "the length must be exactly the threshold");
-		assert_eq!(normalize(v), v);
 	}
 }

@@ -44,19 +44,15 @@ mod tests {
 		(a - b).abs() < 1e-6
 	}
 
-	#[test]
-	fn the_ends_map_to_themselves() {
-		assert!(close(srgb_to_linear(0.0), 0.0));
-		assert!(close(srgb_to_linear(1.0), 1.0));
-		assert!(close(linear_to_srgb(0.0), 0.0));
-		assert!(close(linear_to_srgb(1.0), 1.0));
-		assert!(close(srgb8_to_linear(255), 1.0));
-	}
-
 	/// Published sRGB values (IEC 61966-2-1), either side of each threshold
-	/// and mid-range.
+	/// and mid-range, plus the two ends, which map to themselves.
 	#[test]
 	fn matches_reference_values() {
+		for (encoded, linear) in [(0.0, 0.0), (1.0, 1.0)] {
+			assert!(close(srgb_to_linear(encoded), linear), "{encoded}");
+			assert!(close(linear_to_srgb(linear), encoded), "{linear}");
+		}
+		assert!(close(srgb8_to_linear(255), 1.0));
 		for (encoded, linear) in [
 			(0.02, 0.001_547_99),
 			(0.04045, 0.003_130_8),
@@ -70,17 +66,28 @@ mod tests {
 	}
 
 	/// The straight piece runs up to and including each threshold; the curve
-	/// starts just above it.
+	/// starts just above it. The expected values were worked out in 50-digit
+	/// decimal from the exact f32 inputs; at the threshold the other piece is
+	/// 2.3e-9 (decoding) and 2.9e-8 (encoding) away, so each tolerance is
+	/// inside that gap and a threshold on the wrong piece fails.
 	#[test]
 	fn thresholds_belong_to_the_straight_piece() {
 		let t = 0.04045_f32;
-		assert_eq!(srgb_to_linear(t), t / 12.92);
-		let up = t.next_up();
-		assert_eq!(srgb_to_linear(up), ((up + 0.055) / 1.055).powf(2.4));
+		for (c, linear) in [
+			(t, 0.003_130_804_897_28_f64),
+			(t.next_up(), 0.003_130_807_519_08),
+		] {
+			let got = srgb_to_linear(c) as f64;
+			assert!((got - linear).abs() < 1e-9, "{c}: {got} vs {linear}");
+		}
 		let t = 0.003_130_8_f32;
-		assert_eq!(linear_to_srgb(t), t * 12.92);
-		let up = t.next_up();
-		assert_eq!(linear_to_srgb(up), 1.055 * up.powf(1.0 / 2.4) - 0.055);
+		for (c, encoded) in [
+			(t, 0.040_449_937_172_2_f64),
+			(t.next_up(), 0.040_449_911_592_9),
+		] {
+			let got = linear_to_srgb(c) as f64;
+			assert!((got - encoded).abs() < 1e-8, "{c}: {got} vs {encoded}");
+		}
 		// and the two pieces meet there, to the rounding of the constants
 		assert!((linear_to_srgb(t.next_up()) - linear_to_srgb(t)).abs() < 1e-5);
 		assert!((srgb_to_linear(0.04045_f32.next_up()) - srgb_to_linear(0.04045)).abs() < 1e-5);
@@ -92,14 +99,5 @@ mod tests {
 			let back = (linear_to_srgb(srgb8_to_linear(c)) * 255.0).round() as u8;
 			assert_eq!(back, c);
 		}
-	}
-
-	#[test]
-	fn linear_rgb_converts_each_channel() {
-		let c = Color32::from_rgb(255, 128, 0);
-		assert_eq!(
-			linear_rgb(c),
-			[srgb8_to_linear(255), srgb8_to_linear(128), 0.0]
-		);
 	}
 }

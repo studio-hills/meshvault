@@ -323,18 +323,6 @@ mod tests {
 		assert_eq!(whole.details.len(), 1, "only the row from before");
 	}
 
-	/// Names are split at NULs, in order, without empty ones; bytes that
-	/// are not UTF-8 are replaced, not dropped.
-	#[test]
-	fn nul_separated_names() {
-		assert_eq!(
-			nul_separated(b"\0Root\0\0Neck\xff\0"),
-			["Root", "Neck\u{fffd}"]
-		);
-		assert!(nul_separated(b"").is_empty());
-		assert!(nul_separated(b"\0\0").is_empty());
-	}
-
 	/// LOD meshes open on the finest level, even with no groups at all;
 	/// other kinds open with every group.
 	#[test]

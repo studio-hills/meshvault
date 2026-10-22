@@ -328,11 +328,17 @@ mod tests {
 		assert_eq!(lod_groups(&[], 0), single_group(0));
 	}
 
-	/// The info panel lists names on one line.
+	/// The info panel lists names on one line: split at NULs, in order,
+	/// without empty ones; bytes that are not UTF-8 are replaced, not dropped.
 	#[test]
 	fn name_lists_are_comma_separated() {
 		assert_eq!(super::name_list(b"Root\0Neck\0\0Head"), "Root, Neck, Head");
+		assert_eq!(
+			super::name_list(b"\0Root\0\0Neck\xff\0"),
+			"Root, Neck\u{fffd}"
+		);
 		assert_eq!(super::name_list(b""), "");
+		assert_eq!(super::name_list(b"\0\0"), "");
 	}
 
 	/// Formats that store texture coordinates should expose one per vertex.

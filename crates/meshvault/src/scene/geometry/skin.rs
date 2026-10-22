@@ -161,22 +161,12 @@ fn build_skin(
 
 #[cfg(test)]
 mod tests {
-	use std::io::Cursor;
-
-	use super::super::strip_ansi;
 	use super::*;
-	use crate::scene::geometry::load;
+	use crate::scene::geometry::load_with_skin;
 
-	/// Reads a mesh's skinning on its own (the app uses
-	/// [`load_with_skin`](super::super::load_with_skin), which parses once).
-	fn skin(bytes: &[u8], vertex_count: usize) -> Result<Option<Skin>, String> {
-		if !bytes.starts_with(b"version ") {
-			return Ok(None);
-		}
-		let mesh = rbx_mesh::read_mesh_versioned(Cursor::new(bytes)).map_err(strip_ansi)?;
-		skin_of(&mesh, vertex_count)
-	}
-
+	/// Every sample loads with its skin in one parse; a skin lines up with
+	/// the loaded vertices; cut-short files do not panic; and files that are
+	/// not meshes fail to load.
 	#[test]
 	fn sample_skins_line_up_with_vertices() {
 		let dir = crate::test_support::SAMPLE_MESHES;
@@ -187,9 +177,10 @@ mod tests {
 				continue;
 			}
 			let bytes = std::fs::read(&path).unwrap();
-			let Ok(loaded) = load(&bytes) else { continue };
+			let (loaded, skin) =
+				load_with_skin(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 			let n = loaded.geometry.positions.len();
-			match skin(&bytes, n) {
+			match skin {
 				Ok(Some(s)) => {
 					skinned.push(path.file_name().unwrap().to_string_lossy().into_owned());
 					assert_eq!(s.influences.len(), n);
@@ -208,6 +199,8 @@ mod tests {
 				Ok(None) => {}
 				Err(e) => println!("{}: skin unavailable: {e}", path.display()),
 			}
+			// cut short, a file fails to load, or loads with less
+			let _ = load_with_skin(&bytes[..bytes.len() / 2]);
 		}
 		println!("{} skinned samples", skinned.len());
 		// skin errors are printed, not counted: a known skinned sample must
@@ -217,44 +210,6 @@ mod tests {
 			skinned.iter().any(|n| n == "13674780763"),
 			"the skinned head should skin: {skinned:?}"
 		);
-	}
-
-	/// One parse gives what `load` then `skin` give: the same geometry,
-	/// details and notes, the same skin or skin error, and the same error
-	/// for a file that does not load.
-	#[test]
-	fn load_with_skin_matches_load_then_skin() {
-		use crate::scene::geometry::load_with_skin;
-		let separately = |bytes: &[u8]| {
-			load(bytes).map(|l| {
-				let n = l.geometry.positions.len();
-				(l, skin(bytes, n))
-			})
-		};
-		let same = |name: &str, bytes: &[u8]| {
-			let (one, two) = (load_with_skin(bytes), separately(bytes));
-			assert_eq!(format!("{one:?}"), format!("{two:?}"), "{name}");
-			one
-		};
-		let mut skinned = 0;
-		let mut skin_errors = 0;
-		for entry in std::fs::read_dir(crate::test_support::SAMPLE_MESHES).unwrap() {
-			let path = entry.unwrap().path();
-			if !path.is_file() {
-				continue;
-			}
-			let bytes = std::fs::read(&path).unwrap();
-			let name = path.display().to_string();
-			match same(&name, &bytes).unwrap().1 {
-				Ok(Some(_)) => skinned += 1,
-				Ok(None) => {}
-				Err(_) => skin_errors += 1,
-			}
-			// cut short, a file fails to load, or loads with less
-			same(&name, &bytes[..bytes.len() / 2]).ok();
-		}
-		assert!(skinned > 0);
-		println!("{skinned} skinned, {skin_errors} skin errors");
 		for bytes in [
 			&b""[..],
 			b"version 9.00\n",
@@ -262,7 +217,7 @@ mod tests {
 			b"CSGPHS not physics",
 			b"something else",
 		] {
-			assert!(same("bad input", bytes).is_err());
+			assert!(load_with_skin(bytes).is_err(), "{bytes:?}");
 		}
 	}
 

@@ -1357,4 +1357,81 @@ mod tests {
 			]
 		);
 	}
+
+	/// A track for a bone only a skinned mesh has moves that mesh, so the
+	/// clip counts it as a mesh-bone track; every other unmatched track
+	/// still moves nothing and stays listed, in the clip's order.
+	#[test]
+	fn clip_slots_excludes_only_mesh_driven_tracks() {
+		use super::fixtures::{asset, cf};
+		use crate::anim::schema::{AnimationClip, Keyframe, Pose};
+		let pose = |name: &str| Pose {
+			name: name.into(),
+			transform: cf([0.0; 3]),
+			weight: 1.0,
+			..Default::default()
+		};
+		// top-level poses under no parent pose: none of them binds to the rig
+		let model = AnimatedModel {
+			name: "Dummy".into(),
+			path: "Workspace/Dummy".into(),
+			parts: vec![placed_part(None, None, "Head", [0.0; 3])],
+			animations: vec![AnimationClip {
+				name: "Talk".into(),
+				status: ClipStatus::KeyframeSequence,
+				duration: 1.0,
+				keyframes: vec![Keyframe {
+					time: 0.0,
+					poses: vec![pose("Jaw"), pose("Tail"), pose("Hat")],
+					markers: vec![],
+				}],
+				..Default::default()
+			}],
+			..Default::default()
+		};
+		let rig = Rig::build(&model);
+		let rest = rig.rest();
+		// a skinned mesh whose Jaw bone is not in the model
+		let skin = Skin {
+			bones: vec!["Head".into(), "Jaw".into()],
+			parents: vec![None, Some(0)],
+			binds: vec![cf([0.0; 3]), cf([0.0, 0.0, 1.0])],
+			influences: vec![[(1, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; 3],
+			facs: None,
+		};
+		let a = asset(vec![[0.0, 0.0, 2.0]; 3], skin.clone());
+		let part = |skinned: bool| PartView {
+			index: 0,
+			shape: PartShape::Missing("not drawn in this test".into()),
+			visible: true,
+			centre: [0.0; 3],
+			scale: [1.0; 3],
+			offset: [0.0; 3],
+			colour: PART_COLOUR,
+			surface: surface_of(&model.parts[0]),
+			approximate: None,
+			appearance: None,
+			skin: skinned.then(|| {
+				PartSkin::build(&skin, &a, &rig, &rest, 0, ([0.0; 3], [1.0; 3], [0.0; 3]))
+			}),
+			gpu: None,
+			decals: Vec::new(),
+			lights: Vec::new(),
+		};
+		let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+		for (parts, mesh_bone_tracks, unmatched) in [
+			(vec![part(true)], 1, names(&["Tail", "Hat"])),
+			// two meshes with the same Jaw still drive the one Jaw track
+			(vec![part(true), part(true)], 1, names(&["Tail", "Hat"])),
+			(vec![part(false)], 0, names(&["Jaw", "Tail", "Hat"])),
+		] {
+			let slots = clip_slots(&model, &rig, &parts);
+			assert_eq!(slots.len(), 1);
+			let slot = &slots[0];
+			assert!(slot.clip.is_ok(), "{:?}", slot.clip.as_ref().err());
+			assert_eq!(slot.binding.unmatched, ["Jaw", "Tail", "Hat"]);
+			assert_eq!(slot.mesh_bone_tracks, mesh_bone_tracks);
+			assert_eq!(slot.unmatched, unmatched);
+		}
+	}
 }

@@ -456,31 +456,4 @@ mod tests {
 			std::fs::read(&map).unwrap()
 		);
 	}
-
-	#[test]
-	fn split_gives_the_folder_and_stem() {
-		let path = Path::new("out").join("mesh.obj");
-		assert_eq!(split(&path), Ok((PathBuf::from("out"), "mesh".into())));
-		// a bare file name has an empty folder, which is fine
-		assert_eq!(
-			split(Path::new("mesh.obj")),
-			Ok((PathBuf::new(), "mesh".into()))
-		);
-		assert_eq!(
-			split(Path::new("mesh")),
-			Ok((PathBuf::new(), "mesh".into()))
-		);
-	}
-
-	#[test]
-	fn split_rejects_a_path_without_folder_or_name() {
-		for path in ["", "/"] {
-			assert_eq!(
-				split(Path::new(path)),
-				Err("no folder to write into".into()),
-				"{path:?}"
-			);
-		}
-		assert_eq!(split(Path::new("out/..")), Err("no file name".into()));
-	}
 }

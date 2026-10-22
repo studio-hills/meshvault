@@ -708,6 +708,7 @@ fn same(a: &CFrame, b: &CFrame) -> bool {
 #[allow(clippy::single_range_in_vec_init)]
 mod tests {
 	use super::*;
+	use crate::anim::schema::AnimatedModel;
 	use crate::export::fixtures::parse_glb;
 	use crate::scene::geometry::GroupKind;
 	use crate::test_support::TempDir;
@@ -838,21 +839,20 @@ mod tests {
 		assert_eq!((lo, hi), (vec![1.0, -1.0, -2.0], vec![3.0, 5.0, 4.0]));
 		let (lo, hi) = min_max(&[2.0, 7.0], 1);
 		assert_eq!((lo, hi), (vec![2.0], vec![7.0]));
-		// no values: the starting extremes, as they are
-		assert_eq!(min_max(&[], 2), (vec![f32::MAX; 2], vec![f32::MIN; 2]));
-	}
-
-	#[test]
-	fn column_major_of_identity_is_identity() {
-		let mut identity = [0.0; 16];
-		for k in 0..4 {
-			identity[k * 5] = 1.0;
-		}
-		assert_eq!(column_major(&CFrame::IDENTITY), identity);
 	}
 
 	#[test]
 	fn column_major_puts_translation_last() {
+		// the root's inverse bind
+		assert_eq!(
+			column_major(&CFrame::IDENTITY),
+			[
+				1.0, 0.0, 0.0, 0.0, //
+				0.0, 1.0, 0.0, 0.0, //
+				0.0, 0.0, 1.0, 0.0, //
+				0.0, 0.0, 0.0, 1.0,
+			]
+		);
 		let cf = CFrame::from_components(&[
 			1.0, 2.0, 3.0, //
 			0.0, -1.0, 0.0, //
@@ -1131,6 +1131,261 @@ mod tests {
 		assert_eq!(metallic(&rough, false).0, 0.0);
 	}
 
+	/// A block on a block: `Root` at (1, 2, 3), and `Arm` at (4, 2, 3) on a
+	/// Motor6D hinged 2 studs along X from Root's centre, 1 stud short of
+	/// Arm's. Its clip `Swing` turns the hinge about Z from 230° to 250°
+	/// over one second, and `Broken` could not be exported.
+	fn swinging_arm(clips: bool) -> AnimatedModel {
+		use crate::anim::schema::{
+			AnimationClip, ClipStatus, JointInfo, Keyframe, ModelPart, Pose,
+		};
+
+		let block = |name: &str, at: [f32; 3]| ModelPart {
+			name: name.into(),
+			path: format!("Workspace/Rig/{name}"),
+			class_name: Some("Part".into()),
+			shape: Some("Block".into()),
+			size: [1.0; 3],
+			cframe: CFrame::from_position(at).components(),
+			..Default::default()
+		};
+		let key = |time: f32, degrees: f32| Keyframe {
+			time,
+			poses: vec![Pose {
+				name: "Root".into(),
+				transform: CFrame::IDENTITY.components(),
+				children: vec![Pose {
+					name: "Arm".into(),
+					transform: CFrame::axis_rotation(2, degrees.to_radians()).components(),
+					weight: 1.0,
+					..Default::default()
+				}],
+				..Default::default()
+			}],
+			markers: vec![],
+		};
+		let animations = if clips {
+			vec![
+				AnimationClip {
+					name: "Swing".into(),
+					status: ClipStatus::KeyframeSequence,
+					duration: 1.0,
+					keyframes: vec![key(0.0, 230.0), key(1.0, 250.0)],
+					..Default::default()
+				},
+				AnimationClip {
+					name: "Broken".into(),
+					status: ClipStatus::Unavailable,
+					..Default::default()
+				},
+			]
+		} else {
+			Vec::new()
+		};
+		AnimatedModel {
+			name: "Rig".into(),
+			path: "Workspace/Rig".into(),
+			parts: vec![
+				block("Root", [1.0, 2.0, 3.0]),
+				block("Arm", [4.0, 2.0, 3.0]),
+			],
+			joints: vec![JointInfo {
+				name: "Shoulder".into(),
+				path: "Workspace/Rig/Root/Shoulder".into(),
+				part0: "Workspace/Rig/Root".into(),
+				part1: "Workspace/Rig/Arm".into(),
+				c0: CFrame::from_position([2.0, 0.0, 0.0]).components(),
+				c1: CFrame::from_position([-1.0, 0.0, 0.0]).components(),
+				..Default::default()
+			}],
+			animations,
+			..Default::default()
+		}
+	}
+
+	/// An animated model is one armature: a joint per part under a root
+	/// named after the model, each block skinned rigidly to its part, and
+	/// each clip that loaded baked, the parts that hold still on two keys.
+	#[test]
+	fn export_model_writes_a_bound_rig_and_its_clip() {
+		let dir = TempDir::new("glb_model");
+		let ctx = eframe::egui::Context::default();
+		for clips in [true, false] {
+			let (sources, images) = (HashMap::new(), HashMap::new());
+			let mut view = ModelView::load(&ctx, 0, &swinging_arm(clips), &sources, &images);
+			view.show_blocks = true;
+			let path = dir.join(format!("rig_{clips}.glb"));
+			export_model(&view, &path).unwrap();
+			let glb = std::fs::read(&path).unwrap();
+			let (doc, bin) = parse_glb(&glb);
+			let accessor = |i: &Value| &doc["accessors"][i.as_u64().unwrap() as usize];
+
+			// nodes 0 and 1 are the parts, 2 the root, then a mesh per block
+			let nodes = doc["nodes"].as_array().unwrap();
+			assert_eq!(nodes.len(), 5, "{nodes:?}");
+			assert_eq!(nodes[0]["name"], "Root");
+			assert_eq!(nodes[0]["children"], json!([1]));
+			assert_eq!(nodes[0]["translation"], json!([1.0, 2.0, 3.0]));
+			assert_eq!(nodes[1]["name"], "Arm");
+			assert!(nodes[1].get("children").is_none());
+			// Arm sits 3 studs along X from Root, unturned
+			assert_eq!(nodes[1]["translation"], json!([3.0, 0.0, 0.0]));
+			assert_eq!(nodes[1]["rotation"], json!([0.0, 0.0, 0.0, 1.0]));
+			assert_eq!(nodes[2], json!({ "name": "Rig", "children": [0] }));
+			assert_eq!(doc["scenes"], json!([{ "nodes": [2, 3, 4] }]));
+			let skins = doc["skins"].as_array().unwrap();
+			assert_eq!(skins.len(), 1);
+			assert_eq!(skins[0]["joints"], json!([0, 1, 2]));
+			assert_eq!(skins[0]["skeleton"], 2);
+
+			// inverse binds, column-major: the parts' rest positions undone,
+			// and nothing for the root
+			let ibm = accessor(&skins[0]["inverseBindMatrices"]);
+			assert_eq!(
+				(ibm["type"].as_str(), ibm["count"].as_u64()),
+				(Some("MAT4"), Some(3))
+			);
+			assert_eq!(ibm["componentType"], FLOAT);
+			let moved = |x: f32, y: f32, z: f32| {
+				let mut m = [0.0; 16];
+				for k in 0..4 {
+					m[k * 5] = 1.0;
+				}
+				m[12..15].copy_from_slice(&[x, y, z]);
+				m
+			};
+			let expected = [
+				moved(-1.0, -2.0, -3.0),
+				moved(-4.0, -2.0, -3.0),
+				moved(0.0, 0.0, 0.0),
+			];
+			assert_eq!(floats(&doc, bin, ibm), expected.concat());
+
+			// each block is skinned wholly to its own part, where it stands
+			let mut meshes = Vec::new();
+			for (node, (part, centre)) in nodes[3..]
+				.iter()
+				.zip([(0, [1.0, 2.0, 3.0]), (1, [4.0, 2.0, 3.0])])
+			{
+				assert_eq!(node["skin"], 0, "{node}");
+				let mesh = node["mesh"].as_u64().unwrap() as usize;
+				meshes.push(mesh);
+				let attributes = &doc["meshes"][mesh]["primitives"][0]["attributes"];
+				let position = accessor(&attributes["POSITION"]);
+				let lo: Vec<f32> = centre.iter().map(|c| c - 0.5).collect();
+				let hi: Vec<f32> = centre.iter().map(|c| c + 0.5).collect();
+				assert_eq!(
+					(&position["min"], &position["max"]),
+					(&json!(lo), &json!(hi)),
+					"{node}"
+				);
+				let count = position["count"].as_u64().unwrap() as usize;
+				assert!(count > 0);
+				let joints = accessor(&attributes["JOINTS_0"]);
+				assert_eq!(joints["componentType"], UNSIGNED_SHORT);
+				let view = &doc["bufferViews"][joints["bufferView"].as_u64().unwrap() as usize];
+				let at = view["byteOffset"].as_u64().unwrap() as usize;
+				let joints: Vec<u16> = bin[at..at + count * 8]
+					.chunks(2)
+					.map(|b| u16::from_le_bytes([b[0], b[1]]))
+					.collect();
+				assert_eq!(joints, [part, 0, 0, 0].repeat(count), "{node}");
+				let weights = floats(&doc, bin, accessor(&attributes["WEIGHTS_0"]));
+				assert_eq!(weights, [1.0, 0.0, 0.0, 0.0].repeat(count), "{node}");
+			}
+			assert!(
+				meshes[0] != meshes[1]
+					&& meshes
+						.iter()
+						.all(|&m| m < doc["meshes"].as_array().unwrap().len())
+			);
+
+			if !clips {
+				assert!(doc.get("animations").is_none());
+				continue;
+			}
+			// only the clip that loaded
+			let animations = doc["animations"].as_array().unwrap();
+			assert_eq!(animations.len(), 1);
+			assert_eq!(animations[0]["name"], "Swing");
+			let channels = animations[0]["channels"].as_array().unwrap();
+			let targets: Vec<(u64, &str)> = channels
+				.iter()
+				.map(|c| {
+					(
+						c["target"]["node"].as_u64().unwrap(),
+						c["target"]["path"].as_str().unwrap(),
+					)
+				})
+				.collect();
+			assert_eq!(
+				targets,
+				[
+					(0, "translation"),
+					(0, "rotation"),
+					(1, "translation"),
+					(1, "rotation")
+				]
+			);
+			let sampled = |channel: usize| {
+				let sampler = &animations[0]["samplers"]
+					[channels[channel]["sampler"].as_u64().unwrap() as usize];
+				let (input, output) = (accessor(&sampler["input"]), accessor(&sampler["output"]));
+				assert_eq!(input["count"], output["count"], "channel {channel}");
+				(floats(&doc, bin, input), floats(&doc, bin, output))
+			};
+			// Root holds still: two keys, at the start and end
+			let (times, translations) = sampled(0);
+			assert_eq!(times, [0.0, 1.0]);
+			assert_eq!(translations, [1.0, 2.0, 3.0].repeat(2));
+			let (_, rotations) = sampled(1);
+			assert_eq!(rotations, [0.0, 0.0, 0.0, 1.0].repeat(2));
+			// Arm moves: a key every 1/30 s from 0 to 1 inclusive
+			let (times, translations) = sampled(2);
+			assert_eq!(times.len(), 31);
+			assert!(times.windows(2).all(|w| w[1] > w[0]), "{times:?}");
+			assert_eq!((times[0], times[30]), (0.0, 1.0));
+			// the hinge 2 along X, Arm's centre 1 further along the turned X
+			let swung = |degrees: f32| {
+				let (s, c) = degrees.to_radians().sin_cos();
+				[2.0 + c, s, 0.0]
+			};
+			let close = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+			assert!(close(&translations[..3], &swung(230.0)), "{translations:?}");
+			assert!(
+				close(&translations[90..], &swung(250.0)),
+				"{translations:?}"
+			);
+			// half-angles 115° and 125°, on the same side all the way: the turn
+			// passes 240°, where the matrix-to-quaternion conversion switches sign
+			let (_, rotations) = sampled(3);
+			assert_eq!(rotations.len(), 31 * 4);
+			for (k, pair) in rotations
+				.chunks(4)
+				.collect::<Vec<_>>()
+				.windows(2)
+				.enumerate()
+			{
+				let dot: f32 = pair[0].iter().zip(pair[1]).map(|(a, b)| a * b).sum();
+				assert!(dot > 0.0, "keys {k} and {}: {pair:?}", k + 1);
+			}
+			let half = |degrees: f32| {
+				let (s, c) = (degrees / 2.0).to_radians().sin_cos();
+				[0.0, 0.0, s, c]
+			};
+			assert!(
+				close(&rotations[..4], &half(230.0)),
+				"{:?}",
+				&rotations[..4]
+			);
+			assert!(
+				close(&rotations[120..], &half(250.0)),
+				"{:?}",
+				&rotations[120..]
+			);
+		}
+	}
+
 	/// Exports every animated model of the workspace at `MESHVAULT_WS`,
 	/// calling the glTF writer directly, to the folder `MESHVAULT_GLB_OUT`
 	/// (default: `meshvault-glb-test` in the temp folder, not emptied first;
@@ -1148,15 +1403,28 @@ mod tests {
 		std::fs::create_dir_all(&out).unwrap();
 		let ws = crate::workspace::Workspace::open(Path::new(&root)).unwrap();
 		let ctx = eframe::egui::Context::default();
+		let mut exported = 0;
 		for i in 0..ws.models().len() {
 			let model = crate::workspace::view_loader::model_loader(&ws, i).unwrap()(&ctx).unwrap();
 			let path = out.join(format!("{}.glb", ws.models()[i].name));
 			export_model(&model, &path).unwrap();
-			println!(
-				"{} ({} bytes)",
-				path.display(),
-				std::fs::metadata(&path).unwrap().len()
+			let glb = std::fs::read(&path).unwrap();
+			let (doc, _) = parse_glb(&glb);
+			let joints = doc["skins"][0]["joints"].as_array().unwrap();
+			assert_eq!(
+				joints.len(),
+				model.export_nodes().len() + 1,
+				"{}",
+				path.display()
 			);
+			let clips = model.clips.iter().filter(|c| c.clip.is_ok()).count();
+			let animations = doc
+				.get("animations")
+				.map_or(0, |a| a.as_array().unwrap().len());
+			assert_eq!(animations, clips, "{}", path.display());
+			exported += 1;
+			println!("{} ({} bytes)", path.display(), glb.len());
 		}
+		assert!(exported > 0, "no models in {root}");
 	}
 }

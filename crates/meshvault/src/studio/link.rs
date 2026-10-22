@@ -572,7 +572,13 @@ fn head_line<R: Read>(
 	bad: &'static str,
 ) -> Result<(), Reply> {
 	line.clear();
-	head.read_line(line).map_err(|e| read_failed(&e, bad))?;
+	let read = head.read_line(line);
+	// a head cut by the limit inside a character reads as bad UTF-8, but it
+	// is the size that is wrong
+	if read.is_err() && head.limit() == 0 {
+		return Err(Reply::text(431, "request head too large"));
+	}
+	read.map_err(|e| read_failed(&e, bad))?;
 	if line.ends_with('\n') {
 		Ok(())
 	} else if head.limit() == 0 {
@@ -1351,6 +1357,46 @@ mod tests {
 			"X-A: b\r\n".repeat(MAX_HEAD)
 		);
 		assert_eq!(refusal(read(many.as_bytes())), too_large);
+		// the limit can fall inside a character: the head is still too large,
+		// in a header or in the request line
+		let e = "é";
+		let cut = format!(
+			"{start}{}{e}\r\n\r\n",
+			"a".repeat(MAX_HEAD - 1 - start.len())
+		);
+		assert_eq!(cut.find(e), Some(MAX_HEAD - 1));
+		assert_eq!(refusal(read(cut.as_bytes())), too_large);
+		let line = format!(
+			"GET /{}{e} HTTP/1.1\r\nHost: localhost:34875\r\n\r\n",
+			"a".repeat(MAX_HEAD - 1 - "GET /".len())
+		);
+		assert_eq!(line.find(e), Some(MAX_HEAD - 1));
+		assert_eq!(refusal(read(line.as_bytes())), too_large);
+		// while a head of exactly the limit that ends in one is read
+		let pad = format!("{}{e}", "a".repeat(MAX_HEAD - start.len() - e.len() - 4));
+		let full = format!("{start}{pad}\r\n\r\n");
+		assert_eq!(full.len(), MAX_HEAD);
+		assert_eq!(parsed(full.as_bytes()).headers["x-pad"], pad);
+		// a head within the limit that is not UTF-8 is a bad request, even
+		// one that ends just short of the limit
+		let mut bad =
+			format!("{start}{}\r\n\r\n", "a".repeat(MAX_HEAD - start.len() - 4)).into_bytes();
+		assert_eq!(bad.len(), MAX_HEAD);
+		// the last byte of the header's value
+		bad[MAX_HEAD - 5] = 0xff;
+		assert_eq!(refusal(read(&bad)), (400, "bad headers".to_string()));
+		// and a sender too slow within the limit is still too slow
+		struct TimesOut;
+		impl Read for TimesOut {
+			fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+				Err(ErrorKind::TimedOut.into())
+			}
+		}
+		let slow = std::io::Cursor::new(&full.as_bytes()[..MAX_HEAD - 10]).chain(TimesOut);
+		assert_eq!(
+			refusal(read_request(slow, PORT)),
+			(408, "request took too long".to_string())
+		);
 		// the body is not part of the head
 		let body = "b".repeat(MAX_HEAD * 2);
 		let post = format!(

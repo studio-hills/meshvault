@@ -67,9 +67,11 @@ fn rigs_rest_pose_and_binding() {
 	);
 }
 
-/// A developer diagnostic, not a regression test: it prints differences
-/// and never fails on them. Its input needs a private Studio test place
-/// (see `tools/studio/sample_animator.luau`).
+/// A developer diagnostic, not a correctness test: it has no assertions.
+/// It prints where playback differs from Studio's and skips models and
+/// clips it cannot find, so it passes however wrong the poses are, and a
+/// pass is no evidence that playback matches Studio. Its input needs a
+/// private Studio test place (see `tools/studio/sample_animator.luau`).
 ///
 /// Compares playback with Roblox's own: `MESHVAULT_STUDIO_SAMPLES` holds
 /// every Motor6D.Transform and Bone.Transform that Studio's Animator set

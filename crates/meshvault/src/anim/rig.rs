@@ -541,7 +541,12 @@ mod tests {
 	}
 
 	fn rotate_pose(name: &str, angle: f32) -> Pose {
-		let r = CFrame::axis_rotation(2, angle).components();
+		turn_pose(name, 2, angle)
+	}
+
+	/// A pose turning `angle` radians about `axis` (0 = X, 1 = Y, 2 = Z).
+	fn turn_pose(name: &str, axis: usize, angle: f32) -> Pose {
+		let r = CFrame::axis_rotation(axis, angle).components();
 		Pose {
 			name: name.into(),
 			transform: r,
@@ -638,7 +643,7 @@ mod tests {
 						"Root",
 						vec![
 							rotate_pose("Meshes/Arm", half_turn),
-							rotate_pose("Tail", half_turn / 2.0),
+							turn_pose("Tail", 0, half_turn / 2.0),
 						],
 					)],
 					markers: vec![],
@@ -658,8 +663,12 @@ mod tests {
 		);
 		// the root does not move
 		assert!(posed.parts[0].approx_eq(&rig.parts[0].rest, 1e-6));
-		// the tail bends 90° about Z: the tip, 1 stud along Z from the tail, stays put along Z
-		assert!(posed.bones[1].pos[2] > 1.9);
+		// the tail, at (0, 2, 1), bends 90° about X: the tip, 1 stud along its
+		// Z, swings from (0, 2, 2) down to (0, 1, 1)
+		let tip = posed.bones[1].pos;
+		for (got, want) in tip.into_iter().zip([0.0, 1.0, 1.0]) {
+			assert!((got - want).abs() < 1e-5, "tip {tip:?}");
+		}
 	}
 
 	/// An accessory's weld runs from its Handle to the body part (Part0 is

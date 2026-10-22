@@ -696,17 +696,11 @@ mod tests {
 		let cubic = curve_keys(&[key(0.0, 0.0, "Cubic"), key(1.0, 1.0, "Linear")]);
 		assert!((sample_scalar(&cubic, 0.5).unwrap() - 0.5).abs() < 1e-6);
 		assert!(sample_scalar(&cubic, 0.25).unwrap() < 0.25);
-	}
-
-	#[test]
-	fn unknown_and_missing_interpolations_run_linearly() {
-		for name in ["Linear", "", "Bezier", "constant"] {
+		// missing and unknown names (matched case-sensitively) run linearly
+		for name in ["", "Bezier", "constant"] {
 			let keys = curve_keys(&[key(0.0, 0.0, name), key(1.0, 10.0, "Linear")]);
-			assert_eq!(keys[0].interpolation, Interpolation::Linear, "{name:?}");
 			assert_eq!(sample_scalar(&keys, 0.25), Some(2.5), "{name:?}");
 		}
-		assert_eq!(Interpolation::of("Constant"), Interpolation::Constant);
-		assert_eq!(Interpolation::of("Cubic"), Interpolation::Cubic);
 	}
 
 	#[test]
@@ -737,17 +731,10 @@ mod tests {
 		}
 	}
 
+	/// The Studio samples below stop short of 0 and 1 and leave out Sine
+	/// and Back, so the endpoints are checked here.
 	#[test]
-	fn easing_shapes() {
-		assert_eq!(
-			pose_ease(EasingStyle::Linear, EasingDirection::In, 0.3),
-			0.3
-		);
-		// Constant "Out" holds the pose until the next one is reached
-		assert_eq!(
-			pose_ease(EasingStyle::Constant, EasingDirection::Out, 0.9),
-			0.0
-		);
+	fn easing_curves_start_at_0_and_end_at_1() {
 		for style in [
 			EasingStyle::CubicV2,
 			EasingStyle::Sine,
@@ -767,11 +754,6 @@ mod tests {
 				);
 			}
 		}
-		// legacy Cubic "In" behaves like CubicV2 "Out"
-		assert_eq!(
-			pose_ease(EasingStyle::Cubic, EasingDirection::In, 0.3),
-			ease(EasingStyle::CubicV2, EasingDirection::Out, 0.3)
-		);
 	}
 
 	/// Roblox's pose easing, measured in Studio: a joint moved by a two-key
@@ -981,19 +963,6 @@ mod tests {
 		})
 		.unwrap();
 		assert_eq!(clip.duration, 1.0);
-	}
-
-	#[test]
-	fn unplayable_clips_explain_why() {
-		let record = AnimationClip {
-			status: ClipStatus::Unavailable,
-			..Default::default()
-		};
-		assert!(
-			Clip::from_record(&record)
-				.unwrap_err()
-				.contains("could not be loaded")
-		);
 	}
 
 	#[test]

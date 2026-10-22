@@ -230,13 +230,6 @@ impl CFrame {
 		CFrame { pos: [0.0; 3], rot }
 	}
 
-	/// `CFrame.fromEulerAngles(x, y, z, order)`: the rotations are multiplied
-	/// in the order the letters appear, so `"XYZ"` is `Rx * Ry * Rz`.
-	#[cfg(test)]
-	pub fn from_euler(angles: V3, order: &str) -> CFrame {
-		CFrame::from_euler_axes(angles, euler_axes(order))
-	}
-
 	/// The rotations about `axes` (from [`euler_axes`]), multiplied in that
 	/// order, each by its own angle in `angles`.
 	pub fn from_euler_axes(angles: V3, axes: [usize; 3]) -> CFrame {
@@ -354,10 +347,23 @@ mod tests {
 		assert_eq!(b, ([0.0, -2.0, 0.0], [1.0, 0.0, 0.5]));
 	}
 
+	/// Exports store `CFrame:GetComponents()`: position, then the rotation
+	/// row by row, so `world = R * local + position`.
 	#[test]
-	fn components_round_trip() {
-		let c = [1.0, 2.0, 3.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-		assert_eq!(CFrame::from_components(&c).components(), c);
+	fn components_are_read_in_get_components_order() {
+		// CFrame.Angles(0, math.pi/2, 0):GetComponents() in Studio
+		let quarter_y = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0];
+		assert!(
+			CFrame::from_components(&quarter_y)
+				.approx_eq(&CFrame::axis_rotation(1, FRAC_PI_2), 1e-6)
+		);
+		// the same turn at (1, 2, 3) takes its look vector (-Z) to -X
+		let mut moved = quarter_y;
+		moved[..3].copy_from_slice(&[1.0, 2.0, 3.0]);
+		let p = CFrame::from_components(&moved).point([0.0, 0.0, -1.0]);
+		for (got, want) in p.into_iter().zip([0.0, 2.0, 3.0]) {
+			assert!((got - want).abs() < 1e-6, "{p:?}");
+		}
 	}
 
 	#[test]
@@ -387,65 +393,51 @@ mod tests {
 		let look = r.rotate([0.0, 0.0, -1.0]);
 		assert!((look[0] + 1.0).abs() < 1e-6 && look[2].abs() < 1e-6);
 		// XYZ order multiplies Rx * Ry * Rz
-		let e = CFrame::from_euler([0.3, 0.4, 0.5], "XYZ");
+		let e = CFrame::from_euler_axes([0.3, 0.4, 0.5], euler_axes("XYZ"));
 		let manual = CFrame::axis_rotation(0, 0.3)
 			.mul(&CFrame::axis_rotation(1, 0.4))
 			.mul(&CFrame::axis_rotation(2, 0.5));
 		assert!(e.approx_eq(&manual, 1e-6));
-		let yxz = CFrame::from_euler([0.3, 0.4, 0.5], "YXZ");
+		let yxz = CFrame::from_euler_axes([0.3, 0.4, 0.5], euler_axes("YXZ"));
 		assert!(!yxz.approx_eq(&e, 1e-3), "order must matter");
 	}
 
-	/// The rotation order parser as it was before the axes were worked out
-	/// once per curve, to check `euler_axes` against.
-	fn from_euler_by_letters(angles: V3, order: &str) -> CFrame {
-		let mut out = CFrame::IDENTITY;
-		let letters: Vec<char> = order.chars().filter(|c| "XYZ".contains(*c)).collect();
-		let letters = if letters.len() == 3 {
-			letters
-		} else {
-			vec!['X', 'Y', 'Z']
-		};
-		for letter in letters {
-			let axis = match letter {
-				'X' => 0,
-				'Y' => 1,
-				_ => 2,
-			};
-			out = out.mul(&CFrame::axis_rotation(axis, angles[axis]));
-		}
-		out
-	}
-
+	/// Each `RotationOrder` parses to its axes and turns a point the way the
+	/// rotations multiplied in letter order do. The angles are a quarter turn
+	/// about X, a half turn about Y and a quarter turn back about Z, so every
+	/// result is a signed permutation of (1, 2, 3), worked out by hand by
+	/// applying the last letter first:
+	/// X: (x, y, z) -> (x, -z, y); Y: -> (-x, y, -z); Z: -> (y, -x, z).
 	#[test]
-	fn rotation_orders_are_read_as_before() {
-		let cases: [(&str, [usize; 3]); 15] = [
-			("XYZ", [0, 1, 2]),
-			("XZY", [0, 2, 1]),
-			("YXZ", [1, 0, 2]),
-			("YZX", [1, 2, 0]),
-			("ZXY", [2, 0, 1]),
-			("ZYX", [2, 1, 0]),
+	fn rotation_orders_turn_in_letter_order() {
+		const XYZ: V3 = [-2.0, 3.0, -1.0];
+		const ZYX: V3 = [-3.0, 1.0, -2.0];
+		let cases: [(&str, [usize; 3], V3); 15] = [
+			("XYZ", [0, 1, 2], XYZ),
+			("XZY", [0, 2, 1], [2.0, 3.0, 1.0]),
+			("YXZ", [1, 0, 2], [-2.0, -3.0, 1.0]),
+			("YZX", [1, 2, 0], [3.0, -1.0, -2.0]),
+			("ZXY", [2, 0, 1], [3.0, 1.0, 2.0]),
+			("ZYX", [2, 1, 0], ZYX),
 			// repeats are kept and other characters skipped
-			("XXZ", [0, 0, 2]),
-			("ZZZ", [2, 2, 2]),
-			("Z-Y-X", [2, 1, 0]),
-			("Enum.RotationOrder.ZYX", [2, 1, 0]),
+			("XXZ", [0, 0, 2], [2.0, 1.0, -3.0]),
+			("ZZZ", [2, 2, 2], [-2.0, 1.0, 3.0]),
+			("Z-Y-X", [2, 1, 0], ZYX),
+			("Enum.RotationOrder.ZYX", [2, 1, 0], ZYX),
 			// anything without exactly three uppercase letters is XYZ
-			("", [0, 1, 2]),
-			("ZY", [0, 1, 2]),
-			("zyx", [0, 1, 2]),
-			("ZYXZ", [0, 1, 2]),
-			("Enum.RotationOrder.ZXYX", [0, 1, 2]),
+			("", [0, 1, 2], XYZ),
+			("ZY", [0, 1, 2], XYZ),
+			("zyx", [0, 1, 2], XYZ),
+			("ZYXZ", [0, 1, 2], XYZ),
+			("Enum.RotationOrder.ZXYX", [0, 1, 2], XYZ),
 		];
-		let angles = [0.3, -0.9, 1.7];
-		for (order, axes) in cases {
+		let angles = [FRAC_PI_2, std::f32::consts::PI, -FRAC_PI_2];
+		for (order, axes, want) in cases {
 			assert_eq!(euler_axes(order), axes, "{order}");
-			assert_eq!(
-				CFrame::from_euler(angles, order),
-				from_euler_by_letters(angles, order),
-				"{order}"
-			);
+			let got = CFrame::from_euler_axes(angles, euler_axes(order)).point([1.0, 2.0, 3.0]);
+			for k in 0..3 {
+				assert!((got[k] - want[k]).abs() < 1e-5, "{order}: {got:?}");
+			}
 		}
 	}
 

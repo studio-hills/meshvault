@@ -660,8 +660,9 @@ mod tests {
 	use crate::anim::rig::Binding;
 
 	#[test]
-	fn unmatched_track_names_leave_out_mesh_bones_as_the_count_does() {
-		// "Jaw" is a bone inside a skinned mesh, moved by its name
+	fn unmatched_tracks_count_every_slot_track_and_name_each_once() {
+		// the slot's own list is what is shown, not the binding's: "Jaw" is a
+		// bone inside a skinned mesh, which clip_slots has already left out
 		let slot = ClipSlot {
 			name: "Talk".into(),
 			status: ClipStatus::KeyframeSequence,
@@ -675,7 +676,8 @@ mod tests {
 			mesh_bone_tracks: 1,
 			unmatched: vec!["Tail".into(), "Hat".into(), "Tail".into()],
 		};
-		// the names once listed Jaw too (bug B46)
+		// three tracks, two distinct names in order; the names once listed Jaw
+		// too (bug B46)
 		assert_eq!(unmatched_tracks(&slot), Some((3, "Hat, Tail".into())));
 		let bound = ClipSlot {
 			unmatched: Vec::new(),

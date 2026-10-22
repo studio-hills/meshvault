@@ -280,6 +280,8 @@ mod tests {
 				section(folder_title("Sea"), "Sea", &[Row::Mesh(2)]),
 			]
 		);
+		// with nothing to show there are no sections, so the grid says nothing matches
+		assert!(grid_sections(&items, Vec::new(), Vec::new()).is_empty());
 	}
 
 	#[test]
@@ -300,10 +302,5 @@ mod tests {
 				section(folder_title("Sea"), "Sea", &[Row::Mesh(2)]),
 			]
 		);
-	}
-
-	#[test]
-	fn an_empty_grid_has_no_sections() {
-		assert!(grid_sections(&grid_items(), Vec::new(), Vec::new()).is_empty());
 	}
 }

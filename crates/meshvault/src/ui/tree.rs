@@ -289,8 +289,25 @@ mod tests {
 		assert!(is_open("Animals") && is_open("Animals/Diamond"));
 		assert!(!is_open("Animals/Diamond/Chicken") && !is_open("Eggs"));
 
-		// unknown paths are ignored
-		FolderCommand::Subtree("Nope/Missing".into(), true).apply(&ctx, "t", &tree);
+		// unknown paths, wholly or partly, are ignored: no state for them and
+		// no change to the known folders
+		let known = [
+			"Animals",
+			"Animals/Diamond",
+			"Animals/Diamond/Chicken",
+			"Animals/Gold",
+			"Eggs",
+		];
+		let before = known.map(is_open);
+		for unknown in ["Nope/Missing", "Animals/Nope"] {
+			FolderCommand::Subtree(unknown.into(), true).apply(&ctx, "t", &tree);
+			assert!(
+				egui::collapsing_header::CollapsingState::load(&ctx, folder_id("t", unknown))
+					.is_none(),
+				"{unknown} should get no state"
+			);
+			assert_eq!(known.map(is_open), before, "after {unknown}");
+		}
 	}
 
 	#[test]

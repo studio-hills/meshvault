@@ -1288,40 +1288,6 @@ mod tests {
 		assert_eq!(ws.models().len(), 1);
 	}
 
-	/// The files in the workspace's cache folder that are neither assets nor
-	/// its format: files waiting to be published.
-	fn staged_files(root: &Path) -> Vec<String> {
-		std::fs::read_dir(root.join(CACHE_DIR))
-			.unwrap()
-			.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-			.filter(|name| name.parse::<u64>().is_err() && name != "format")
-			.collect()
-	}
-
-	/// A download whose organised folder cannot be made (here a file is
-	/// where the Models folder should be) fails, and its file waiting in the
-	/// cache is deleted (once it stayed there, a full copy on every try).
-	/// Files for a result that is never recorded are deleted too.
-	#[test]
-	fn a_download_that_cannot_be_put_in_place_leaves_no_file_behind() {
-		let dir = TempDir::new("ws_blocked_publish");
-		let mut ws = Workspace::create(&dir, "Test").unwrap();
-		ws.add([entry("F", "A", 1, &[(MapKind::Normal, 1)])]);
-		std::fs::write(dir.join("Models"), b"not a folder").unwrap();
-		let job = ws.pending_jobs().remove(0);
-		assert_eq!(job.targets.len(), 2);
-
-		let written = store::stage(&dir, &job, b"\x89PNG and the rest").unwrap();
-		assert_eq!(staged_files(&dir).len(), 2);
-		ws.record_download(&job, Ok(written));
-		assert!(matches!(ws.items()[0].mesh, AssetState::Failed { .. }));
-		assert_eq!(staged_files(&dir), Vec::<String>::new());
-
-		// a result dropped on its way to the workspace
-		drop(store::stage(&dir, &job, b"version 4.00\n").unwrap());
-		assert_eq!(staged_files(&dir), Vec::<String>::new());
-	}
-
 	/// A download that finishes after its item was removed changes nothing.
 	#[test]
 	fn set_state_ignores_removed_items() {

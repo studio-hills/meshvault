@@ -211,4 +211,23 @@ mod tests {
 		assert_eq!(sniff_extension(b"RIFF\0\0\0\0WEBP", map), "bin");
 		assert_eq!(sniff_extension(b"RIFF\0\0\0\0WAVEfmt ", map), "bin");
 	}
+
+	/// A cache entry is replaced by renaming a whole new file over it, not
+	/// rewritten in place: a second name for the old file still reads the
+	/// old asset, and no temporary file is left.
+	#[test]
+	fn the_cache_is_replaced_whole_without_leftovers() {
+		let dir = crate::test_support::TempDir::new("store_cache_whole");
+		write_cache(&dir, 8, b"OLD");
+		let old = dir.join("old");
+		std::fs::hard_link(cache_path(&dir, 8), &old).unwrap();
+		write_cache(&dir, 8, b"NEW");
+		assert_eq!(std::fs::read(&old).unwrap(), b"OLD");
+		assert_eq!(read_cache(&dir, 8).as_deref(), Some(&b"NEW"[..]));
+		let names: Vec<_> = std::fs::read_dir(dir.join(CACHE_DIR))
+			.unwrap()
+			.map(|e| e.unwrap().file_name())
+			.collect();
+		assert_eq!(names, ["8"]);
+	}
 }

@@ -202,10 +202,16 @@ mod tests {
 	use crate::test_support::{SAMPLE_MESHES, TempDir};
 	use crate::workspace::AssetKind;
 
+	/// A mesh's triangles are counted, and it is skinned only if it is bound
+	/// to bones: the known skinned head is, the version 2 torso is not.
 	#[test]
 	fn reads_a_mesh() {
-		let facts = read(&Path::new(SAMPLE_MESHES).join("torso.mesh")).unwrap();
-		assert!(facts.triangles > 0);
+		let torso = read(&Path::new(SAMPLE_MESHES).join("torso.mesh")).unwrap();
+		assert!(torso.triangles > 0);
+		assert!(!torso.skinned);
+		let head = read(&Path::new(SAMPLE_MESHES).join("13674780763")).unwrap();
+		assert!(head.triangles > 0);
+		assert!(head.skinned);
 	}
 
 	/// A file that does not decode reads as empty and unskinned (and is

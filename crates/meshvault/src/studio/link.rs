@@ -933,16 +933,22 @@ mod tests {
 		r.returns().iter().map(plain_name).collect()
 	}
 
-	/// The watched names that some assignment writes.
+	/// The watched names that some assignment writes, or writes a field of.
 	struct Writes<'a>(&'a [&'a str], Vec<String>);
 
 	impl Writes<'_> {
 		fn note(&mut self, var: &full_moon::ast::Var) {
-			if let full_moon::ast::Var::Name(n) = var {
-				let n = token_text(n);
-				if self.0.contains(&n.as_str()) {
-					self.1.push(n);
-				}
+			let name = match var {
+				full_moon::ast::Var::Name(n) => n,
+				full_moon::ast::Var::Expression(e) => match e.prefix() {
+					full_moon::ast::Prefix::Name(n) => n,
+					_ => return,
+				},
+				_ => return,
+			};
+			let name = token_text(name);
+			if self.0.contains(&name.as_str()) {
+				self.1.push(name);
 			}
 		}
 	}

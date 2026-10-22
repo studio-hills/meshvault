@@ -1,20 +1,28 @@
 //! Runs the exporters Meshvault serves, in Luau, against a small stand-in
-//! for Roblox Studio: a place with one MeshPart and an HttpService that
-//! records what it is asked to post. This checks what the code for Studio
-//! relies on, whatever the exporters' insides look like: the script returns
-//! a function of options, which returns the problems, the export and a
-//! sender; `send = false` keeps the export here; and what the sender posts
-//! is an export Meshvault reads.
+//! for Roblox Studio: a place with a MeshPart in ReplicatedStorage and one in
+//! Workspace, and an HttpService whose requests go to a real link server, so
+//! the link's own checks decide whether an export arrives. This checks what
+//! the code for Studio relies on, whatever the exporters' insides look like:
+//! the script returns a function of options, which returns the problems, the
+//! export and a sender; `send = false` keeps the export here to be changed;
+//! the sender posts whatever it is given; and what arrives is an export
+//! Meshvault reads.
+
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 
 use mlua::{Function, Lua, MultiValue, Table, Value};
 
-use super::export_file;
-use super::link::{PORT, SCHEMAS, exporter};
+use super::{Event, Exports, MAX_EVENTS, PORT, SCHEMAS, egui, exporter, serve};
+use crate::studio::export_file;
 
 /// Just enough of Roblox for an export of loose meshes. Instances are tables
 /// with a class, name, parent and children; HttpService encodes JSON as
-/// Roblox does (whole numbers without a point, empty tables as `[]`) and
-/// keeps each request in `posts`.
+/// Roblox does (whole numbers without a point, empty tables as `[]`), keeps
+/// each request in `posts` and hands it to `forward` (the link), or refuses
+/// it when `refuse` is set.
 const STUDIO: &str = r#"
 local classes = {
 	MeshPart = { "MeshPart", "BasePart", "PVInstance", "Instance" },
@@ -95,21 +103,23 @@ local function encode(v)
 end
 
 posts = {}
-output = {}
 selectionFails = false
+refuse = false
 local http = { HttpEnabled = false }
 function http:JSONEncode(v) return encode(v) end
 function http:GenerateGUID() return "guid" end
 function http:RequestAsync(request)
 	assert(self.HttpEnabled, "HttpEnabled is off")
 	table.insert(posts, request)
-	return { Success = true, StatusCode = 200, Body = "saved" }
+	if refuse then return { Success = false, StatusCode = 503, Body = "busy" } end
+	return forward(request)
 end
 HttpService = http
 
 game = Instance.new("DataModel", "Place")
-workspaceService = Instance.new("Workspace", "Workspace", game)
-storage = Instance.new("Folder", "ReplicatedStorage", game)
+local workspaceService = Instance.new("Workspace", "Workspace", game)
+Instance.new("MeshPart", "Sentinel", workspaceService, { MeshId = "rbxassetid://999", TextureID = "" })
+local storage = Instance.new("Folder", "ReplicatedStorage", game)
 part = Instance.new("MeshPart", "Rock", storage, {
 	MeshId = "rbxassetid://123", TextureID = "rbxassetid://456",
 })
@@ -128,88 +138,169 @@ local services = {
 function game:GetService(name) return (assert(services[name], name)) end
 
 Enum = { MeshType = { FileMesh = "FileMesh" } }
-print = function(...) table.insert(output, table.concat({ ... }, " ")) end
+print = function(...) end
 warn = print
 "#;
 
-/// A fresh Luau with the stand-in Studio and the served exporter for
-/// `schema`, giving the function the exporter returns.
-fn load(schema: u32) -> (Lua, Function) {
-	let lua = Lua::new();
-	lua.load(STUDIO).set_name("studio").exec().unwrap();
-	let source = exporter(schema).unwrap();
-	let entry: Function = lua
-		.load(&source)
-		.set_name(format!("exporter_v{schema}"))
-		.eval()
-		.unwrap_or_else(|e| panic!("schema {schema}: {e}"));
-	(lua, entry)
+/// A Luau with the stand-in Studio, whose requests go to a link server of
+/// its own, and the function the served exporter for `schema` returns.
+struct Studio {
+	lua: Lua,
+	entry: Function,
+	events: Receiver<Event>,
 }
 
-fn global<T: mlua::FromLua>(lua: &Lua, name: &str) -> T {
-	lua.globals().get(name).unwrap()
+impl Studio {
+	fn new(schema: u32) -> Self {
+		let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+		let port = listener.local_addr().unwrap().port();
+		let (tx, events) = mpsc::sync_channel(MAX_EVENTS);
+		let folder = std::env::temp_dir().join("meshvault_exporter_tests_never_made");
+		std::thread::spawn(move || {
+			serve(listener, tx, Exports::new(folder), egui::Context::default())
+		});
+
+		let lua = Lua::new();
+		let forward = lua
+			.create_function(move |lua, request: Table| {
+				let (status, body) = forward(port, &request);
+				let reply = lua.create_table()?;
+				reply.set("Success", (200..300).contains(&status))?;
+				reply.set("StatusCode", status)?;
+				reply.set("Body", body)?;
+				Ok(reply)
+			})
+			.unwrap();
+		lua.globals().set("forward", forward).unwrap();
+		lua.load(STUDIO).set_name("studio").exec().unwrap();
+		let entry: Function = lua
+			.load(exporter(schema).unwrap())
+			.set_name(format!("exporter_v{schema}"))
+			.eval()
+			.unwrap_or_else(|e| panic!("schema {schema}: {e}"));
+		Self { lua, entry, events }
+	}
+
+	/// The three things the exporter returns, given `options` (Luau).
+	fn export(&self, options: &str) -> (Table, Value, Function) {
+		let options: Value = self.lua.load(options).eval().unwrap();
+		let out: MultiValue = self.entry.call(options).unwrap();
+		let out: Vec<Value> = out.into_iter().collect();
+		let [Value::Table(issues), export, Value::Function(send)] = &out[..] else {
+			panic!("the exporter returns {out:?}, not issues, export and send");
+		};
+		(issues.clone(), export.clone(), send.clone())
+	}
+
+	/// Requests made so far.
+	fn posts(&self) -> usize {
+		self.global::<Table>("posts").raw_len()
+	}
+
+	/// The headers of request `n` (from 1).
+	fn headers(&self, n: usize) -> Table {
+		let post: Table = self.global::<Table>("posts").get(n).unwrap();
+		post.get("Headers").unwrap()
+	}
+
+	fn global<T: mlua::FromLua>(&self, name: &str) -> T {
+		self.lua.globals().get(name).unwrap()
+	}
+
+	/// The next export the link received.
+	fn received(&self) -> String {
+		loop {
+			match self.events.recv_timeout(Duration::from_secs(10)) {
+				Ok(Event::Received(r)) => return String::from_utf8(r.json).unwrap(),
+				Ok(Event::Progress { .. }) => continue,
+				Err(e) => panic!("no export arrived: {e}"),
+			}
+		}
+	}
 }
 
-/// The three things the exporter returns.
-fn call(entry: &Function, options: Value) -> (Table, Value, Function) {
-	let out: MultiValue = entry.call(options).unwrap();
-	let out: Vec<Value> = out.into_iter().collect();
-	let [Value::Table(issues), export, Value::Function(send)] = &out[..] else {
-		panic!("the exporter returns {out:?}, not issues, export and send");
-	};
-	(issues.clone(), export.clone(), send.clone())
+/// Posts a request the exporter made to the link at `port`, giving the
+/// status and body of its reply.
+fn forward(port: u16, request: &Table) -> (u16, String) {
+	assert_eq!(
+		request.get::<String>("Url").unwrap(),
+		format!("http://localhost:{PORT}/export")
+	);
+	let method: String = request.get("Method").unwrap();
+	let body: mlua::LuaString = request.get("Body").unwrap();
+	let body = body.as_bytes().to_vec();
+	let mut head = format!("{method} /export HTTP/1.1\r\nHost: localhost:{port}\r\n");
+	for pair in request
+		.get::<Table>("Headers")
+		.unwrap()
+		.pairs::<String, String>()
+	{
+		let (k, v) = pair.unwrap();
+		head.push_str(&format!("{k}: {v}\r\n"));
+	}
+	head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+	let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+	s.write_all(head.as_bytes()).unwrap();
+	s.write_all(&body).unwrap();
+	let mut reply = String::new();
+	s.read_to_string(&mut reply).unwrap();
+	let status = reply[9..12].parse().unwrap();
+	let body = reply.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+	(status, body.to_string())
 }
 
-fn kinds(issues: &Table) -> Vec<String> {
-	issues
-		.sequence_values::<Table>()
-		.map(|i| i.unwrap().get::<String>("Kind").unwrap())
+/// The meshes of an export as Meshvault reads it: (name, id, folder).
+fn meshes(json: &str, schema: u32) -> Vec<(String, u64, String)> {
+	let header: serde_json::Value = serde_json::from_str(json).unwrap();
+	assert_eq!(header["SchemaVersion"], schema, "{json}");
+	let export = export_file::parse(json).unwrap();
+	assert!(
+		export.models.is_empty() && export.skipped.is_empty(),
+		"{json}"
+	);
+	export
+		.entries
+		.into_iter()
+		.map(|e| (e.name, e.mesh_id, e.folder.join("/")))
 		.collect()
 }
 
-/// The problems, with what each says, for failure messages.
-fn said(issues: &Table) -> Vec<String> {
-	issues
-		.sequence_values::<Table>()
-		.map(|i| i.unwrap().get::<String>("Message").unwrap())
-		.collect()
+fn rock() -> (String, u64, String) {
+	("Rock".into(), 123, "ReplicatedStorage".into())
 }
 
-/// The requests posted so far, as (headers, body).
-fn posts(lua: &Lua) -> Vec<(Table, String)> {
-	global::<Table>(lua, "posts")
+/// The problems, as (kind, message).
+fn issues(issues: &Table) -> Vec<(String, String)> {
+	issues
 		.sequence_values::<Table>()
-		.map(|p| {
-			let p = p.unwrap();
-			assert_eq!(p.get::<String>("Method").unwrap(), "POST");
-			assert_eq!(
-				p.get::<String>("Url").unwrap(),
-				format!("http://localhost:{PORT}/export")
-			);
-			(p.get("Headers").unwrap(), p.get("Body").unwrap())
+		.map(|i| {
+			let i = i.unwrap();
+			(i.get("Kind").unwrap(), i.get("Message").unwrap())
 		})
 		.collect()
 }
 
-/// That a posted body is an export of the one mesh, of this schema.
-fn reads_as_the_rock(body: &str, schema: u32) {
-	let json: serde_json::Value = serde_json::from_str(body).unwrap();
-	assert_eq!(json["SchemaVersion"], schema, "{body}");
-	let export = export_file::parse(body).unwrap();
-	let [rock] = &export.entries[..] else {
-		panic!("schema {schema}: {body}");
+/// A returned export's meshes, as (MeshId, TextureId).
+fn returned(export: &Value) -> Vec<(String, String)> {
+	let Value::Table(export) = export else {
+		panic!("the export is {export:?}");
 	};
-	assert_eq!((rock.name.as_str(), rock.mesh_id), ("Rock", 123));
-	assert_eq!(rock.folder, ["ReplicatedStorage"]);
-	assert!(export.models.is_empty() && export.skipped.is_empty());
+	export
+		.get::<Table>("Meshes")
+		.unwrap()
+		.sequence_values::<Table>()
+		.map(|m| {
+			let m = m.unwrap();
+			(m.get("MeshId").unwrap(), m.get("TextureId").unwrap())
+		})
+		.collect()
 }
 
 #[test]
 fn exporters_compile_as_luau() {
 	for v in SCHEMAS {
-		let source = exporter(v).unwrap();
 		Lua::new()
-			.load(&source)
+			.load(exporter(v).unwrap())
 			.set_name(format!("exporter_v{v}"))
 			.into_function()
 			.unwrap_or_else(|e| panic!("schema {v}: {e}"));
@@ -217,90 +308,123 @@ fn exporters_compile_as_luau() {
 }
 
 // Edit mode: `send = false` sends nothing and gives back the export, which
-// the returned sender then posts as JSON Meshvault reads
+// can be changed, then sent; the sender sends what it is given, a table or
+// JSON text, and the link receives it whole
 #[test]
 fn keeping_the_export_then_sending_it() {
 	for v in SCHEMAS {
-		let (lua, entry) = load(v);
-		let options = lua.create_table().unwrap();
-		options.set("send", false).unwrap();
-		options
-			.set(
-				"roots",
-				lua.create_sequence_from([global::<Table>(&lua, "part")])
-					.unwrap(),
-			)
-			.unwrap();
-		let (issues, export, send) = call(&entry, Value::Table(options));
-		assert!(kinds(&issues).is_empty(), "schema {v}: {:?}", said(&issues));
-		assert!(posts(&lua).is_empty(), "schema {v}: sent with send = false");
-		let Value::Table(export) = export else {
-			panic!("schema {v}: the export is {export:?}");
+		let studio = Studio::new(v);
+		let (problems, export, send) = studio.export("{ send = false, roots = { part } }");
+		assert_eq!(issues(&problems), [], "schema {v}");
+		assert_eq!(studio.posts(), 0, "schema {v}: sent with send = false");
+		let export_schema: u32 = match &export {
+			Value::Table(t) => t.get("SchemaVersion").unwrap(),
+			other => panic!("schema {v}: the export is {other:?}"),
 		};
-		assert_eq!(export.get::<u32>("SchemaVersion").unwrap(), v);
-		let meshes: Table = export.get("Meshes").unwrap();
-		assert_eq!(meshes.raw_len(), 1, "schema {v}");
-		let mesh: Table = meshes.get(1).unwrap();
-		assert_eq!(mesh.get::<String>("MeshId").unwrap(), "rbxassetid://123");
+		assert_eq!(export_schema, v);
+		let rock_ids = ("rbxassetid://123".into(), "rbxassetid://456".into());
+		assert_eq!(returned(&export), [rock_ids], "schema {v}");
 
-		let (sent, reply): (bool, String) = send.call(export).unwrap();
+		// change it as the code for Studio suggests, then send it
+		let edit: Function = studio
+			.lua
+			.load(
+				"return function(export) \
+				 local m = table.clone(export.Meshes[1]); m.Name = 'Pebble'; \
+				 export.Meshes = { m } end",
+			)
+			.eval()
+			.unwrap();
+		edit.call::<()>(&export).unwrap();
+		let (sent, reply): (bool, String) = send.call(&export).unwrap();
 		assert!(sent, "schema {v}: {reply}");
-		assert_eq!(reply, "saved");
-		let [(headers, body)] = &posts(&lua)[..] else {
-			panic!("schema {v}: one request expected");
-		};
+		assert!(reply.contains("saving it as"), "schema {v}: {reply}");
+		let pebble = ("Pebble".to_string(), 123, "ReplicatedStorage".to_string());
+		assert_eq!(meshes(&studio.received(), v), [pebble], "schema {v}");
+		assert_eq!(studio.posts(), 1, "schema {v}");
+		let headers = studio.headers(1);
 		assert_eq!(headers.get::<String>("X-Meshvault-Chunk").unwrap(), "1/1");
 		assert_eq!(headers.get::<String>("X-Meshvault-Name").unwrap(), "Place");
-		reads_as_the_rock(body, v);
-		let http: Table = global(&lua, "HttpService");
-		assert!(
-			!http.get::<bool>("HttpEnabled").unwrap(),
-			"schema {v}: HttpEnabled left on"
+		let http: Table = studio.global("HttpService");
+		assert!(!http.get::<bool>("HttpEnabled").unwrap(), "schema {v}");
+
+		// JSON text is sent as it is
+		let text = format!(
+			"{{\"SchemaVersion\":{v},\"Models\":[],\"Meshes\":[{{\"Id\":1,\"Name\":\"Text\",\
+			 \"MeshId\":\"rbxassetid://789\",\"TextureId\":\"\",\"Folder\":\"Typed\",\
+			 \"ColorMap\":\"\",\"NormalMap\":\"\",\"RoughnessMap\":\"\",\"MetalnessMap\":\"\"}}]}}"
 		);
+		let (sent, reply): (bool, String) = send.call(text.as_str()).unwrap();
+		assert!(sent, "schema {v}: {reply}");
+		assert_eq!(studio.received(), text, "schema {v}");
 	}
 }
 
-// Send mode, the default: with nothing selected the whole game outside
-// Workspace is exported and sent, and the export is still returned
+// Send mode, the default: with nothing selected the whole game except
+// Workspace is exported and sent, and that export is returned; leaving
+// nothing out takes Workspace too
 #[test]
 fn exporting_the_game_sends_it() {
 	for v in SCHEMAS {
-		let (lua, entry) = load(v);
-		let (issues, export, _send) = call(&entry, Value::Nil);
-		assert!(kinds(&issues).is_empty(), "schema {v}: {:?}", said(&issues));
-		let [(_, body)] = &posts(&lua)[..] else {
-			panic!("schema {v}: one request expected");
-		};
-		reads_as_the_rock(body, v);
-		let Value::Table(export) = export else {
-			panic!("schema {v}: the export is {export:?}");
-		};
-		assert_eq!(export.get::<u32>("SchemaVersion").unwrap(), v);
+		let studio = Studio::new(v);
+		let (problems, export, _) = studio.export("nil");
+		assert_eq!(issues(&problems), [], "schema {v}");
+		assert_eq!(meshes(&studio.received(), v), [rock()], "schema {v}");
+		let rock_ids = ("rbxassetid://123".into(), "rbxassetid://456".into());
+		assert_eq!(returned(&export), [rock_ids], "schema {v}");
+
+		let studio = Studio::new(v);
+		let (problems, _, _) = studio.export("{ exclude = {} }");
+		assert_eq!(issues(&problems), [], "schema {v}");
+		let mut all = meshes(&studio.received(), v);
+		all.sort();
+		let sentinel = ("Sentinel".to_string(), 999, "Workspace".to_string());
+		assert_eq!(all, [rock(), sentinel], "schema {v}");
+	}
+}
+
+// Meshvault refusing an export: the sender says so, and HttpEnabled goes
+// back to what it was, here on
+#[test]
+fn a_refused_send_says_so() {
+	for v in SCHEMAS {
+		let studio = Studio::new(v);
+		let http: Table = studio.global("HttpService");
+		http.set("HttpEnabled", true).unwrap();
+		let (_, export, send) = studio.export("{ send = false, roots = { part } }");
+		studio.lua.globals().set("refuse", true).unwrap();
+		let (sent, reply): (bool, String) = send.call(&export).unwrap();
+		assert!(!sent, "schema {v}");
+		assert!(reply.contains("HTTP 503"), "schema {v}: {reply}");
+		assert!(http.get::<bool>("HttpEnabled").unwrap(), "schema {v}");
 	}
 }
 
 // Nothing to export, and an error part way: no export, a problem saying why,
-// and a sender all the same
+// and nothing sent
 #[test]
 fn no_export_says_why() {
 	for v in SCHEMAS {
-		let (lua, entry) = load(v);
-		let options = lua.create_table().unwrap();
-		options
-			.set(
-				"roots",
-				lua.create_sequence_from([global::<Table>(&lua, "empty")])
-					.unwrap(),
-			)
-			.unwrap();
-		let (issues, export, _) = call(&entry, Value::Table(options));
-		assert_eq!(kinds(&issues), ["NothingToExport"], "schema {v}");
-		assert!(export.is_nil() && posts(&lua).is_empty(), "schema {v}");
+		let studio = Studio::new(v);
+		let (problems, export, _) = studio.export("{ roots = { empty } }");
+		let [(kind, message)] = &issues(&problems)[..] else {
+			panic!("schema {v}: {:?}", issues(&problems));
+		};
+		assert_eq!(kind, "NothingToExport");
+		assert!(
+			message.starts_with("nothing to export"),
+			"schema {v}: {message}"
+		);
+		assert!(export.is_nil() && studio.posts() == 0, "schema {v}");
 
-		let (lua, entry) = load(v);
-		lua.globals().set("selectionFails", true).unwrap();
-		let (issues, export, _) = call(&entry, Value::Nil);
-		assert_eq!(kinds(&issues), ["Error"], "schema {v}");
-		assert!(export.is_nil() && posts(&lua).is_empty(), "schema {v}");
+		let studio = Studio::new(v);
+		studio.lua.globals().set("selectionFails", true).unwrap();
+		let (problems, export, _) = studio.export("nil");
+		let [(kind, message)] = &issues(&problems)[..] else {
+			panic!("schema {v}: {:?}", issues(&problems));
+		};
+		assert_eq!(kind, "Error");
+		assert!(message.contains("Selection broke"), "schema {v}: {message}");
+		assert!(export.is_nil() && studio.posts() == 0, "schema {v}");
 	}
 }

@@ -800,6 +800,11 @@ fn receive_piece(request: Request, exports: &mut Exports) -> Result<Option<Recei
 	}))
 }
 
+// runs the served exporters against this server
+#[cfg(test)]
+#[path = "exporter_tests.rs"]
+mod exporter_tests;
+
 #[cfg(test)]
 mod tests {
 	use super::*;

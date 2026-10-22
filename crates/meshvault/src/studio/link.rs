@@ -933,6 +933,30 @@ mod tests {
 		r.returns().iter().map(plain_name).collect()
 	}
 
+	/// The watched names that some assignment writes.
+	struct Writes<'a>(&'a [&'a str], Vec<String>);
+
+	impl Writes<'_> {
+		fn note(&mut self, var: &full_moon::ast::Var) {
+			if let full_moon::ast::Var::Name(n) = var {
+				let n = token_text(n);
+				if self.0.contains(&n.as_str()) {
+					self.1.push(n);
+				}
+			}
+		}
+	}
+
+	impl full_moon::visitors::Visitor for Writes<'_> {
+		fn visit_assignment(&mut self, a: &full_moon::ast::Assignment) {
+			a.variables().iter().for_each(|var| self.note(var));
+		}
+
+		fn visit_compound_assignment(&mut self, a: &full_moon::ast::CompoundAssignment) {
+			self.note(a.lhs());
+		}
+	}
+
 	/// Whether `e` is `<param>.send == false`.
 	fn is_send_false(e: &full_moon::ast::Expression, param: &str) -> bool {
 		use full_moon::ast::{BinOp, Expression, Index, Prefix, Suffix, Var};
@@ -1012,10 +1036,12 @@ mod tests {
 			assert_eq!(parameters(sender).len(), 1, "schema {v}: send(export)");
 
 			// the run it makes is a local function, called through xpcall with
-			// the options; the call's two results are named
-			let (run, ok, result) = entry_block
+			// the options; the call is the assignment's only value, and its two
+			// results are named
+			let (called_at, run_name, run, ok, result) = entry_block
 				.stmts()
-				.find_map(|s| {
+				.enumerate()
+				.find_map(|(at, s)| {
 					let Stmt::LocalAssignment(a) = s else {
 						return None;
 					};
@@ -1023,10 +1049,12 @@ mod tests {
 					let [ok, result] = &names[..] else {
 						return None;
 					};
-					let Some(Expression::FunctionCall(call)) = a.expressions().iter().next() else {
+					let values: Vec<_> = a.expressions().iter().collect();
+					let [Expression::FunctionCall(call)] = &values[..] else {
 						return None;
 					};
 					if !matches!(call.prefix(), full_moon::ast::Prefix::Name(n) if token_text(n) == "xpcall")
+						|| call.suffixes().count() != 1
 					{
 						return None;
 					}
@@ -1048,8 +1076,9 @@ mod tests {
 						} => plain_name(lhs).as_ref() == Some(options),
 						a => plain_name(a).as_ref() == Some(options),
 					});
-					let run = local_function(&plain_name(args[0])?)?;
-					passes_options.then(|| (run, ok.clone(), result.clone()))
+					let run_name = plain_name(args[0])?;
+					let run = local_function(&run_name)?;
+					passes_options.then(|| (at, run_name, run, ok.clone(), result.clone()))
 				})
 				.unwrap_or_else(|| panic!("schema {v}: the options are not passed to a run"));
 			// the export returned is that run's result when it succeeded,
@@ -1079,13 +1108,52 @@ mod tests {
 					&& matches!(&**fallback, Expression::Symbol(s) if token_text(s) == "nil"),
 				"schema {v}: {export} is not `{ok} and {result} or nil`"
 			);
-			let reassigned = entry_block.stmts().any(|s| match s {
-				Stmt::Assignment(a) => a.variables().iter().any(
-					|var| matches!(var, full_moon::ast::Var::Name(n) if token_text(n) == *export),
-				),
-				_ => false,
-			});
-			assert!(!reassigned, "schema {v}: {export} is assigned again");
+			// so that the value returned is the one checked: the export is made
+			// after the call; in the function, the call's results and the export
+			// are declared once and the run not at all; and nothing, at any depth,
+			// writes any of them
+			let made_at = entry_block
+				.stmts()
+				.position(|s| matches!(s, Stmt::LocalAssignment(a) if a.names().iter().any(|n| token_text(n) == *export)))
+				.expect("the export is declared");
+			assert!(
+				called_at < made_at,
+				"schema {v}: {export} is made before the call"
+			);
+			let declared = |block: &full_moon::ast::Block, name: &str| {
+				block
+					.stmts()
+					.map(|s| match s {
+						Stmt::LocalAssignment(a) => {
+							a.names().iter().filter(|n| token_text(n) == name).count()
+						}
+						Stmt::LocalFunction(f) => usize::from(token_text(f.name()) == name),
+						_ => 0,
+					})
+					.sum::<usize>()
+			};
+			for (name, times) in [(&ok, 1), (&result, 1), (export, 1), (&run_name, 0)] {
+				assert_eq!(
+					declared(entry_block, name),
+					times,
+					"schema {v}: {name} declared"
+				);
+			}
+			for name in [&run_name, send] {
+				assert_eq!(declared(chunk, name), 1, "schema {v}: {name} declared");
+			}
+			// (the call's results and the export in the function; the run and the
+			// sender, which are the script's own, anywhere in it)
+			let mut writes = Writes(&[ok.as_str(), result.as_str(), export], Vec::new());
+			full_moon::visitors::Visit::visit(entry_block, &mut writes);
+			let mut script_writes = Writes(&[run_name.as_str(), send], Vec::new());
+			full_moon::visitors::Visit::visit(chunk, &mut script_writes);
+			writes.1.extend(script_writes.1);
+			assert!(
+				writes.1.is_empty(),
+				"schema {v}: assigned again: {:?}",
+				writes.1
+			);
 			let [run_options, ..] = &parameters(run)[..] else {
 				panic!("schema {v}: the run takes no options");
 			};

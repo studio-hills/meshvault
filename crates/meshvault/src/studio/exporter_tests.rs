@@ -20,7 +20,8 @@ use crate::studio::export_file;
 
 /// Just enough of Roblox for an export of loose meshes. Instances are tables
 /// with a class, name, parent and children; HttpService encodes JSON as
-/// Roblox does (whole numbers without a point, empty tables as `[]`), keeps
+/// Roblox does (whole numbers without a point, empty tables as `[]`), gives
+/// a new GUID each time, keeps
 /// each request in `posts` and hands it to `forward` (the link), or refuses
 /// it when `refuse` is set.
 const STUDIO: &str = r#"
@@ -107,7 +108,11 @@ selectionFails = false
 refuse = false
 local http = { HttpEnabled = false }
 function http:JSONEncode(v) return encode(v) end
-function http:GenerateGUID() return "guid" end
+local guids = 0
+function http:GenerateGUID()
+	guids += 1
+	return "guid-" .. guids
+end
 function http:RequestAsync(request)
 	assert(self.HttpEnabled, "HttpEnabled is off")
 	table.insert(posts, request)
@@ -207,6 +212,13 @@ impl Studio {
 		self.lua.globals().get(name).unwrap()
 	}
 
+	/// A returned export as the JSON HttpService makes of it.
+	fn document(&self, export: &Value) -> String {
+		let http: Table = self.global("HttpService");
+		let encode: Function = http.get("JSONEncode").unwrap();
+		encode.call((http, export)).unwrap()
+	}
+
 	/// The next export the link received.
 	fn received(&self) -> String {
 		loop {
@@ -240,6 +252,8 @@ fn forward(port: u16, request: &Table) -> (u16, String) {
 	}
 	head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
 	let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+	s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+	s.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
 	s.write_all(head.as_bytes()).unwrap();
 	s.write_all(&body).unwrap();
 	let mut reply = String::new();
@@ -324,6 +338,7 @@ fn keeping_the_export_then_sending_it() {
 		assert_eq!(export_schema, v);
 		let rock_ids = ("rbxassetid://123".into(), "rbxassetid://456".into());
 		assert_eq!(returned(&export), [rock_ids], "schema {v}");
+		assert_eq!(meshes(&studio.document(&export), v), [rock()], "schema {v}");
 
 		// change it as the code for Studio suggests, then send it
 		let edit: Function = studio
@@ -348,6 +363,19 @@ fn keeping_the_export_then_sending_it() {
 		let http: Table = studio.global("HttpService");
 		assert!(!http.get::<bool>("HttpEnabled").unwrap(), "schema {v}");
 
+		// another export table is sent as it is, not the one the sender came with
+		let other: Value = studio
+			.lua
+			.load(format!(
+				"return {{ SchemaVersion = {v}, Models = {{}}, Meshes = {{ {{ Id = 1, 				 Name = 'Other', MeshId = 'rbxassetid://321', TextureId = '', 				 Folder = 'Elsewhere', ColorMap = '', NormalMap = '', RoughnessMap = '', 				 MetalnessMap = '' }} }} }}"
+			))
+			.eval()
+			.unwrap();
+		let (sent, reply): (bool, String) = send.call(&other).unwrap();
+		assert!(sent, "schema {v}: {reply}");
+		let elsewhere = ("Other".to_string(), 321, "Elsewhere".to_string());
+		assert_eq!(meshes(&studio.received(), v), [elsewhere], "schema {v}");
+
 		// JSON text is sent as it is
 		let text = format!(
 			"{{\"SchemaVersion\":{v},\"Models\":[],\"Meshes\":[{{\"Id\":1,\"Name\":\"Text\",\
@@ -364,7 +392,7 @@ fn keeping_the_export_then_sending_it() {
 		let (sent, reply): (bool, String) = send.call(long.as_str()).unwrap();
 		assert!(sent, "schema {v}: {reply}");
 		assert_eq!(studio.received(), long, "schema {v}");
-		assert_eq!(studio.posts(), 4, "schema {v}: two pieces");
+		assert_eq!(studio.posts(), 5, "schema {v}: two pieces");
 	}
 }
 
@@ -380,6 +408,7 @@ fn exporting_the_game_sends_it() {
 		assert_eq!(meshes(&studio.received(), v), [rock()], "schema {v}");
 		let rock_ids = ("rbxassetid://123".into(), "rbxassetid://456".into());
 		assert_eq!(returned(&export), [rock_ids], "schema {v}");
+		assert_eq!(meshes(&studio.document(&export), v), [rock()], "schema {v}");
 
 		let studio = Studio::new(v);
 		let (problems, _, _) = studio.export("{ exclude = {} }");

@@ -998,7 +998,7 @@ mod tests {
 			// top), the export and a function of one argument sending it
 			let entry_block = entry.body().block();
 			let out = returned_names(entry_block).expect("the function returns names");
-			let [issues, _export, send] = &out[..] else {
+			let [issues, export, send] = &out[..] else {
 				panic!("schema {v}: the function returns {out:?}");
 			};
 			assert!(
@@ -1011,16 +1011,25 @@ mod tests {
 			let sender = local_function(send).expect("the sender is a local function");
 			assert_eq!(parameters(sender).len(), 1, "schema {v}: send(export)");
 
-			// the run it makes is a local function, called with the options
-			let run = entry_block
+			// the run it makes is a local function, called through xpcall with
+			// the options; the call's two results are named
+			let (run, ok, result) = entry_block
 				.stmts()
 				.find_map(|s| {
 					let Stmt::LocalAssignment(a) = s else {
 						return None;
 					};
+					let names: Vec<_> = a.names().iter().map(token_text).collect();
+					let [ok, result] = &names[..] else {
+						return None;
+					};
 					let Some(Expression::FunctionCall(call)) = a.expressions().iter().next() else {
 						return None;
 					};
+					if !matches!(call.prefix(), full_moon::ast::Prefix::Name(n) if token_text(n) == "xpcall")
+					{
+						return None;
+					}
 					let Some(Suffix::Call(full_moon::ast::Call::AnonymousCall(args))) =
 						call.suffixes().next()
 					else {
@@ -1039,10 +1048,44 @@ mod tests {
 						} => plain_name(lhs).as_ref() == Some(options),
 						a => plain_name(a).as_ref() == Some(options),
 					});
-					passes_options.then(|| plain_name(args[0])).flatten()
+					let run = local_function(&plain_name(args[0])?)?;
+					passes_options.then(|| (run, ok.clone(), result.clone()))
 				})
-				.and_then(|name| local_function(&name))
 				.unwrap_or_else(|| panic!("schema {v}: the options are not passed to a run"));
+			// the export returned is that run's result when it succeeded,
+			// `<ok> and <result> or nil`, and nothing assigns it again
+			let is = |e: &Expression, name: &str| plain_name(e).as_deref() == Some(name);
+			let bound = local_value(entry_block, export)
+				.unwrap_or_else(|| panic!("schema {v}: {export} is not a local"));
+			let Expression::BinaryOperator {
+				lhs: guarded,
+				binop: BinOp::Or(_),
+				rhs: fallback,
+			} = &bound
+			else {
+				panic!("schema {v}: {export} is not the run's result");
+			};
+			let Expression::BinaryOperator {
+				lhs: success,
+				binop: BinOp::And(_),
+				rhs: value,
+			} = &**guarded
+			else {
+				panic!("schema {v}: {export} is not guarded by the call's success");
+			};
+			assert!(
+				is(success, &ok)
+					&& is(value, &result)
+					&& matches!(&**fallback, Expression::Symbol(s) if token_text(s) == "nil"),
+				"schema {v}: {export} is not `{ok} and {result} or nil`"
+			);
+			let reassigned = entry_block.stmts().any(|s| match s {
+				Stmt::Assignment(a) => a.variables().iter().any(
+					|var| matches!(var, full_moon::ast::Var::Name(n) if token_text(n) == *export),
+				),
+				_ => false,
+			});
+			assert!(!reassigned, "schema {v}: {export} is assigned again");
 			let [run_options, ..] = &parameters(run)[..] else {
 				panic!("schema {v}: the run takes no options");
 			};

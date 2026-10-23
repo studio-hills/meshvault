@@ -248,7 +248,8 @@ game's folder), with a folder name over 200 characters, or a folder path over
 A clip whose `Duration` or last key is more than an hour (or not a number)
 doesn't load, and is shown as unplayable. Exporting a model to Blender bakes
 each clip at 30 frames a second for every bone; a model whose clips come to
-more than 10,000,000 keys that way is not exported.
+more than 10,000,000 keys that way (counting a model without bones as one key
+a frame) is not exported. The frames are counted before any is baked.
 
 The workspace keeps each animated model as `Rigs/<Path>.rig.json`, which is
 itself a schema 2 export holding that one model.

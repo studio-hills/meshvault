@@ -85,19 +85,14 @@ fn pad_to_4(buf: &mut Vec<u8>, byte: u8) {
 pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 	let mut g = Gltf::default();
 	let nodes = model.export_nodes();
-	// every clip's key times, checked against the budget before any work
-	let clip_times: Vec<Option<Vec<f32>>> = model
+	// every clip's frames, counted and checked against the budget before
+	// any is made
+	let frames: Vec<usize> = model
 		.clips
 		.iter()
-		.map(|slot| {
-			slot.clip
-				.as_ref()
-				.ok()
-				.map(|clip| key_times(clip.duration))
-				.transpose()
-		})
+		.filter_map(|slot| slot.clip.as_ref().ok())
+		.map(|clip| frame_count(clip.duration))
 		.collect::<Result<_, _>>()?;
-	let frames: Vec<usize> = clip_times.iter().flatten().map(Vec::len).collect();
 	// every node is keyed in every frame, the root not
 	frames_fit(&frames, nodes.len())?;
 	let rest = model.export_frame(None, 0.0);
@@ -153,8 +148,10 @@ pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 	g.scene = scene;
 
 	// each clip, baked
-	for (i, (slot, times)) in model.clips.iter().zip(clip_times).enumerate() {
-		let Some(times) = times else { continue };
+	for (i, slot) in model.clips.iter().enumerate() {
+		let Ok(clip) = &slot.clip else { continue };
+		// one clip's times at a time
+		let times = key_times(clip.duration)?;
 		let frames = times.len();
 		let locals: Vec<Vec<CFrame>> = times
 			.iter()
@@ -294,11 +291,12 @@ fn bake(
 const MAX_BAKED_KEYS: usize = 10_000_000;
 
 /// Whether clips of `frames` keys each, for `nodes` nodes, are within
-/// [`MAX_BAKED_KEYS`].
+/// [`MAX_BAKED_KEYS`]. A model with no nodes still has its clips sampled,
+/// so each frame counts as at least one key.
 fn frames_fit(frames: &[usize], nodes: usize) -> Result<(), String> {
-	let keys = frames
-		.iter()
-		.try_fold(0usize, |sum, &f| sum.checked_add(f.checked_mul(nodes)?));
+	let keys = frames.iter().try_fold(0usize, |sum, &f| {
+		sum.checked_add(f.checked_mul(nodes.max(1))?)
+	});
 	match keys {
 		Some(keys) if keys <= MAX_BAKED_KEYS => Ok(()),
 		_ => Err(format!(
@@ -308,25 +306,59 @@ fn frames_fit(frames: &[usize], nodes: usize) -> Result<(), String> {
 	}
 }
 
-/// Key times of a baked clip: every frame at [`FPS`], and its end. A clip
-/// that is a single pose holds it for one frame. A clip longer than
-/// [`MAX_CLIP_SECONDS`](crate::anim::clip::MAX_CLIP_SECONDS) is an error.
-fn key_times(duration: f32) -> Result<Vec<f32>, String> {
+/// Frames at [`FPS`] before the end of a clip of `duration` seconds (the
+/// end itself not counted), worked out without listing them. A clip
+/// longer than [`MAX_CLIP_SECONDS`](crate::anim::clip::MAX_CLIP_SECONDS)
+/// is an error.
+fn frames_before_end(duration: f32) -> Result<usize, String> {
 	if !(duration.is_finite() && duration <= crate::anim::clip::MAX_CLIP_SECONDS) {
 		return Err(format!(
 			"A clip is too long to export: it lasts {duration} seconds, and the most is an hour"
 		));
 	}
-	let duration = duration.max(0.0);
-	let mut times: Vec<f32> = (0..)
-		.map(|k| k as f32 / FPS)
-		.take_while(|&t| t < duration - 1e-4)
-		.collect();
-	times.push(duration);
-	if times.len() < 2 {
-		times = vec![0.0, 1.0 / FPS];
+	let end = duration.max(0.0) - 1e-4;
+	// the first frame `k` with `k / FPS >= end`, as f32 rounds it
+	let mut k = if end > 0.0 {
+		(end * FPS).ceil() as usize
+	} else {
+		0
+	};
+	while k > 0 && (k - 1) as f32 / FPS >= end {
+		k -= 1;
 	}
+	while (k as f32) / FPS < end {
+		k += 1;
+	}
+	Ok(k)
+}
+
+/// How many key times [`key_times`] gives a clip of `duration` seconds.
+fn frame_count(duration: f32) -> Result<usize, String> {
+	Ok((frames_before_end(duration)? + 1).max(2))
+}
+
+/// Key times of a baked clip: every frame at [`FPS`], and its end. A clip
+/// that is a single pose holds it for one frame. A clip longer than
+/// [`MAX_CLIP_SECONDS`](crate::anim::clip::MAX_CLIP_SECONDS) is an error.
+fn key_times(duration: f32) -> Result<Vec<f32>, String> {
+	let before = frames_before_end(duration)?;
+	let times: Vec<f32> = if before == 0 {
+		vec![0.0, 1.0 / FPS]
+	} else {
+		(0..before)
+			.map(|k| k as f32 / FPS)
+			.chain([duration.max(0.0)])
+			.collect()
+	};
+	#[cfg(test)]
+	TIMES_BUILT.with(|n| n.set(n.get() + times.len()));
 	Ok(times)
+}
+
+#[cfg(test)]
+thread_local! {
+	/// Sample times built by [`key_times`], for tests.
+	static TIMES_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A CFrame as a column-major 4 × 4 matrix.
@@ -757,6 +789,7 @@ mod tests {
 	fn key_times_increase_and_end_on_the_clip() {
 		for duration in [0.0, 0.01, 1.0 / FPS, 0.5, 1.0, 2.345] {
 			let t = key_times(duration).unwrap();
+			assert_eq!(frame_count(duration).unwrap(), t.len(), "{duration}");
 			assert!(t.len() >= 2, "{duration}: {t:?}");
 			assert!(t.windows(2).all(|w| w[1] > w[0]), "{duration}: {t:?}");
 			assert_eq!(*t.first().unwrap(), 0.0);
@@ -779,6 +812,23 @@ mod tests {
 		}
 		let longest = key_times(crate::anim::clip::MAX_CLIP_SECONDS).unwrap();
 		assert_eq!(longest.len(), 108_001);
+		// counting the frames agrees with listing them one by one, as they
+		// were before, at every length
+		let listed = |d: f32| {
+			let n = (0..).take_while(|&k| (k as f32 / FPS) < d - 1e-4).count();
+			(n + 1).max(2)
+		};
+		for frames in (0..108_000).step_by(997).chain(107_990..108_000) {
+			for d in [
+				frames as f32 / FPS,
+				frames as f32 / FPS + 5e-5,
+				frames as f32 / FPS + 0.01,
+			] {
+				let d = d.min(crate::anim::clip::MAX_CLIP_SECONDS);
+				assert_eq!(frame_count(d).unwrap(), listed(d), "{d}");
+				assert_eq!(key_times(d).unwrap().len(), listed(d), "{d}");
+			}
+		}
 		assert!(frames_fit(&[longest.len(); 2], 2).is_ok());
 		let err = frames_fit(&[longest.len(); 2], MAX_BAKED_KEYS / 100_000).unwrap_err();
 		assert!(err.contains("too long"), "{err}");
@@ -795,6 +845,39 @@ mod tests {
 		let path = dir.join("long.glb");
 		assert!(export_model(&view, &path).unwrap_err().contains("too long"));
 		assert!(!path.exists());
+	}
+
+	/// Many clips, each a permitted hour long, are refused for their total
+	/// before a single sample time is made, also for a model with no nodes.
+	#[test]
+	fn export_model_refuses_many_long_clips_before_sampling() {
+		let dir = TempDir::new("glb_many_clips");
+		let ctx = eframe::egui::Context::default();
+		let (sources, images) = (HashMap::new(), HashMap::new());
+		let hours = |mut model: AnimatedModel, clips: usize| {
+			let mut clip = model.animations[0].clone();
+			clip.duration = crate::anim::clip::MAX_CLIP_SECONDS;
+			model.animations = vec![clip; clips];
+			model
+		};
+		let mut empty = swinging_arm(true);
+		empty.parts.clear();
+		empty.joints.clear();
+		// 2 nodes x 50 clips x 108,001 frames, and 0 nodes x 100 clips
+		for (model, clips) in [(swinging_arm(true), 50), (empty, 100)] {
+			let view = ModelView::load(&ctx, 0, &hours(model, clips), &sources, &images);
+			assert!(view.clips.iter().all(|c| c.clip.is_ok()));
+			TIMES_BUILT.with(|n| n.set(0));
+			let path = dir.join("many.glb");
+			let err = export_model(&view, &path).unwrap_err();
+			assert!(err.contains("too long"), "{err}");
+			assert_eq!(
+				TIMES_BUILT.with(std::cell::Cell::get),
+				0,
+				"no times were made"
+			);
+			assert!(!path.exists());
+		}
 	}
 
 	fn map(pixels: &[[u8; 4]]) -> image::RgbaImage {

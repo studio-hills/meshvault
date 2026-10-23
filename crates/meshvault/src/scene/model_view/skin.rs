@@ -81,7 +81,7 @@ impl PartSkin {
 			}
 		};
 		let mut matched = 0;
-		let drivers: Vec<Driver> = skin
+		let mut drivers: Vec<Driver> = skin
 			.bones
 			.iter()
 			.enumerate()
@@ -107,22 +107,7 @@ impl PartSkin {
 				}
 			})
 			.collect();
-		let depth = |mut k: usize| {
-			let mut d = 0;
-			while let Driver::Mesh {
-				parent: Some(p), ..
-			} = &drivers[k]
-			{
-				k = *p;
-				d += 1;
-				if d > drivers.len() {
-					break;
-				}
-			}
-			d
-		};
-		let mut order: Vec<(usize, usize)> = (0..drivers.len()).map(|k| (depth(k), k)).collect();
-		order.sort();
+		let order = solve_order(&mut drivers, |k| fit(&skin.binds[k]));
 		let owner_rest = rest.parts[owner];
 		let g = &asset.geometry;
 		// SpecialMesh.Offset moves the mesh in the part's own space
@@ -144,7 +129,7 @@ impl PartSkin {
 		});
 		let mut out = Self {
 			drivers,
-			order: order.into_iter().map(|(_, k)| k).collect(),
+			order,
 			influences: skin.influences.clone(),
 			rest_positions,
 			rest_normals,
@@ -258,6 +243,51 @@ impl PartSkin {
 		}
 		(now, then)
 	}
+}
+
+/// Orders the drivers parents first, visiting each once. A mesh file can
+/// loop its bones' parents back to themselves: as the rig does for Bones,
+/// walking up from the first bone in the loop, the last bone before the
+/// walk comes back drops its parent and is placed from the part, at its
+/// bind pose (`own(k)`, in part space).
+fn solve_order(drivers: &mut [Driver], own: impl Fn(usize) -> CFrame) -> Vec<usize> {
+	#[derive(Clone, Copy, PartialEq)]
+	enum Seen {
+		No,
+		OnWalk,
+		Ordered,
+	}
+	let mut seen = vec![Seen::No; drivers.len()];
+	let mut order = Vec::with_capacity(drivers.len());
+	let mut walk = Vec::new();
+	for start in 0..drivers.len() {
+		let mut k = start;
+		while seen[k] == Seen::No {
+			seen[k] = Seen::OnWalk;
+			walk.push(k);
+			match &drivers[k] {
+				Driver::Mesh {
+					parent: Some(p), ..
+				} => k = *p,
+				_ => break,
+			}
+		}
+		if seen[k] == Seen::OnWalk
+			&& let Some(&last) = walk.last()
+			&& let Driver::Mesh { parent, local, .. } = &mut drivers[last]
+			&& *parent == Some(k)
+		{
+			*parent = None;
+			*local = own(last);
+		}
+		// the walk went up from `start`, so its top is solved first
+		for &k in walk.iter().rev() {
+			seen[k] = Seen::Ordered;
+			order.push(k);
+		}
+		walk.clear();
+	}
+	order
 }
 
 pub(super) fn mean(v: V3) -> f32 {
@@ -494,5 +524,82 @@ mod tests {
 		);
 		let nan = normalize([f32::NAN, 1.0, 0.0]);
 		assert!(nan[0].is_nan() && nan[1] == 1.0 && nan[2] == 0.0);
+	}
+
+	/// A skin of `parents.len()` bones only the mesh has, each a step of 1
+	/// above the last in its bind pose, bound to part 0 of the two-part rig.
+	fn mesh_only(parents: Vec<Option<u16>>) -> PartSkin {
+		let (rig, _) = two_part_rig();
+		let rest = rig.rest();
+		let n = parents.len();
+		let skin = Skin {
+			bones: vec!["Loose".into(); n],
+			parents,
+			binds: (0..n).map(|k| cf([0.0, k as f32, 0.0])).collect(),
+			influences: vec![[(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; 3],
+			facs: None,
+		};
+		let a = asset(vec![[0.0; 3]; 3], skin.clone());
+		let start = std::time::Instant::now();
+		let ps = PartSkin::build(&skin, &a, &rig, &rest, 0, ([0.0; 3], [1.0; 3], [0.0; 3]));
+		let took = start.elapsed();
+		assert!(took.as_secs_f32() < 1.0, "binding {n} bones took {took:?}");
+		ps
+	}
+
+	/// Where each driver is placed at rest.
+	fn placed(ps: &PartSkin) -> Vec<CFrame> {
+		let (rig, _) = two_part_rig();
+		let rest = rig.rest();
+		ps.drivers_at(&rest, &rest, 0, &HashMap::new(), &[]).0
+	}
+
+	fn parent_of(ps: &PartSkin, k: usize) -> Option<usize> {
+		match &ps.drivers[k] {
+			Driver::Mesh { parent, .. } => *parent,
+			_ => panic!("bone {k} is only in the mesh"),
+		}
+	}
+
+	/// Mesh bone parents that loop are broken once, as the rig breaks
+	/// looping Bones: walking up from the first bone in the loop, the bone
+	/// that closes it is placed from the part. A bone its own parent, with
+	/// every other bone under it, binds in one pass.
+	#[test]
+	fn mesh_bone_parent_loops_are_broken_quickly() {
+		const N: usize = 65_535;
+		let ps = mesh_only(vec![Some(0); N]);
+		assert_eq!(parent_of(&ps, 0), None);
+		assert!((1..N).all(|k| parent_of(&ps, k) == Some(0)));
+		let at = placed(&ps);
+		assert_eq!(at[0].pos, [0.0, 0.0, 0.0]);
+		assert!((at[N - 1].pos[1] - (N - 1) as f32).abs() < 1e-2);
+		// B0 -> B1 -> B2 -> B0, and B3 under B2: B2 closes the loop
+		let ps = mesh_only(vec![Some(1), Some(2), Some(0), Some(2)]);
+		let parents: Vec<_> = (0..4).map(|k| parent_of(&ps, k)).collect();
+		assert_eq!(parents, [Some(1), Some(2), None, Some(2)]);
+		let order = &ps.order;
+		let at = |b: usize| order.iter().position(|&o| o == b).unwrap();
+		assert!(at(2) < at(1) && at(1) < at(0) && at(2) < at(3), "{order:?}");
+		// each bone stays at its bind pose, the loop's closer from the part
+		let p = placed(&ps);
+		for (k, cf) in p.iter().enumerate() {
+			assert!((cf.pos[1] - k as f32).abs() < 1e-5, "{k}: {:?}", cf.pos);
+		}
+	}
+
+	/// A long chain of mesh bones is ordered parents first in one pass.
+	#[test]
+	fn long_mesh_bone_chains_bind_quickly() {
+		const N: usize = 65_535;
+		// bone k under k + 1, so the root is last
+		let parents = (0..N)
+			.map(|k| (k + 1 < N).then(|| (k + 1) as u16))
+			.collect();
+		let ps = mesh_only(parents);
+		assert_eq!(ps.order.len(), N);
+		assert_eq!(ps.order[0], N - 1);
+		let p = placed(&ps);
+		assert!((p[0].pos[1]).abs() < 1e-2 && (p[N - 1].pos[1] - (N - 1) as f32).abs() < 1e-2);
 	}
 }

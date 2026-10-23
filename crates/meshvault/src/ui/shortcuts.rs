@@ -38,7 +38,7 @@ impl App {
 		if pressed(shortcut(cmd, Key::E)) {
 			self.export_glb();
 		}
-		if pressed(shortcut(cmd, Key::B)) && self.workspace.is_some() {
+		if pressed(shortcut(cmd, Key::B)) && self.has_library() {
 			self.show_library = !self.show_library;
 		}
 		if pressed(shortcut(cmd, Key::Comma)) {

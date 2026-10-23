@@ -41,7 +41,7 @@ The first public release.
   through an Open Cloud API key or a cookie kept in Windows Credential Manager;
   each asset is requested with the place it was exported from
 - A library with a folder tree or a thumbnail grid, search, filters and
-  multi-select
+  multi-select; models are listed as animated or static, above the meshes
 
 ### Animated models
 

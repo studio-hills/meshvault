@@ -40,8 +40,9 @@ impl eframe::App for App {
 					.inner_margin(Margin::symmetric(12, 4)),
 			)
 			.show(ui, |ui| self.status_bar(ui));
-		// without a workspace there is no library: the welcome screen takes its place
-		let library_shown = self.show_library && self.workspace.is_some();
+		// without a workspace, or with an empty one, there is no library: the
+		// welcome screen takes its place, centred in the window
+		let library_shown = self.show_library && self.has_library();
 		// in a narrow window the inspector gives way to the 3D view; the
 		// panels' widths are last frame's
 		let window = ctx.content_rect().width();
@@ -96,6 +97,11 @@ impl eframe::App for App {
 }
 
 impl App {
+	/// Whether there is a library to show: a workspace with something in it.
+	pub(crate) fn has_library(&self) -> bool {
+		self.workspace.as_ref().is_some_and(|ws| !ws.is_empty())
+	}
+
 	fn library(&mut self, ui: &mut egui::Ui) {
 		if let Some(ws) = &self.workspace {
 			let open_model = self.model.as_ref().map(|m| m.index);

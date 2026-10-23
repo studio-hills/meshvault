@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Vec2};
 
 use super::menus::item_hover;
-use super::{Action, Browser, Row, SCOPE, Status, game_label, models_by_game, status, status_dot};
+use super::{
+	Action, Browser, ModelKind, Row, SCOPE, Status, game_label, models_by_game, status, status_dot,
+};
 use crate::ui::theme::{CAPTION, CONTROL_RADIUS, LIST_TEXT, Palette, ROW, palette};
 use crate::ui::tree::{self, FolderTree};
 use crate::ui::{icons, widgets};
@@ -39,29 +41,39 @@ fn folder_dir(root: &Path, items: &[Item], node: &FolderTree) -> Option<PathBuf>
 	Some(dir)
 }
 
-/// The animated models' folder, which is not in the folder tree. Its path is
+/// A models section's folder, which is not in the folder tree. Its path is
 /// not a valid folder path, so it cannot clash with an export folder.
-pub(super) fn models_folder_id() -> egui::Id {
-	tree::folder_id(SCOPE, "\0animated")
+pub(super) fn models_folder_id(kind: ModelKind) -> egui::Id {
+	tree::folder_id(
+		SCOPE,
+		match kind {
+			ModelKind::Animated => "\0animated",
+			ModelKind::Static => "\0static",
+		},
+	)
 }
 
 impl Browser {
-	/// Animated models, as a folder above the mesh folders.
+	/// The models of one kind, as a folder above the mesh folders.
 	pub(super) fn models(
 		&self,
 		ui: &mut egui::Ui,
 		ws: &Workspace,
+		kind: ModelKind,
 		open_model: Option<usize>,
 		actions: &mut Vec<Action>,
 	) {
-		let visible: Vec<usize> = (0..ws.models().len())
+		let all = kind.among(ws.models(), &(0..ws.models().len()).collect::<Vec<_>>());
+		let visible: Vec<usize> = all
+			.iter()
+			.copied()
 			.filter(|&i| self.model_matches(ws, &ws.models()[i]))
 			.collect();
 		if visible.is_empty() {
 			return;
 		}
 		let p = palette(ui.ctx());
-		let id = models_folder_id();
+		let id = models_folder_id(kind);
 		let mut state =
 			egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
 		if self.narrowed() {
@@ -72,27 +84,24 @@ impl Browser {
 			.show_header(ui, |ui| {
 				let response = widgets::pointer(
 					ui.add(
-						egui::Label::new(RichText::new(format!(
-							"{}  Animated models",
-							icons::PERSON_SIMPLE_RUN
-						)))
-						.sense(egui::Sense::click())
-						.truncate(),
+						egui::Label::new(RichText::new(kind.title()))
+							.sense(egui::Sense::click())
+							.truncate(),
 					),
 				);
 				clicked = response.clicked();
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					ui.label(widgets::caption(ui, ws.models().len().to_string()));
+					ui.label(widgets::caption(ui, all.len().to_string()));
 				});
 				response.context_menu(|ui| {
 					widgets::menu_style(ui);
 					if widgets::danger_item(
 						ui,
-						format!("{}  Remove all animated models", icons::TRASH),
+						format!("{}  Remove all {}", icons::TRASH, kind.plural()),
 					)
 					.clicked()
 					{
-						actions.push(Action::RemoveModels((0..ws.models().len()).collect()));
+						actions.push(Action::RemoveModels(all.clone()));
 						ui.close();
 					}
 				});
@@ -115,7 +124,12 @@ impl Browser {
 							&model.name,
 							open_model == Some(i),
 							self.is_selected(key),
-							Trailing::Clips(model.playable_clips),
+							// a static model has no clips to count
+							if model.is_animated() {
+								Trailing::Clips(model.playable_clips)
+							} else {
+								Trailing::None
+							},
 						);
 						self.drawn(key);
 						if open_model == Some(i) && self.scroll_to_open.replace(false) {

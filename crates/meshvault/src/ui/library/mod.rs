@@ -25,7 +25,7 @@ use crate::render::thumbnails::Thumbnails;
 use crate::scene::maps::MapKind;
 use crate::ui::theme::{Palette, ROW, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
-use crate::ui::widgets;
+use crate::ui::{icons, widgets};
 use crate::workspace::facts::Facts;
 use crate::workspace::{Item, ModelItem, Workspace};
 
@@ -156,12 +156,60 @@ impl Opened<'_> {
 /// Folder state namespace for the library tree.
 const SCOPE: &str = "library";
 
+/// The library's two sections of models: those with clips, and those
+/// without (props, buildings, vehicles), both above the mesh folders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelKind {
+	Animated,
+	Static,
+}
+
+impl ModelKind {
+	const ALL: [Self; 2] = [Self::Animated, Self::Static];
+
+	fn of(model: &ModelItem) -> Self {
+		if model.is_animated() {
+			Self::Animated
+		} else {
+			Self::Static
+		}
+	}
+
+	/// The section's heading.
+	fn title(self) -> String {
+		match self {
+			Self::Animated => format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
+			Self::Static => format!("{}  Static models", icons::CUBE),
+		}
+	}
+
+	/// What the section holds, for "Remove all …".
+	fn plural(self) -> &'static str {
+		match self {
+			Self::Animated => "animated models",
+			Self::Static => "static models",
+		}
+	}
+
+	/// The models of this kind among `shown` (indices into `models`), in
+	/// the order given.
+	fn among(self, models: &[ModelItem], shown: &[usize]) -> Vec<usize> {
+		shown
+			.iter()
+			.copied()
+			.filter(|&i| Self::of(&models[i]) == self)
+			.collect()
+	}
+}
+
 /// Applies an expand or collapse to the library's folders. "All" includes
-/// the animated models' folder, which is not in `tree`.
+/// the models' sections, which are not in `tree`.
 fn apply_folder_command(ctx: &egui::Context, command: &FolderCommand, tree: &FolderTree) {
 	command.apply(ctx, SCOPE, tree);
 	if let FolderCommand::All(open) = *command {
-		tree::set_open(ctx, list::models_folder_id(), open);
+		for kind in ModelKind::ALL {
+			tree::set_open(ctx, list::models_folder_id(kind), open);
+		}
 	}
 }
 
@@ -266,8 +314,9 @@ impl Browser {
 		if let Some(item) = item {
 			tree::open_path(ctx, SCOPE, &item.folder);
 		}
-		if model.is_some() {
-			tree::set_open(ctx, list::models_folder_id(), true);
+		if let Some(i) = model {
+			let kind = ModelKind::of(&ws.models()[i]);
+			tree::set_open(ctx, list::models_folder_id(kind), true);
 		}
 		self.scroll_to_open.set(true);
 	}
@@ -334,7 +383,9 @@ impl Browser {
 					if !any {
 						nothing_matches(ui);
 					}
-					self.models(ui, ws, opened.model, &mut actions);
+					for kind in ModelKind::ALL {
+						self.models(ui, ws, kind, opened.model, &mut actions);
+					}
 					let tree = std::mem::take(&mut self.tree);
 					self.folder(ui, ws, &tree, "", opened.stem, &mut actions);
 					self.tree = tree;
@@ -392,7 +443,7 @@ mod tests {
 	}
 
 	#[test]
-	fn collapse_all_includes_the_animated_models_folder() {
+	fn collapse_all_includes_the_models_sections() {
 		let ctx = egui::Context::default();
 		let folder: Vec<String> = vec!["Props".into()];
 		let tree = FolderTree::build([folder.as_slice()]);
@@ -401,11 +452,32 @@ mod tests {
 			apply_folder_command(&ctx, &FolderCommand::All(open), &tree);
 			assert_eq!(is_open(&ctx, props), Some(open));
 			// it was once left as it was (bug B42)
-			assert_eq!(is_open(&ctx, list::models_folder_id()), Some(open));
+			for kind in ModelKind::ALL {
+				assert_eq!(is_open(&ctx, list::models_folder_id(kind)), Some(open));
+			}
 		}
 		// a folder's own "collapse all inside" leaves the models alone
 		apply_folder_command(&ctx, &FolderCommand::Subtree("Props".into(), false), &tree);
-		assert_eq!(is_open(&ctx, list::models_folder_id()), Some(true));
+		for kind in ModelKind::ALL {
+			assert_eq!(is_open(&ctx, list::models_folder_id(kind)), Some(true));
+		}
+	}
+
+	#[test]
+	fn models_with_clips_are_animated_and_the_rest_static() {
+		use super::fixtures::model;
+		let mut models = vec![model("Rig", None), model("Crate", None), model("Pet", None)];
+		models[0].clips = 2;
+		// clips that do not play still make it animated
+		models[2].clips = 1;
+		assert_eq!(ModelKind::of(&models[0]), ModelKind::Animated);
+		assert_eq!(ModelKind::of(&models[1]), ModelKind::Static);
+		assert_eq!(ModelKind::Animated.among(&models, &[2, 1, 0]), [2, 0]);
+		assert_eq!(ModelKind::Static.among(&models, &[2, 1, 0]), [1]);
+		assert_ne!(
+			list::models_folder_id(ModelKind::Animated),
+			list::models_folder_id(ModelKind::Static)
+		);
 	}
 
 	#[test]
@@ -414,9 +486,10 @@ mod tests {
 		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
 		let model: crate::workspace::ModelItem = serde_json::from_value(serde_json::json!({
 			"name": "Rig", "path": "Workspace.Rig", "folder": [], "file": "Rigs/Rig.rig.json",
-			"meshes": {}, "parts": 1, "clips": 0, "playable_clips": 0,
+			"meshes": {}, "parts": 1, "clips": 1, "playable_clips": 1,
 		}))
 		.unwrap();
+		let animated = list::models_folder_id(ModelKind::Animated);
 		ws.set_contents(Vec::new(), vec![model]);
 		let ctx = egui::Context::default();
 		let mut browser = Browser {
@@ -424,7 +497,7 @@ mod tests {
 			view: View::Grid,
 			..Default::default()
 		};
-		tree::set_open(&ctx, list::models_folder_id(), false);
+		tree::set_open(&ctx, animated, false);
 		// it once did nothing unless a mesh was open (bug B43)
 		let opened = Opened {
 			stem: None,
@@ -433,7 +506,7 @@ mod tests {
 		browser.reveal_opened(&ctx, &ws, opened);
 		assert!(browser.search.is_empty());
 		assert!(browser.view == View::List);
-		assert_eq!(is_open(&ctx, list::models_folder_id()), Some(true));
+		assert_eq!(is_open(&ctx, animated), Some(true));
 		assert!(browser.scroll_to_open.get());
 
 		// nothing open, or a model that has gone: nothing changes

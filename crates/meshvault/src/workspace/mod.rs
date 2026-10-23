@@ -239,6 +239,12 @@ impl Workspace {
 		&self.manifest.models
 	}
 
+	/// Whether it has nothing to show yet: no meshes and no models. A model
+	/// whose parts have no meshes is still something to open.
+	pub fn is_empty(&self) -> bool {
+		self.items().is_empty() && self.models().is_empty()
+	}
+
 	pub fn generation(&self) -> u64 {
 		self.generation
 	}

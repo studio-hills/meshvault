@@ -117,18 +117,22 @@ impl App {
 				if inspector.clicked() {
 					self.show_inspector = !self.show_inspector;
 				}
-				let has_ws = self.workspace.is_some();
+				let has_library = self.has_library();
 				let library = ui
-					.add_enabled_ui(has_ws, |ui| {
+					.add_enabled_ui(has_library, |ui| {
 						widgets::icon_toggle(
 							ui,
 							icons::TREE_STRUCTURE,
 							"Library  (Ctrl+B)",
-							self.show_library && has_ws,
+							self.show_library && has_library,
 						)
 					})
 					.inner
-					.on_disabled_hover_text("Open a workspace to use the library");
+					.on_disabled_hover_text(if self.workspace.is_some() {
+						"Import an export to fill the library"
+					} else {
+						"Open a workspace to use the library"
+					});
 				if library.clicked() {
 					self.show_library = !self.show_library;
 				}

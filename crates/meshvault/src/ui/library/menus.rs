@@ -193,13 +193,17 @@ impl Browser {
 				.filter(|(_, it)| matches!(it.mesh, AssetState::Done { .. }))
 				.count();
 		let mut hover = format!(
-			"{}\n{} parts, {} meshes\n{} of {} clips playable",
+			"{}\n{} parts, {} meshes",
 			model.path,
 			model.parts,
-			model.meshes.len(),
-			model.playable_clips,
-			model.clips
+			model.meshes.len()
 		);
+		if model.is_animated() {
+			hover.push_str(&format!(
+				"\n{} of {} clips playable",
+				model.playable_clips, model.clips
+			));
+		}
 		if missing > 0 {
 			hover.push_str(&format!("\n{missing} meshes not downloaded yet"));
 		}

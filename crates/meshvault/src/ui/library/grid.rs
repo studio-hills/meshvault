@@ -4,7 +4,9 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Sense, Stroke, V
 
 use super::list::nothing_matches;
 use super::menus::item_hover;
-use super::{Action, Browser, Opened, Row, Status, game_label, models_by_game, status, status_dot};
+use super::{
+	Action, Browser, ModelKind, Opened, Row, Status, game_label, models_by_game, status, status_dot,
+};
 use crate::render::thumbnails::Subject;
 use crate::ui::theme::{CAPTION, CARD_RADIUS, palette};
 use crate::ui::{icons, widgets};
@@ -23,31 +25,28 @@ struct Section {
 	rows: Vec<Row>,
 }
 
-/// The grid's sections: the animated models first, a section per game in
-/// `models` when they come from more than one, then the meshes in `meshes`
-/// sorted by folder and name, one section per folder.
-fn grid_sections(
-	items: &[Item],
-	models: Vec<(Option<&str>, Vec<Row>)>,
-	mut meshes: Vec<usize>,
-) -> Vec<Section> {
+/// Models grouped for the grid: per kind, its groups of rows by game.
+type ModelGroups<'a> = Vec<(ModelKind, Vec<(Option<&'a str>, Vec<Row>)>)>;
+
+/// The grid's sections: the models first, by kind (animated, then static)
+/// with a section per game when a kind's come from more than one, then the
+/// meshes in `meshes` sorted by folder and name, one section per folder.
+fn grid_sections(items: &[Item], models: ModelGroups<'_>, mut meshes: Vec<usize>) -> Vec<Section> {
 	let mut sections: Vec<Section> = Vec::new();
-	let by_game = models.len() > 1;
-	for (game, rows) in models {
-		let title = if by_game {
-			format!(
-				"{}  Animated models · {}",
-				icons::PERSON_SIMPLE_RUN,
-				game_label(game)
-			)
-		} else {
-			format!("{}  Animated models", icons::PERSON_SIMPLE_RUN)
-		};
-		sections.push(Section {
-			title,
-			path: String::new(),
-			rows,
-		});
+	for (kind, groups) in models {
+		let by_game = groups.len() > 1;
+		for (game, rows) in groups {
+			let title = if by_game {
+				format!("{} · {}", kind.title(), game_label(game))
+			} else {
+				kind.title()
+			};
+			sections.push(Section {
+				title,
+				path: String::new(),
+				rows,
+			});
+		}
 	}
 	meshes.sort_by(|&a, &b| {
 		items[a].folder.cmp(&items[b].folder).then_with(|| {
@@ -79,7 +78,7 @@ fn grid_sections(
 }
 
 impl Browser {
-	/// Thumbnails: animated models first, then meshes by folder.
+	/// Thumbnails: models first, then meshes by folder.
 	pub(super) fn grid(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -91,9 +90,15 @@ impl Browser {
 		let shown: Vec<usize> = (0..ws.models().len())
 			.filter(|&i| self.model_matches(ws, &ws.models()[i]))
 			.collect();
-		let models = models_by_game(ws.models(), &shown)
+		let models = ModelKind::ALL
 			.into_iter()
-			.map(|(game, group)| (game, group.into_iter().map(Row::Model).collect()))
+			.map(|kind| {
+				let groups = models_by_game(ws.models(), &kind.among(ws.models(), &shown))
+					.into_iter()
+					.map(|(game, group)| (game, group.into_iter().map(Row::Model).collect()))
+					.collect();
+				(kind, groups)
+			})
 			.collect();
 		let meshes: Vec<usize> = (0..items.len())
 			.filter(|&i| self.matches(&items[i]))
@@ -207,7 +212,9 @@ impl Browser {
 			if s != Status::Done {
 				status_dot(&painter, &p, picture.left_top() + Vec2::new(10.0, 10.0), s);
 			}
-			if let Row::Model(i) = key {
+			if let Row::Model(i) = key
+				&& ws.models()[i].is_animated()
+			{
 				let clips = format!("{} {}", icons::FILM_STRIP, ws.models()[i].playable_clips);
 				painter.text(
 					picture.right_top() + Vec2::new(-8.0, 8.0),
@@ -307,10 +314,13 @@ mod tests {
 		let items = grid_items();
 		let sections = grid_sections(
 			&items,
-			vec![
-				(Some("Pets"), vec![Row::Model(0)]),
-				(None, vec![Row::Model(1)]),
-			],
+			vec![(
+				ModelKind::Animated,
+				vec![
+					(Some("Pets"), vec![Row::Model(0)]),
+					(None, vec![Row::Model(1)]),
+				],
+			)],
 			Vec::new(),
 		);
 		let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
@@ -330,7 +340,14 @@ mod tests {
 		let items = grid_items();
 		let sections = grid_sections(
 			&items,
-			vec![(None, vec![Row::Model(1), Row::Model(0)])],
+			vec![
+				(
+					ModelKind::Animated,
+					vec![(None, vec![Row::Model(1), Row::Model(0)])],
+				),
+				// static models next, under their own heading
+				(ModelKind::Static, vec![(Some("Town"), vec![Row::Model(2)])]),
+			],
 			vec![5, 1, 2],
 		);
 		assert_eq!(
@@ -340,6 +357,11 @@ mod tests {
 					format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
 					"",
 					&[Row::Model(1), Row::Model(0)],
+				),
+				section(
+					format!("{}  Static models", icons::CUBE),
+					"",
+					&[Row::Model(2)],
 				),
 				section(folder_title(""), "", &[Row::Mesh(1)]),
 				section(folder_title("Props"), "Props", &[Row::Mesh(5)]),

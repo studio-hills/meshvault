@@ -3,7 +3,8 @@
 Meshvault has three panes: the **library** of the open workspace's models on
 the left, the **viewport** with a floating toolbar in the middle, and the
 **inspector** with the model's stats, material and properties on the right.
-Both side panels can be hidden (Ctrl+B and Ctrl+Shift+B). In a narrow
+Both side panels can be hidden (Ctrl+B and Ctrl+Shift+B); an empty workspace
+has no library, and its first import starts from the middle of the window. In a narrow
 window (or at high display scaling) the inspector steps aside so the 3D view
 keeps room, and comes back when the window is wider or the library is hidden;
 the top bar's buttons show only their icons, and the viewport's toolbar takes
@@ -83,10 +84,12 @@ an export and downloading.
 
 ## Animated models
 
-Schema 1 and 2 exports list animated models in the import dialog; selecting
-one also selects the meshes its parts use. In the library they appear under
-Animated models (with a heading per game when they come from more than one).
-Click one to play it, or open its `.rig.json` while its
+Schema 1 and 2 exports list models in the import dialog; selecting one also
+selects the meshes its parts use. In the library, models with clips appear
+under Animated models, and models without (props, buildings, vehicles) under
+Static models, each with a heading per game when they come from more than
+one. Click a model to view it whole, and an animated one to play it, or open
+its `.rig.json` while its
 workspace is open. A `.rig.json` from elsewhere is imported into a workspace
 like any export.
 

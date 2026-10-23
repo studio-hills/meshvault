@@ -162,6 +162,14 @@ pub struct ModelItem {
 	pub version: ModelVersion,
 }
 
+impl ModelItem {
+	/// Whether it has clips, even ones that do not play; the rest are
+	/// static models (props, buildings, vehicles).
+	pub fn is_animated(&self) -> bool {
+		self.clips > 0
+	}
+}
+
 /// Tells a model apart from one stored later under the same file name, and
 /// one import of a model from the next, so work started on a model can tell
 /// whether it is still the model it was started on. Not saved: every model

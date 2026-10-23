@@ -7,13 +7,6 @@ use super::theme::{
 };
 use super::{icons, widgets};
 use crate::app::App;
-use crate::workspace::Workspace;
-
-/// Whether `ws` has nothing to show yet: no meshes and no animated models.
-/// A model whose parts have no meshes is still something to open.
-fn is_empty(ws: &Workspace) -> bool {
-	ws.items().is_empty() && ws.models().is_empty()
-}
 
 impl App {
 	pub(super) fn welcome(&mut self, ui: &mut egui::Ui) {
@@ -40,7 +33,7 @@ impl App {
 				ui.painter()
 					.circle_filled(icon_rect.center(), 32.0, p.accent_soft);
 				let icon = match &self.workspace {
-					Some(ws) if is_empty(ws) => icons::FILE_ARROW_DOWN,
+					Some(ws) if ws.is_empty() => icons::FILE_ARROW_DOWN,
 					Some(_) => icons::TREE_STRUCTURE,
 					None => icons::CUBE,
 				};
@@ -55,7 +48,7 @@ impl App {
 
 				match &self.workspace {
 					None => self.welcome_start(ui),
-					Some(ws) if is_empty(ws) => {
+					Some(ws) if ws.is_empty() => {
 						title(ui, "Your workspace is empty");
 						subtitle(
 							ui,
@@ -366,15 +359,14 @@ fn drop_zone(ui: &mut egui::Ui, text: &str) -> egui::Response {
 mod tests {
 	use std::collections::BTreeMap;
 
-	use super::*;
 	use crate::test_support::TempDir;
-	use crate::workspace::ModelItem;
+	use crate::workspace::{ModelItem, Workspace};
 
 	#[test]
 	fn a_workspace_with_only_models_is_not_empty() {
 		let dir = TempDir::new("welcome");
 		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
-		assert!(is_empty(&ws));
+		assert!(ws.is_empty());
 		// a model made of primitives only, so it uses no meshes
 		let model = ModelItem {
 			name: "Blocks".into(),
@@ -391,6 +383,6 @@ mod tests {
 			version: Default::default(),
 		};
 		ws.set_contents(Vec::new(), vec![model]);
-		assert!(!is_empty(&ws));
+		assert!(!ws.is_empty());
 	}
 }

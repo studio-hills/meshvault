@@ -115,9 +115,13 @@ impl App {
 					let items = ws.items();
 					let done = items.iter().filter(|i| i.is_done()).count();
 					let mut text = format!("{} meshes · {done} downloaded", items.len());
-					let models = ws.models().len();
-					if models > 0 {
-						text = format!("{models} animated · {text}");
+					let animated = ws.models().iter().filter(|m| m.is_animated()).count();
+					let still = ws.models().len() - animated;
+					if still > 0 {
+						text = format!("{still} static · {text}");
+					}
+					if animated > 0 {
+						text = format!("{animated} animated · {text}");
 					}
 					ui.label(small(text, p.text_weak));
 				}

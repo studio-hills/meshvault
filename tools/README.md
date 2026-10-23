@@ -10,6 +10,7 @@ Run them from the repository root.
 | Tool | What it does |
 | --- | --- |
 | `make_test_workspace.py OUT [--schema 1\|2] [--force]` | Builds a small workspace: one animated model, TestRig, with the skinned sample head `crates/rbx_mesh/meshes/13674780763`, plus (schema 2) coloured primitive parts. Open it in Meshvault, or point `MESHVAULT_WS` at it. |
+| `make_icon.py FONT OUT` | Draws the app icon (`meshvault.ico` and `meshvault.png`) from the Phosphor font; see [packaging/README.md](../packaging/README.md). Needs Pillow. |
 | `studio/stand_in_link.py [--port 34876] [--out DIR]` | A stand-in for Meshvault's Studio link on another port. It serves `crates/meshvault/studio/exporter_v{1,2}.luau` with its own address in them, saves what they send as `export.json`, saves posted Studio samples as `<name>.json`, and refuses everything sent to `/refuse` (413). Output goes to `target/stand-in` unless `--out` says otherwise. |
 | `studio/sample_animator.luau` | Run in Studio against a test place: plays every clip of the models under `ReplicatedStorage.MeshvaultTest` in Studio's own Animator and posts the joint, bone and part poses to the stand-in link. The header says how the test place is laid out. |
 

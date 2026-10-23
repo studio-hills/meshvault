@@ -33,12 +33,27 @@ const APP_NAME: &str = "Meshvault";
 const WINDOW_SIZE: [f32; 2] = [1280.0, 800.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [760.0, 480.0];
 
+/// The window's icon, in the title bar's place and the taskbar. The
+/// executable's own icon is embedded by build.rs.
+fn window_icon() -> egui::IconData {
+	let png = include_bytes!("../assets/icons/meshvault.png");
+	let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+		.expect("the bundled icon is a valid PNG")
+		.into_rgba8();
+	egui::IconData {
+		width: image.width(),
+		height: image.height(),
+		rgba: image.into_raw(),
+	}
+}
+
 fn main() -> eframe::Result {
 	// meshvault [workspace folder] [mesh, image or export .json ...]
 	let initial: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 	let options = eframe::NativeOptions {
 		viewport: egui::ViewportBuilder::default()
 			.with_title(APP_NAME)
+			.with_icon(window_icon())
 			// Meshvault draws its own title bar (see ui::window)
 			.with_decorations(false)
 			.with_inner_size(WINDOW_SIZE)
@@ -66,4 +81,15 @@ fn main() -> eframe::Result {
 			Ok(Box::new(app))
 		}),
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	/// The app panics at startup if its icon can't be read.
+	#[test]
+	fn window_icon_decodes() {
+		let icon = super::window_icon();
+		assert_eq!((icon.width, icon.height), (256, 256));
+		assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+	}
 }

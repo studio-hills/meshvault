@@ -27,6 +27,10 @@ raw-window-handle = "0.6"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
+[target.'cfg(windows)'.build-dependencies]
+# the executable's icon and version information (build.rs)
+winresource = "0.1.34"
+
 [dev-dependencies]
 # the exporter tests run the served Luau exporters against a stand-in for Studio
 mlua = { version = "0.12", features = ["luau"] }

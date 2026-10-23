@@ -132,6 +132,10 @@ impl App {
 		self.workspace = None;
 		self.import = None;
 		self.parsing = None;
+		// exports waiting for this workspace go too; a reader still running
+		// keeps the queue busy until it ends
+		let dropped = self.import_queue.discard_waiting();
+		self.report_dropped(dropped);
 		self.open_stem = None;
 	}
 

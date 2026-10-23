@@ -21,7 +21,7 @@ Exports are read one at a time. One that arrives (or is opened) while another
 is being read or its import dialog is open waits, and opens when that import
 is done; up to 8 can wait, and one more is not imported (an export from Studio
 is still saved, so it can be imported again later). Waiting exports are
-dropped if the workspace is closed.
+dropped when the workspace is closed, or another is opened or created.
 
 Importing an export again merges it with what is there:
 

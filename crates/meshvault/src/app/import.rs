@@ -1,7 +1,7 @@
 //! Importing exports: picked files, and exports sent from Roblox Studio.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,9 +23,12 @@ const MAX_WAITING: usize = 8;
 
 /// Exports are read one at a time: one that arrives while another is read
 /// or shown waits here, and is read from its file when its turn comes.
+/// Each waits for the workspace that was open when it arrived, and is
+/// dropped if another is open by its turn.
 #[derive(Default)]
 pub struct ImportQueue {
-	waiting: VecDeque<PathBuf>,
+	/// Each export's file, and the root of the workspace it is for.
+	waiting: VecDeque<(PathBuf, PathBuf)>,
 	/// Held by the thread reading an export, until it ends. A reader that
 	/// was cancelled still holds it, so the next one waits for it.
 	reader: Arc<()>,
@@ -37,13 +40,37 @@ impl ImportQueue {
 		Arc::strong_count(&self.reader) > 1
 	}
 
-	/// Puts `path` at the back; false if the queue is full.
-	fn push(&mut self, path: PathBuf) -> bool {
+	/// Puts `path`, for the workspace at `workspace`, at the back; false if
+	/// the queue is full.
+	fn push(&mut self, path: PathBuf, workspace: &Path) -> bool {
 		if self.waiting.len() >= MAX_WAITING {
 			return false;
 		}
-		self.waiting.push_back(path);
+		self.waiting.push_back((path, workspace.to_path_buf()));
 		true
+	}
+
+	/// Drops every waiting export, returning how many there were. A reader
+	/// still running keeps the queue busy until it ends.
+	pub(super) fn discard_waiting(&mut self) -> usize {
+		let dropped = self.waiting.len();
+		self.waiting.clear();
+		dropped
+	}
+
+	/// Drops the exports waiting for another workspace than `current`, then
+	/// takes the next one unless `busy`. Returns how many were dropped, and
+	/// the export to read.
+	fn next(&mut self, current: Option<&Path>, busy: bool) -> (usize, Option<PathBuf>) {
+		let before = self.waiting.len();
+		self.waiting.retain(|(_, ws)| Some(ws.as_path()) == current);
+		let dropped = before - self.waiting.len();
+		let next = if busy {
+			None
+		} else {
+			self.waiting.pop_front().map(|(path, _)| path)
+		};
+		(dropped, next)
 	}
 }
 
@@ -93,8 +120,9 @@ impl App {
 
 	/// Keeps `path` to read once the export being read or shown is done.
 	fn queue_import(&mut self, path: PathBuf) {
+		let Some(ws) = &self.workspace else { return };
 		let name = path.display();
-		if self.import_queue.push(path.clone()) {
+		if self.import_queue.push(path.clone(), &ws.root) {
 			self.toasts.info(format!(
 				"{name} opens for import when the current one is done ({} waiting).",
 				self.import_queue.waiting.len()
@@ -112,25 +140,26 @@ impl App {
 		if self.import_queue.waiting.is_empty() {
 			return;
 		}
-		if self.workspace.is_none() {
-			// the workspace they were for was closed
-			let dropped = self.import_queue.waiting.len();
-			self.import_queue.waiting.clear();
-			self.toasts.info(format!(
-				"{dropped} waiting exports were not imported: their workspace was closed."
-			));
-			return;
-		}
-		if self.import_busy() {
-			return;
-		}
-		let path = self
-			.import_queue
-			.waiting
-			.pop_front()
-			.expect("checked above");
+		let busy = self.import_busy();
+		let current = self.workspace.as_ref().map(|ws| ws.root.as_path());
+		let (dropped, next) = self.import_queue.next(current, busy);
+		self.report_dropped(dropped);
+		let Some(path) = next else { return };
 		if let Some(bytes) = self.read_or_report(&path) {
 			self.start_import(path, &bytes);
+		}
+	}
+
+	/// Says that `dropped` waiting exports were not imported, if any were.
+	pub(super) fn report_dropped(&mut self, dropped: usize) {
+		match dropped {
+			0 => {}
+			1 => self
+				.toasts
+				.info("A waiting export was not imported: its workspace was closed."),
+			n => self.toasts.info(format!(
+				"{n} waiting exports were not imported: their workspace was closed."
+			)),
 		}
 	}
 
@@ -266,10 +295,13 @@ mod tests {
 	fn the_queue_is_bounded_and_knows_its_reader() {
 		let mut queue = ImportQueue::default();
 		for i in 0..MAX_WAITING {
-			assert!(queue.push(PathBuf::from(format!("{i}.json"))));
+			assert!(queue.push(PathBuf::from(format!("{i}.json")), Path::new("A")));
 		}
-		assert!(!queue.push(PathBuf::from("one more.json")));
-		assert_eq!(queue.waiting.front(), Some(&PathBuf::from("0.json")));
+		assert!(!queue.push(PathBuf::from("one more.json"), Path::new("A")));
+		assert_eq!(
+			queue.next(Some(Path::new("A")), false).1,
+			Some(PathBuf::from("0.json"))
+		);
 
 		assert!(!queue.reading());
 		let ctx = eframe::egui::Context::default();
@@ -289,5 +321,63 @@ mod tests {
 			std::thread::sleep(std::time::Duration::from_millis(10));
 		}
 		panic!("the reader did not end");
+	}
+	/// A reader of workspace A's export, cancelled, that runs until `go`.
+	fn running_reader(queue: &ImportQueue) -> std::sync::mpsc::Sender<()> {
+		let ctx = eframe::egui::Context::default();
+		let (go, wait) = std::sync::mpsc::channel::<()>();
+		let reader = Arc::clone(&queue.reader);
+		drop(Task::spawn(&ctx, move |_| {
+			let _reader = reader;
+			wait.recv().map_err(|e| e.to_string())
+		}));
+		go
+	}
+
+	fn wait_for_reader(queue: &ImportQueue) {
+		for _ in 0..500 {
+			if !queue.reading() {
+				return;
+			}
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+		panic!("the reader did not end");
+	}
+
+	/// Exports waiting while workspace A's export is read are not offered
+	/// to workspace B, whether B was opened straight from A or A was closed
+	/// first; A's reader still keeps the queue busy until it ends.
+	#[test]
+	fn switching_workspaces_drops_the_waiting_exports() {
+		let (a, b) = (Path::new("A"), Path::new("B"));
+		// opened straight from A: B's turn comes with A's exports still there
+		let mut queue = ImportQueue::default();
+		let go = running_reader(&queue);
+		assert!(queue.push("a1.json".into(), a));
+		assert!(queue.push("a2.json".into(), a));
+		assert_eq!(queue.next(Some(b), queue.reading()), (2, None));
+		assert!(queue.waiting.is_empty());
+		assert!(queue.reading(), "A's reader still runs");
+		// B's own export waits for that reader, then is read
+		assert!(queue.push("b1.json".into(), b));
+		assert_eq!(queue.next(Some(b), queue.reading()), (0, None));
+		go.send(()).unwrap();
+		wait_for_reader(&queue);
+		assert_eq!(
+			queue.next(Some(b), queue.reading()),
+			(0, Some(PathBuf::from("b1.json")))
+		);
+
+		// closing A (as opening or creating B does first) drops them at once
+		let go = running_reader(&queue);
+		assert!(queue.push("a3.json".into(), a));
+		assert_eq!(queue.discard_waiting(), 1);
+		assert!(queue.reading());
+		assert_eq!(queue.next(Some(a), queue.reading()), (0, None));
+		go.send(()).unwrap();
+		wait_for_reader(&queue);
+		// with no workspace open, nothing waits
+		assert!(queue.push("a4.json".into(), a));
+		assert_eq!(queue.next(None, false), (1, None));
 	}
 }

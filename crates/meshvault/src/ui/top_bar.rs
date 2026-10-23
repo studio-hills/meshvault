@@ -21,16 +21,27 @@ impl App {
 			.max_rect()
 			.expand2(Vec2::new(TOP_BAR_MARGIN.0 as f32, TOP_BAR_MARGIN.1 as f32));
 		super::window::title_bar_drag(ui, bar);
+		// in a narrow window the buttons on the left keep only their icons
+		let compact = compact_top_bar(bar.width());
+		let button = |ui: &mut egui::Ui, icon: &str, text: &str| {
+			if compact {
+				widgets::text_button(ui, icon)
+			} else {
+				widgets::button(ui, icon, text)
+			}
+		};
 		ui.horizontal(|ui| {
 			ui.set_min_height(CONTROL);
 			ui.label(RichText::new(icons::CUBE).size(22.0).color(p.accent));
-			ui.label(RichText::new("Meshvault").size(17.0).family(display()));
+			if !compact {
+				ui.label(RichText::new("Meshvault").size(17.0).family(display()));
+			}
 			ui.add_space(10.0);
-			self.workspace_switcher(ui);
+			self.workspace_switcher(ui, compact);
 			ui.add_space(4.0);
 			ui.separator();
 
-			if widgets::button(ui, icons::FILE, "Open")
+			if button(ui, icons::FILE, "Open")
 				.on_hover_text("Open a mesh, union or image file  (Ctrl+O)")
 				.clicked()
 			{
@@ -38,9 +49,7 @@ impl App {
 			}
 			let has_ws = self.workspace.is_some();
 			let import = ui
-				.add_enabled_ui(has_ws, |ui| {
-					widgets::button(ui, icons::FILE_ARROW_DOWN, "Import")
-				})
+				.add_enabled_ui(has_ws, |ui| button(ui, icons::FILE_ARROW_DOWN, "Import"))
 				.inner
 				.on_hover_text("Import models from an export .json  (Ctrl+I)")
 				.on_disabled_hover_text("Open or create a workspace to import into");
@@ -49,20 +58,26 @@ impl App {
 			}
 			let (pending, failed) = self.workspace_counts();
 			if pending > 0 && !self.downloader.is_running() {
-				let download = widgets::primary_button(
-					ui,
-					format!("{}  Download {pending}", icons::CLOUD_ARROW_DOWN),
-				)
-				.on_hover_text("Download everything not yet downloaded  (Ctrl+D)");
+				let label = if compact {
+					format!("{}  {pending}", icons::CLOUD_ARROW_DOWN)
+				} else {
+					format!("{}  Download {pending}", icons::CLOUD_ARROW_DOWN)
+				};
+				let download = widgets::primary_button(ui, label)
+					.on_hover_text("Download everything not yet downloaded  (Ctrl+D)");
 				if download.clicked() {
 					self.start_downloads();
 				}
 			}
 			if failed > 0 && !self.downloader.is_running() {
 				let retry = ui.add(egui::Button::new(
-					RichText::new(format!("{}  Retry {failed}", icons::ARROWS_CLOCKWISE))
-						.color(p.danger)
-						.family(medium()),
+					RichText::new(if compact {
+						format!("{}  {failed}", icons::ARROWS_CLOCKWISE)
+					} else {
+						format!("{}  Retry {failed}", icons::ARROWS_CLOCKWISE)
+					})
+					.color(p.danger)
+					.family(medium()),
 				));
 				if retry.on_hover_text("Retry failed downloads").clicked() {
 					self.retry_failed();
@@ -82,18 +97,23 @@ impl App {
 					.on_hover_text("More");
 				});
 				let has_doc = self.doc.is_some() || self.model.is_some();
+				let squeezed = self.inspector_squeezed && has_doc;
 				let inspector = ui
-					.add_enabled_ui(has_doc, |ui| {
+					.add_enabled_ui(has_doc && !squeezed, |ui| {
 						// the icon draws its panel on the left; the inspector is on the right
 						widgets::icon_toggle_flipped(
 							ui,
 							icons::SIDEBAR_SIMPLE,
 							"Inspector  (Ctrl+Shift+B)",
-							self.show_inspector && has_doc,
+							self.show_inspector && has_doc && !squeezed,
 						)
 					})
 					.inner
-					.on_disabled_hover_text("Open a model to inspect it");
+					.on_disabled_hover_text(if squeezed {
+						"No room for the inspector: widen the window, or hide the library  (Ctrl+B)"
+					} else {
+						"Open a model to inspect it"
+					});
 				if inspector.clicked() {
 					self.show_inspector = !self.show_inspector;
 				}
@@ -126,12 +146,12 @@ impl App {
 		});
 	}
 
-	fn workspace_switcher(&mut self, ui: &mut egui::Ui) {
+	fn workspace_switcher(&mut self, ui: &mut egui::Ui, compact: bool) {
 		let label = match &self.workspace {
 			Some(ws) => format!(
 				"{}  {}  {}",
 				icons::FOLDER_SIMPLE,
-				ws.name(),
+				shorten(ws.name(), if compact { 14 } else { 28 }),
 				icons::CARET_DOWN
 			),
 			None => format!(
@@ -338,5 +358,45 @@ impl App {
 			ui.close();
 			self.save_turntable();
 		}
+	}
+}
+
+/// Below this window width the top bar's buttons show only their icons.
+const COMPACT_TOP_BAR: f32 = 1000.0;
+
+fn compact_top_bar(width: f32) -> bool {
+	width < COMPACT_TOP_BAR
+}
+
+/// `name` cut to `chars` characters, with an ellipsis when it was longer.
+fn shorten(name: &str, chars: usize) -> String {
+	if name.chars().count() <= chars {
+		return name.to_owned();
+	}
+	let cut: String = name.chars().take(chars.saturating_sub(1)).collect();
+	format!("{}…", cut.trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn narrow_windows_get_the_compact_top_bar() {
+		assert!(!compact_top_bar(1280.0));
+		assert!(compact_top_bar(960.0));
+		assert!(compact_top_bar(760.0));
+	}
+
+	#[test]
+	fn long_workspace_names_are_shortened() {
+		assert_eq!(shorten("testing", 14), "testing");
+		assert_eq!(shorten("exactly14chars", 14), "exactly14chars");
+		assert_eq!(
+			shorten("a much longer workspace name", 14),
+			"a much longer…"
+		);
+		// counted in characters, not bytes
+		assert_eq!(shorten("ééééééé", 4), "ééé…");
 	}
 }

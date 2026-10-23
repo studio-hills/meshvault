@@ -414,10 +414,20 @@ fn mesh_callback(
 	renderer.callback(draws, settings.cull_backfaces)
 }
 
+/// Where the axes gizmo's centre sits in from the viewport's top-right
+/// corner, and the length of each axis.
+const AXES_INSET: f32 = 40.0;
+const AXES_LENGTH: f32 = 26.0;
+/// How far the gizmo's letters sit beyond the axes' tips.
+const AXES_LABEL_GAP: f32 = 8.0;
+/// How far in from the viewport's right edge the gizmo can reach, letters
+/// included, so controls can keep clear of it.
+pub const AXES_REACH: f32 = AXES_INSET + AXES_LENGTH + AXES_LABEL_GAP + 8.0;
+
 /// Draws a small XYZ gizmo in the top-right corner.
 fn draw_axes(painter: &egui::Painter, rect: Rect, right: V3, up: V3) {
-	let origin = rect.right_top() + Vec2::new(-40.0, 40.0);
-	let len = 26.0;
+	let origin = rect.right_top() + Vec2::new(-AXES_INSET, AXES_INSET);
+	let len = AXES_LENGTH;
 	let axes = [
 		([1.0, 0.0, 0.0], Color32::from_rgb(230, 80, 80), "X"),
 		([0.0, 1.0, 0.0], Color32::from_rgb(110, 210, 90), "Y"),
@@ -427,7 +437,7 @@ fn draw_axes(painter: &egui::Painter, rect: Rect, right: V3, up: V3) {
 		let tip = origin + Vec2::new(dot(axis, right), -dot(axis, up)) * len;
 		painter.line_segment([origin, tip], Stroke::new(2.0, colour));
 		painter.text(
-			tip + (tip - origin).normalized() * 8.0,
+			tip + (tip - origin).normalized() * AXES_LABEL_GAP,
 			egui::Align2::CENTER_CENTER,
 			label,
 			egui::FontId::proportional(crate::ui::theme::CAPTION),

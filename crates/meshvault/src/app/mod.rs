@@ -72,6 +72,10 @@ pub struct App {
 	pub confirm: Option<Confirm>,
 	pub show_library: bool,
 	pub show_inspector: bool,
+	/// The library's and the inspector's widths when last drawn.
+	pub panel_widths: (f32, f32),
+	/// The inspector is on but hidden, the window being too narrow for it.
+	pub inspector_squeezed: bool,
 	/// Stem of the workspace item shown in the viewer.
 	pub open_stem: Option<String>,
 	/// The animated model shown instead of `doc`.
@@ -133,6 +137,8 @@ impl App {
 			confirm: None,
 			show_library: true,
 			show_inspector: true,
+			panel_widths: ui::layout::PANEL_WIDTHS,
+			inspector_squeezed: false,
 			open_stem: None,
 			model: None,
 			loading_model: None,

@@ -23,6 +23,27 @@ const TRANSPORT_INSET: f32 = 24.0;
 const TRANSPORT_LIFT: f32 = 60.0;
 
 const SPEEDS: [f32; 6] = [0.1, 0.25, 0.5, 1.0, 1.5, 2.0];
+/// Narrower than this, the transport bar drops its loop and speed controls.
+const TRANSPORT_FULL: f32 = 520.0;
+/// Narrower than this, it drops the time as well, so the scrubber keeps room.
+const TRANSPORT_TIMED: f32 = 380.0;
+
+/// What the transport bar has room for, besides play, back, the clip
+/// picker and the scrubber.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TransportFit {
+	time: bool,
+	loop_and_speed: bool,
+}
+
+impl TransportFit {
+	fn for_width(width: f32) -> Self {
+		Self {
+			time: width >= TRANSPORT_TIMED,
+			loop_and_speed: width >= TRANSPORT_FULL,
+		}
+	}
+}
 
 fn speed_label(speed: f32) -> String {
 	format!("{}×", (speed * 100.0).round() / 100.0)
@@ -91,7 +112,8 @@ impl App {
 				widgets::floating_bar(ui, TRANSPORT_RADIUS, |ui| {
 					// the content, inside the bar's 4px margin on either side
 					ui.set_width(width - 8.0);
-					ui.horizontal(|ui| transport(ui, &p, model));
+					let fit = TransportFit::for_width(width);
+					ui.horizontal(|ui| transport(ui, &p, model, fit));
 				});
 			});
 	}
@@ -290,7 +312,7 @@ fn unmatched_tracks(slot: &ClipSlot) -> Option<(usize, String)> {
 	Some((slot.unmatched.len(), names.join(", ")))
 }
 
-fn transport(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
+fn transport(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView, fit: TransportFit) {
 	ui.spacing_mut().item_spacing.x = 4.0;
 	let has_clip = model.current.is_some();
 	let (icon, tip) = if model.playing {
@@ -318,27 +340,31 @@ fn transport(ui: &mut egui::Ui, p: &Palette, model: &mut ModelView) {
 	let duration = model.duration();
 	let time_text = format!("{:.2} / {:.2} s", model.time, duration);
 	ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-		speed_menu(ui, model);
-		if widgets::icon_toggle(ui, icons::REPEAT, "Loop", model.looping).clicked() {
-			model.looping = !model.looping;
+		if fit.loop_and_speed {
+			speed_menu(ui, model);
+			if widgets::icon_toggle(ui, icons::REPEAT, "Loop", model.looping).clicked() {
+				model.looping = !model.looping;
+			}
+			// room between the controls and the seeker with its time
+			ui.add_space(12.0);
 		}
-		// room between the controls and the seeker with its time
-		ui.add_space(12.0);
-		// a slot as wide as the clip's own length, so the time (and the
-		// scrubber beside it) does not shift as it counts
-		let font = egui::FontId::new(CAPTION, semibold());
-		let widest = format!("{duration:.2} / {duration:.2} s");
-		let size = widgets::tabular_size(ui, &widest, &font);
-		let (slot, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-		widgets::paint_tabular(
-			ui.painter(),
-			slot.right_center(),
-			egui::Align2::RIGHT_CENTER,
-			&time_text,
-			&font,
-			p.text_weak,
-		);
-		ui.add_space(4.0);
+		if fit.time {
+			// a slot as wide as the clip's own length, so the time (and the
+			// scrubber beside it) does not shift as it counts
+			let font = egui::FontId::new(CAPTION, semibold());
+			let widest = format!("{duration:.2} / {duration:.2} s");
+			let size = widgets::tabular_size(ui, &widest, &font);
+			let (slot, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+			widgets::paint_tabular(
+				ui.painter(),
+				slot.right_center(),
+				egui::Align2::RIGHT_CENTER,
+				&time_text,
+				&font,
+				p.text_weak,
+			);
+			ui.add_space(4.0);
+		}
 		// the scrubber takes the remaining width
 		ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
 			scrubber(ui, p, model, duration, has_clip)
@@ -658,6 +684,28 @@ fn part_tag(part: &PartView, p: &Palette) -> (&'static str, Color32, String) {
 mod tests {
 	use super::*;
 	use crate::anim::rig::Binding;
+
+	/// A narrow viewport drops the transport bar's extras so the scrubber
+	/// keeps room: loop and speed first, then the time.
+	#[test]
+	fn the_transport_bar_drops_extras_as_it_narrows() {
+		let fit = |time, loop_and_speed| TransportFit {
+			time,
+			loop_and_speed,
+		};
+		assert_eq!(TransportFit::for_width(736.0), fit(true, true));
+		assert_eq!(TransportFit::for_width(TRANSPORT_FULL), fit(true, true));
+		assert_eq!(
+			TransportFit::for_width(TRANSPORT_FULL - 1.0),
+			fit(true, false)
+		);
+		assert_eq!(TransportFit::for_width(TRANSPORT_TIMED), fit(true, false));
+		assert_eq!(
+			TransportFit::for_width(TRANSPORT_TIMED - 1.0),
+			fit(false, false)
+		);
+		assert_eq!(TransportFit::for_width(146.0), fit(false, false));
+	}
 
 	#[test]
 	fn unmatched_tracks_count_every_slot_track_and_name_each_once() {

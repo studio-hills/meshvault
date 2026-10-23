@@ -273,7 +273,7 @@ pub(crate) fn option_colours(p: &Palette, selected: bool, hovered: bool) -> (Col
 }
 
 /// Margin between a floating bar's border and its controls.
-const FLOATING_PAD: i8 = 4;
+pub(super) const FLOATING_PAD: i8 = 4;
 
 /// The frame of a bar floating over the viewport (the transport bar, the
 /// viewport toolbar): the panel colour a touch see-through, a border, the

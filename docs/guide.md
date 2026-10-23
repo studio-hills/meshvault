@@ -3,7 +3,11 @@
 Meshvault has three panes: the **library** of the open workspace's models on
 the left, the **viewport** with a floating toolbar in the middle, and the
 **inspector** with the model's stats, material and properties on the right.
-Both side panels can be hidden (Ctrl+B and Ctrl+Shift+B).
+Both side panels can be hidden (Ctrl+B and Ctrl+Shift+B). In a narrow
+window (or at high display scaling) the inspector steps aside so the 3D view
+keeps room, and comes back when the window is wider or the library is hidden;
+the top bar's buttons show only their icons, and the viewport's toolbar takes
+two rows.
 
 The window is frameless, with Meshvault's own title bar: drag its empty space
 to move the window, double-click it to maximize, and use the buttons at its

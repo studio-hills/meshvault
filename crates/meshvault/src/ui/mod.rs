@@ -10,7 +10,7 @@ pub(crate) mod format;
 mod icons;
 pub mod import;
 mod inspector;
-mod layout;
+pub(crate) mod layout;
 pub mod library;
 mod model;
 pub mod settings;

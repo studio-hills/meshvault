@@ -41,20 +41,36 @@ impl eframe::App for App {
 			)
 			.show(ui, |ui| self.status_bar(ui));
 		// without a workspace there is no library: the welcome screen takes its place
-		if self.show_library && self.workspace.is_some() {
-			egui::Panel::left("library")
-				.default_size(290.0)
+		let library_shown = self.show_library && self.workspace.is_some();
+		// in a narrow window the inspector gives way to the 3D view; the
+		// panels' widths are last frame's
+		let window = ctx.content_rect().width();
+		let library = if library_shown {
+			self.panel_widths.0
+		} else {
+			0.0
+		};
+		self.inspector_squeezed = !inspector_fits(window, library, self.panel_widths.1);
+		if library_shown {
+			self.panel_widths.0 = egui::Panel::left("library")
+				.default_size(PANEL_WIDTHS.0)
 				.size_range(220.0..=520.0)
 				.frame(
 					Frame::NONE
 						.fill(p.panel)
 						.inner_margin(Margin::same(PANEL_MARGIN)),
 				)
-				.show(ui, |ui| self.library(ui));
+				.show(ui, |ui| self.library(ui))
+				.response
+				.rect
+				.width();
 		}
-		if self.show_inspector && (self.doc.is_some() || self.model.is_some()) {
-			egui::Panel::right("inspector")
-				.default_size(300.0)
+		if self.show_inspector
+			&& !self.inspector_squeezed
+			&& (self.doc.is_some() || self.model.is_some())
+		{
+			self.panel_widths.1 = egui::Panel::right("inspector")
+				.default_size(PANEL_WIDTHS.1)
 				.size_range(240.0..=520.0)
 				.frame(
 					Frame::NONE
@@ -64,7 +80,10 @@ impl eframe::App for App {
 				.show(ui, |ui| {
 					header_backdrop(ui);
 					self.inspector(ui)
-				});
+				})
+				.response
+				.rect
+				.width();
 		}
 		egui::CentralPanel::default()
 			.frame(Frame::NONE.fill(p.bg))
@@ -153,9 +172,45 @@ impl App {
 	}
 }
 
+/// The least width the 3D view keeps: below it the inspector is hidden
+/// until the window is wider again (or the library is hidden).
+const MIN_VIEW_WIDTH: f32 = 420.0;
+
+/// Whether the inspector fits beside the library (0 when hidden) and still
+/// leaves the 3D view [`MIN_VIEW_WIDTH`].
+pub(crate) fn inspector_fits(window: f32, library: f32, inspector: f32) -> bool {
+	window - library - inspector >= MIN_VIEW_WIDTH
+}
+
+/// The side panels' widths when they open: the library's, the inspector's.
+pub(crate) const PANEL_WIDTHS: (f32, f32) = (290.0, 300.0);
+
 /// Margin of the side panels (library and inspector). The inspector's
 /// header backdrop reaches back over it.
 pub(super) const PANEL_MARGIN: i8 = 12;
 /// Margin of the top bar, (horizontal, vertical). The title-bar drag area
 /// reaches back over it.
 pub(super) const TOP_BAR_MARGIN: (i8, i8) = (12, 8);
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn the_inspector_gives_way_in_a_narrow_window() {
+		let (library, inspector) = PANEL_WIDTHS;
+		// the window's first size, and the smallest it can be
+		assert!(inspector_fits(1280.0, library, inspector));
+		assert!(!inspector_fits(760.0, library, inspector));
+		// a 1920 by 1080 screen at 200%
+		assert!(!inspector_fits(960.0, library, inspector));
+		// hiding the library makes room for it
+		assert!(inspector_fits(760.0, 0.0, inspector));
+		// exactly the 3D view's least width still fits
+		assert!(inspector_fits(
+			library + inspector + MIN_VIEW_WIDTH,
+			library,
+			inspector
+		));
+	}
+}

@@ -108,6 +108,18 @@ Models from exports that name no game have no `<Game>` folder.
 The manifest has a format version (3 at present). A newer Meshvault upgrades an
 older workspace when it opens it.
 
+A workspace from someone else is checked when it is opened, before any file in
+it is touched: every path in the manifest must be a plain relative path, with
+`/` between its parts, under the folder it belongs in (`Models/`, `Rigs/` or
+`Images/`). A path with `..`, a drive, a network share, a `\`, a `:`, or a
+reserved name such as `CON`, or a model more than 64 folders deep, makes
+Meshvault refuse the whole workspace and say which entry is wrong. Folders
+deeper than 64 in an export are cut off when it is imported. Meshvault also
+refuses to write or delete a file outside those folders. It does not follow
+links made inside a workspace any differently from other files: a junction or
+symbolic link someone puts in its folders is followed, so only open folders you
+trust.
+
 ## Settings
 
 Settings (theme, lighting, recent workspaces, credential type, parallel

@@ -5,17 +5,25 @@ use std::path::{Path, PathBuf};
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
 use crate::studio::export_file::{self, Entry};
+use crate::workspace::paths::{RIGS_DIR, check_path};
 
 /// Writes a model as an export in the current schema
 /// ([`export_file::SCHEMA_VERSION`]) holding just that model and the meshes
 /// it uses, so the file can also be imported on its own. Workspaces made
 /// before schema 2 hold schema 1 rig files; the export reader still accepts
 /// those, so they load as they are.
+///
+/// `file` is relative to the workspace's `root`, and is refused unless it is
+/// a plain path under `Rigs/` (see [`check_path`]), so a manifest's model
+/// file can never point the write elsewhere.
 pub(super) fn write_rig(
-	path: &Path,
+	root: &Path,
+	file: &str,
 	model: &AnimatedModel,
 	meshes: &[(&Entry, String)],
 ) -> Result<(), String> {
+	check_path(file, RIGS_DIR).map_err(|e| format!("Could not write {file:?}: {e}"))?;
+	let path = &root.join(file);
 	let meshes: Vec<serde_json::Value> = meshes
 		.iter()
 		.filter_map(|(e, _)| {

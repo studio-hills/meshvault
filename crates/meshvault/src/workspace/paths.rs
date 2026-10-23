@@ -8,7 +8,7 @@ pub(super) const MODELS_DIR: &str = "Models";
 pub(super) const RIGS_DIR: &str = "Rigs";
 pub const CACHE_DIR: &str = ".cache";
 /// Images models use directly (decals), one file per asset.
-const IMAGES_DIR: &str = "Images";
+pub(super) const IMAGES_DIR: &str = "Images";
 
 /// Where an image a model uses is stored, without its extension.
 pub(super) fn image_stem(asset_id: u64) -> String {
@@ -30,16 +30,121 @@ pub(super) fn rig_stem(file: &str) -> &str {
 	file.strip_suffix(".rig.json").unwrap_or(file)
 }
 
+/// The most folders an item or model can be in. Deeper ones from an export
+/// are cut off when imported, and a manifest with deeper ones is refused.
+pub(super) const MAX_FOLDER_DEPTH: usize = 64;
+/// The longest folder name, and the longest part of a stored path, in
+/// characters (NTFS allows 255).
+pub(super) const MAX_NAME: usize = 255;
+/// The longest last part of a new stem, leaving room for ` (n)`, a map
+/// suffix and an extension within [`MAX_NAME`].
+const MAX_STEM_NAME: usize = 200;
+
+fn is_forbidden(c: char) -> bool {
+	matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control()
+}
+
+/// The first `max` characters of `s`.
+fn truncate(s: &str, max: usize) -> &str {
+	s.char_indices().nth(max).map_or(s, |(i, _)| &s[..i])
+}
+
+/// A folder from an export cut to what a manifest may hold: at most
+/// [`MAX_FOLDER_DEPTH`] names of at most [`MAX_NAME`] characters.
+pub(super) fn fit_folder(folder: &[String]) -> Vec<String> {
+	folder
+		.iter()
+		.take(MAX_FOLDER_DEPTH)
+		.map(|f| truncate(f, MAX_NAME).to_string())
+		.collect()
+}
+
+/// [`sanitize`] for the last part of a new stem, short enough that its
+/// files' names fit.
+pub(super) fn stem_name(name: &str) -> String {
+	sanitize(truncate(&sanitize(name), MAX_STEM_NAME))
+}
+
+/// Checks a folder read from a manifest: not too deep or long.
+pub(super) fn check_folder(folder: &[String]) -> Result<(), String> {
+	if folder.len() > MAX_FOLDER_DEPTH {
+		return Err(format!(
+			"is {} folders deep (at most {MAX_FOLDER_DEPTH})",
+			folder.len()
+		));
+	}
+	match folder.iter().find(|f| f.chars().count() > MAX_NAME) {
+		Some(_) => Err(format!("has a name over {MAX_NAME} characters")),
+		None => Ok(()),
+	}
+}
+
+/// Checks a path read from a manifest, which is joined to the workspace's
+/// root, so that it stays inside the folder `top` of the workspace: parts
+/// separated by `/` (as the app writes them; `\` is refused), none empty,
+/// `.` or `..`, no drive, root, UNC or `\\?\` prefix, no `:` (alternate
+/// data streams), and each part as [`sanitize`] leaves names: no forbidden
+/// or control characters, no leading space or trailing dot or space, no
+/// reserved device name. At most [`MAX_FOLDER_DEPTH`] + 2 parts of
+/// [`MAX_NAME`] characters, which bounds its length too.
+///
+/// Older versions put the underscore of a reserved name at the end
+/// (`con.txt_`), and did not reserve the superscript COM and LPT names;
+/// those names are accepted, since workspaces hold them.
+pub(super) fn check_path(path: &str, top: &str) -> Result<(), String> {
+	let parts: Vec<&str> = path.split('/').collect();
+	if parts.first() != Some(&top) || parts.len() < 2 {
+		return Err(format!("{path:?} is not in {top}/"));
+	}
+	if parts.len() > MAX_FOLDER_DEPTH + 2 {
+		return Err(format!("{:?}... is too deep", truncate(path, 64)));
+	}
+	for part in &parts[1..] {
+		let bad = if part.is_empty() {
+			Some("an empty part")
+		} else if part.chars().count() > MAX_NAME {
+			Some("a part that is too long")
+		} else if part.chars().any(is_forbidden) {
+			Some("a character not allowed in file names")
+		} else if part.ends_with(['.', ' ']) || part.trim_start() != *part {
+			Some("a part with a trailing dot or a space at either end")
+		} else if is_reserved(part) {
+			Some("a reserved device name")
+		} else {
+			None
+		};
+		if let Some(bad) = bad {
+			return Err(format!(
+				"{:?} is not a plain path in the workspace: it has {bad}",
+				truncate(path, 260)
+			));
+		}
+	}
+	Ok(())
+}
+
+/// Whether a name read from a manifest is a device name: the part before
+/// its first dot is one, unless a later part ends with the underscore
+/// older versions added at the end.
+fn is_reserved(name: &str) -> bool {
+	let mut parts = name.split('.');
+	let base = parts.next().unwrap_or("").to_ascii_uppercase();
+	RESERVED[..22].contains(&base.as_str()) && !parts.any(|p| p.ends_with('_'))
+}
+
+// The superscript names come last: older versions did not reserve them.
+const RESERVED: [&str; 28] = [
+	"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+	"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "COM¹", "COM²",
+	"COM³", "LPT¹", "LPT²", "LPT³",
+];
+
 /// Makes one path component safe on Windows, macOS and Linux. The result
 /// is never empty: a name with nothing left becomes `_`.
 pub fn sanitize(name: &str) -> String {
 	let mut s: String = name
 		.chars()
-		.map(|c| match c {
-			'<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-			c if c.is_control() => '_',
-			c => c,
-		})
+		.map(|c| if is_forbidden(c) { '_' } else { c })
 		.collect();
 	// Windows silently drops trailing dots and spaces
 	while s.ends_with(['.', ' ']) {
@@ -49,12 +154,7 @@ pub fn sanitize(name: &str) -> String {
 	if s.is_empty() {
 		return "_".into();
 	}
-	// Windows also counts the superscript digits as COM and LPT numbers
-	const RESERVED: [&str; 28] = [
-		"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-		"COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7",
-		"LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
-	];
+	// Windows also counts the superscript digits as COM and LPT numbers;
 	// a reserved name is still reserved with an extension (`con.txt`), so
 	// the `_` goes before the first dot
 	let (base, rest) = s.split_at(s.find('.').unwrap_or(s.len()));
@@ -92,6 +192,75 @@ mod tests {
 		assert_eq!(sanitize("console.txt"), "console.txt");
 		assert_eq!(sanitize("COM10"), "COM10");
 		assert_eq!(sanitize("CON_"), "CON_");
+	}
+
+	/// Only plain paths under the expected folder pass; see the workspace's
+	/// tests for each manifest field.
+	#[test]
+	fn checks_paths_from_manifests() {
+		for good in [
+			"Models/A",
+			"Models/Zone_10/8_ Scorpion/Body (2).normal.png",
+			"Models/con_.mesh",
+			"Models/con.txt_.mesh",
+			"Models/COM¹.mesh",
+		] {
+			assert_eq!(check_path(good, MODELS_DIR), Ok(()), "{good}");
+		}
+		for bad in [
+			"Models",
+			"Models/",
+			"Models//A",
+			"models/A",
+			"Rigs/A",
+			"../A",
+			"Models/../A",
+			"Models/./A",
+			"/Models/A",
+			r"Models\A",
+			r"C:\A",
+			"C:/A",
+			"C:A",
+			r"\\server\share\A",
+			"//server/share/A",
+			r"\\?\C:\A",
+			r"\\.\COM1",
+			"Models/A.mesh:evil",
+			"Models/A:Zone.Identifier:$DATA",
+			"Models/A.",
+			"Models/A ",
+			"Models/ A",
+			"Models/a\u{1}b",
+			"Models/a*b",
+			"Models/CON",
+			"Models/nul.mesh",
+			"Models/Lpt9.a.b",
+		] {
+			assert!(check_path(bad, MODELS_DIR).is_err(), "{bad}");
+		}
+		let deep = format!("Models/{}", ["a"; MAX_FOLDER_DEPTH + 2].join("/"));
+		assert!(check_path(&deep, MODELS_DIR).is_err());
+		let long = format!("Models/{}", "a".repeat(MAX_NAME + 1));
+		assert!(check_path(&long, MODELS_DIR).is_err());
+		let deepest = format!("Models/{}", ["a"; MAX_FOLDER_DEPTH + 1].join("/"));
+		assert_eq!(check_path(&deepest, MODELS_DIR), Ok(()));
+	}
+
+	/// New stems and folders always pass the checks a manifest gets, however
+	/// deep or long the export's names.
+	#[test]
+	fn new_names_fit_the_checks() {
+		let folder: Vec<String> = (0..100)
+			.map(|i| format!("{i}{}", "x".repeat(300)))
+			.collect();
+		let fitted = fit_folder(&folder);
+		assert_eq!(check_folder(&fitted), Ok(()));
+		assert!(check_folder(&folder).is_err());
+		let name = stem_name(&format!("{}.  ", "é".repeat(400)));
+		assert!(name.chars().count() <= MAX_STEM_NAME);
+		let parts: Vec<String> = fitted.iter().map(|f| sanitize(f)).collect();
+		let file = format!("Models/{}/{name} (99).metalness.rbxmx", parts.join("/"));
+		assert_eq!(check_path(&file, MODELS_DIR), Ok(()));
 	}
 
 	#[test]

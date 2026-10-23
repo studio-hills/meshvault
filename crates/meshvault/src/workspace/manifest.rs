@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scene::maps::MapKind;
 use crate::workspace::AssetKind;
+use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, RIGS_DIR, check_folder, check_path};
 
 /// Manifest format version: 1 had a single texture per item, 2 added
 /// `maps`, 3 added animated models. tools/make_test_workspace.py writes
@@ -207,6 +208,43 @@ pub(super) struct Manifest {
 }
 
 impl Manifest {
+	/// Checks every path in a manifest read from disk before anything uses
+	/// one (see [`check_path`]): item stems and their downloads are under
+	/// `Models/`, model files under `Rigs/`, models' images under `Images/`,
+	/// and folders are not too deep ([`check_folder`]). A manifest from
+	/// someone else could otherwise name any file on the computer or the
+	/// network. The error names the first bad entry.
+	pub(super) fn validate(&self) -> Result<(), String> {
+		let done = |state: &AssetState, top: &str| match state {
+			AssetState::Done { path } => check_path(path, top),
+			_ => Ok(()),
+		};
+		for (i, item) in self.items.iter().enumerate() {
+			check_folder(&item.folder).map_err(|e| format!("items[{i}].folder {e}"))?;
+			check_path(&item.stem, MODELS_DIR).map_err(|e| format!("items[{i}].stem {e}"))?;
+			done(&item.mesh, MODELS_DIR).map_err(|e| format!("items[{i}].mesh {e}"))?;
+			for (kind, map) in &item.maps {
+				done(&map.state, MODELS_DIR)
+					.map_err(|e| format!("items[{i}].maps.{kind:?} {e}"))?;
+			}
+			// version 1's texture, moved into `maps` by `upgrade`
+			if let Some(state) = &item.texture {
+				done(state, MODELS_DIR).map_err(|e| format!("items[{i}].texture {e}"))?;
+			}
+		}
+		for (i, model) in self.models.iter().enumerate() {
+			check_folder(&model.folder).map_err(|e| format!("models[{i}].folder {e}"))?;
+			check_path(&model.file, RIGS_DIR).map_err(|e| format!("models[{i}].file {e}"))?;
+			for stem in model.meshes.values() {
+				check_path(stem, MODELS_DIR).map_err(|e| format!("models[{i}].meshes {e}"))?;
+			}
+			for state in model.images.values() {
+				done(state, IMAGES_DIR).map_err(|e| format!("models[{i}].images {e}"))?;
+			}
+		}
+		Ok(())
+	}
+
 	/// Brings a manifest read from `root` up to [`MANIFEST_VERSION`], and
 	/// resets downloads whose files are missing, items' and models' images
 	/// alike. Returns whether anything changed.

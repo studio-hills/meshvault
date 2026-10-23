@@ -33,7 +33,7 @@ use crate::studio::export_file::{Entry, Origin};
 pub use self::manifest::{AssetState, Item, MapRef, ModelItem, ModelVersion};
 use self::manifest::{MANIFEST_VERSION, Manifest};
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
-use self::paths::{MODELS_DIR, RIGS_DIR, image_id, image_stem, rig_stem};
+use self::paths::{MODELS_DIR, RIGS_DIR, fit_folder, image_id, image_stem, rig_stem, stem_name};
 use self::rig_file::write_rig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -169,6 +169,10 @@ impl Workspace {
 				manifest.version
 			));
 		}
+		// before anything touches a path in it, even to see if it exists
+		manifest
+			.validate()
+			.map_err(|e| format!("{} is not a valid workspace: {e}", path.display()))?;
 		let dirty = manifest.upgrade(root);
 		store::upgrade_cache(root);
 		let stems = manifest
@@ -230,7 +234,7 @@ impl Workspace {
 			dir.push('/');
 			dir.push_str(&sanitize(part));
 		}
-		let base = sanitize(name);
+		let base = stem_name(name);
 		// an item's maps are written as stem + suffix, so `A`'s normal map and
 		// the texture of `A.normal` would be the same file: a stem is only
 		// free if none of its file names is another stem's
@@ -305,7 +309,7 @@ impl Workspace {
 			let item = &mut self.manifest.items[i];
 			if item.game.is_none() && origin.game.is_some() {
 				item.game = origin.game.clone();
-				item.folder = entry.folder.clone();
+				item.folder = fit_folder(&entry.folder);
 				self.dirty = true;
 				self.generation += 1;
 			}
@@ -321,11 +325,11 @@ impl Workspace {
 			}
 			return (item.stem.clone(), false);
 		}
-		let stem = self.unique_stem(MODELS_DIR, &entry.folder, &entry.name);
+		let stem = self.unique_stem(MODELS_DIR, &fit_folder(&entry.folder), &entry.name);
 		let maps = maps.collect();
 		let mut item = Item::new(
 			entry.name.clone(),
-			entry.folder.clone(),
+			fit_folder(&entry.folder),
 			entry.mesh_id,
 			stem.clone(),
 			maps,
@@ -343,8 +347,10 @@ impl Workspace {
 	/// and no map id that differs from the item's (the same mesh with a
 	/// different image is a different item).
 	pub fn find_entry(&self, entry: &Entry, origin: &Origin) -> Option<usize> {
+		// as stored, cut to the depth a manifest holds
+		let folder = fit_folder(&entry.folder);
 		self.manifest.items.iter().position(|i| {
-			same_place(i.game.as_deref(), &i.folder, origin, &entry.folder)
+			same_place(i.game.as_deref(), &i.folder, origin, &folder)
 				&& i.name == entry.name
 				&& i.mesh_id == entry.mesh_id
 				&& i.maps
@@ -373,7 +379,7 @@ impl Workspace {
 		origin: &Origin,
 	) -> Result<bool, String> {
 		let existing = self.find_model(&model.path, origin);
-		let folder = model_folder(origin, &model.path);
+		let folder = fit_folder(&model_folder(origin, &model.path));
 		let file = match existing {
 			Some(i) => self.manifest.models[i].file.clone(),
 			None => format!(
@@ -381,7 +387,7 @@ impl Workspace {
 				self.unique_stem(RIGS_DIR, &folder, &model.name)
 			),
 		};
-		if let Err(e) = write_rig(&self.root.join(&file), model, meshes) {
+		if let Err(e) = write_rig(&self.root, &file, model, meshes) {
 			// a new model that could not be written frees the stem it took
 			if existing.is_none() {
 				self.stems.remove(&rig_stem(&file).to_lowercase());
@@ -447,7 +453,7 @@ impl Workspace {
 			let Some(model) = self.manifest.models.get(i) else {
 				continue;
 			};
-			if let Err(e) = delete_file(&self.root, &model.file) {
+			if let Err(e) = delete_file(&self.root, RIGS_DIR, &model.file) {
 				errors.push(e);
 				continue;
 			}
@@ -711,7 +717,7 @@ impl Workspace {
 				let AssetState::Done { path } = state else {
 					continue;
 				};
-				match delete_file(&self.root, path) {
+				match delete_file(&self.root, MODELS_DIR, path) {
 					Ok(()) => *state = AssetState::Pending,
 					Err(e) => {
 						errors.push(e);
@@ -730,9 +736,12 @@ impl Workspace {
 	}
 }
 
-/// Deletes a file in the workspace. One that is already gone counts as
-/// deleted.
-fn delete_file(root: &Path, path: &str) -> Result<(), String> {
+/// Deletes a file in the workspace's folder `top`. One that is already gone
+/// counts as deleted. A path that is not a plain one in `top` (see
+/// [`paths::check_path`]) is refused, though `open` refuses manifests with
+/// such paths already.
+fn delete_file(root: &Path, top: &str, path: &str) -> Result<(), String> {
+	paths::check_path(path, top).map_err(|e| format!("Could not delete {path:?}: {e}"))?;
 	match std::fs::remove_file(root.join(path)) {
 		Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
 			Err(format!("Could not delete {path}: {e}"))
@@ -1487,6 +1496,286 @@ mod tests {
 		let error = ws.remove_models(&[0]).unwrap_err();
 		assert!(error.starts_with("Could not delete Rigs/"), "{error}");
 		assert_eq!(ws.models().len(), 1);
+	}
+
+	/// Writes a version 3 manifest with `items` and `models` into `dir`.
+	fn write_manifest(dir: &Path, items: serde_json::Value, models: serde_json::Value) {
+		let manifest = serde_json::json!({
+			"version": 3, "name": "Shared", "items": items, "models": models,
+		});
+		std::fs::write(dir.join(MANIFEST), manifest.to_string()).unwrap();
+	}
+
+	/// An item at `stem` whose mesh is downloaded to `mesh`.
+	fn done_item(stem: &str, mesh: &str) -> serde_json::Value {
+		serde_json::json!({
+			"name": "A", "folder": [], "mesh_id": 1, "stem": stem,
+			"mesh": {"state": "done", "path": mesh},
+		})
+	}
+
+	/// A model stored in `file` using the item at `mesh_stem`, with image 7
+	/// downloaded to `image`.
+	fn done_model(file: &str, mesh_stem: &str, image: &str) -> serde_json::Value {
+		serde_json::json!({
+			"name": "M", "path": "Workspace/M", "folder": ["Workspace"], "file": file,
+			"meshes": {"1": mesh_stem}, "parts": 1, "clips": 0, "playable_clips": 0,
+			"images": {"7": {"state": "done", "path": image}},
+		})
+	}
+
+	/// A workspace someone hands over is checked when it is opened: every
+	/// path in it must be a plain relative path under the folder it belongs
+	/// in, so none can reach outside the workspace (MV-01). Each bad path
+	/// refuses the whole workspace, naming the entry.
+	#[test]
+	fn open_refuses_paths_outside_the_workspace() {
+		let good_item = || done_item("Models/A", "Models/A.mesh");
+		let good_model = || done_model("Rigs/M.rig.json", "Models/A", "Images/7.png");
+		let deep: Vec<String> = (0..65).map(|i| format!("f{i}")).collect();
+		let mut deep_item = good_item();
+		deep_item["folder"] = serde_json::json!(deep);
+		let mut deep_model = good_model();
+		deep_model["folder"] = serde_json::json!(deep);
+		let mut map_item = good_item();
+		map_item["maps"] = serde_json::json!({
+			"normal": {"id": 2, "state": {"state": "done", "path": "Models/a.mesh:evil"}},
+		});
+		let cases: Vec<(&str, serde_json::Value, serde_json::Value)> = vec![
+			(
+				"items[0].stem",
+				done_item("../outside", "Models/A.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].stem",
+				done_item("Models/../../outside", "Models/A.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", r"C:\Windows\x.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "C:/Windows/x.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", r"\\server\share\x"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "//server/share/x"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", r"\\?\C:\x.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "/etc/x.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "Models/a.mesh:evil"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", r"Models\A.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "Rigs/A.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "Models/./A.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "Models/A.mesh."),
+				good_model(),
+			),
+			(
+				"items[0].stem",
+				done_item("Models/CON", "Models/A.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "Models/nul.mesh"),
+				good_model(),
+			),
+			(
+				"items[0].mesh",
+				done_item("Models/A", "Models/com1.mesh"),
+				good_model(),
+			),
+			("items[0].maps", map_item, good_model()),
+			("items[0].folder", deep_item, good_model()),
+			("models[0].folder", good_item(), deep_model),
+			(
+				"models[0].file",
+				good_item(),
+				done_model(r"\\server\share\x.rig.json", "Models/A", "Images/7.png"),
+			),
+			(
+				"models[0].file",
+				good_item(),
+				done_model("../x.rig.json", "Models/A", "Images/7.png"),
+			),
+			(
+				"models[0].file",
+				good_item(),
+				done_model("Models/M.rig.json", "Models/A", "Images/7.png"),
+			),
+			(
+				"models[0].meshes",
+				good_item(),
+				done_model("Rigs/M.rig.json", "../A", "Images/7.png"),
+			),
+			(
+				"models[0].images",
+				good_item(),
+				done_model("Rigs/M.rig.json", "Models/A", "Images/../../x.png"),
+			),
+			(
+				"models[0].images",
+				good_item(),
+				done_model("Rigs/M.rig.json", "Models/A", "Models/7.png"),
+			),
+		];
+		for (field, item, model) in cases {
+			let dir = TempDir::new("ws_bad_path");
+			write_manifest(&dir, serde_json::json!([item]), serde_json::json!([model]));
+			match Workspace::open(&dir) {
+				Ok(_) => panic!("opened a workspace with a bad {field}: {item} {model}"),
+				Err(e) => assert!(e.contains(field), "{field}: {e}"),
+			}
+		}
+		// and the good ones open
+		let dir = TempDir::new("ws_good_path");
+		write_manifest(
+			&dir,
+			serde_json::json!([good_item()]),
+			serde_json::json!([good_model()]),
+		);
+		Workspace::open(&dir).unwrap();
+	}
+
+	/// Paths older versions wrote are still accepted: a reserved name
+	/// before the first dot with the old underscore at the end (`con.txt_`),
+	/// the superscript COM and LPT names that were not reserved then, and
+	/// the old map suffix.
+	#[test]
+	fn open_accepts_paths_older_versions_wrote() {
+		let dir = TempDir::new("ws_old_paths");
+		write_manifest(
+			&dir,
+			serde_json::json!([
+				done_item(
+					"Models/con.txt_/com1.part_",
+					"Models/con.txt_/com1.part_.mesh"
+				),
+				done_item("Models/COM¹", "Models/COM¹.mesh"),
+				done_item("Models/.hidden/A (2)", "Models/.hidden/A (2)_normal.png"),
+				done_item("Models/CON_", "Models/CON_.mesh"),
+			]),
+			serde_json::json!([]),
+		);
+		Workspace::open(&dir).unwrap();
+	}
+
+	/// The original problem (MV-01): a shared workspace naming a file beside
+	/// it made Remove delete that file. Now open refuses it; and should a
+	/// bad path get past open, Remove still refuses to delete it.
+	#[test]
+	fn remove_never_deletes_outside_the_workspace() {
+		let parent = TempDir::new("ws_remove_outside");
+		let dir = parent.join("ws");
+		std::fs::create_dir_all(&dir).unwrap();
+		let outside = parent.join("outside.mesh");
+		std::fs::write(&outside, b"keep me").unwrap();
+		write_manifest(
+			&dir,
+			serde_json::json!([done_item("Models/A", "../outside.mesh")]),
+			serde_json::json!([]),
+		);
+		if let Ok(mut ws) = Workspace::open(&dir) {
+			let _ = ws.remove(&[0]);
+		}
+		assert!(
+			outside.exists(),
+			"Remove deleted a file outside the workspace"
+		);
+
+		// past open
+		let mut ws = Workspace::create(&dir.join("new"), "Test").unwrap();
+		let mut bad = item_at("Models/A", "A");
+		bad.mesh = AssetState::Done {
+			path: "../../outside.mesh".into(),
+		};
+		ws.set_contents(vec![bad], vec![model_using("M", &[])]);
+		ws.manifest.models[0].file = "../../outside.mesh".into();
+		assert!(ws.remove(&[0]).is_err());
+		assert!(ws.remove_models(&[0]).is_err());
+		assert!(outside.exists());
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me");
+	}
+
+	/// Downloads are only put in place under the workspace: a stem that
+	/// climbs out is refused when the file is published.
+	#[test]
+	fn downloads_are_never_written_outside_the_workspace() {
+		let parent = TempDir::new("ws_publish_outside");
+		let dir = parent.join("ws");
+		Workspace::create(&dir, "Test").unwrap();
+		let job = Job {
+			asset_id: 1,
+			targets: vec![("../outside".into(), AssetKind::Mesh)],
+			place_id: None,
+		};
+		let mut written = store::stage(&dir, &job, b"version 4.00\n").unwrap();
+		assert!(written[0].publish(&dir).is_err());
+		assert!(!parent.join("outside.mesh").exists());
+		let job = Job {
+			asset_id: 2,
+			targets: vec![("Images/../../outside".into(), AssetKind::Image)],
+			place_id: None,
+		};
+		let mut written = store::stage(&dir, &job, b"\x89PNG").unwrap();
+		assert!(written[0].publish(&dir).is_err());
+		assert!(!parent.join("outside.png").exists());
+	}
+
+	/// Importing a model again writes its rig to the file the manifest
+	/// names; one outside the workspace is refused and left alone.
+	#[test]
+	fn importing_a_model_again_never_writes_outside_the_workspace() {
+		let parent = TempDir::new("ws_rig_outside");
+		let dir = parent.join("ws");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let outside = parent.join("outside.txt");
+		std::fs::write(&outside, b"keep me").unwrap();
+		let mut model = model_using("Wolf", &[]);
+		model.file = "../outside.txt".into();
+		ws.set_contents(Vec::new(), vec![model]);
+		assert!(
+			ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+				.is_err()
+		);
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me");
 	}
 
 	/// A download that finishes after its item was removed changes nothing.

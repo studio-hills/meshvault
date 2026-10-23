@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, check_path};
 use crate::workspace::{AssetKind, CACHE_DIR, Job, cache_path};
 
 /// Picks a file extension from the content.
@@ -124,7 +125,15 @@ pub struct Stored {
 
 impl Stored {
 	/// Moves the file into place under `root`, replacing any file there.
+	/// Refused unless its path is a plain one under `Images/` (an image) or
+	/// `Models/` (see [`check_path`]), so no stem can put it elsewhere.
 	pub fn publish(&mut self, root: &Path) -> Result<(), String> {
+		let top = if self.kind == AssetKind::Image {
+			IMAGES_DIR
+		} else {
+			MODELS_DIR
+		};
+		check_path(&self.path, top).map_err(|e| format!("Could not write {:?}: {e}", self.path))?;
 		let path = root.join(&self.path);
 		if let Some(parent) = path.parent() {
 			std::fs::create_dir_all(parent)

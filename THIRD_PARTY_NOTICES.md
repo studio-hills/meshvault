@@ -43,9 +43,9 @@ Blender Foundation.
 Meshvault is built from many open-source Rust crates (egui, wgpu, draco-core,
 serde, ureq and others), each under its own licence. All are on the allow
 list in [`deny.toml`](deny.toml): MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0,
-Unicode, OFL and similar. `Cargo.lock` lists every crate and version. Release
-packages are to include the full licence text of each crate compiled into the
-app; until then, each crate's licence is in its own source.
+Unicode, OFL and similar. `Cargo.lock` lists every crate and version. Each
+release zip includes `THIRD_PARTY_LICENSES.html`, with every crate compiled
+into the app and its full licence text.
 
 ## Trademarks
 

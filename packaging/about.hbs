@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Meshvault: third-party licences</title>
+<style>
+body { font: 15px/1.5 system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
+pre { white-space: pre-wrap; background: #f4f4f6; padding: 1em; border-radius: 6px; font-size: 13px; }
+h2 { margin-top: 2.5em; }
+ul.used-by { columns: 3; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Third-party licences</h1>
+<p>Meshvault is MIT licensed. It is built from the open-source Rust crates below, each under
+its own licence. The fonts, icons and vendored code bundled with it are listed in
+THIRD_PARTY_NOTICES.md.</p>
+<h2>Overview</h2>
+<ul>
+{{#each overview}}
+<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+{{#each licenses}}
+<h2 id="{{id}}">{{name}}</h2>
+<p>Used by:</p>
+<ul class="used-by">
+{{#each used_by}}
+<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

@@ -42,6 +42,7 @@ tested or supported yet.
 | `crates/rbx_mesh` | The mesh parsing library, vendored from [krakow10/rbx_mesh](https://github.com/krakow10/rbx_mesh); its README says how it differs from upstream |
 | `docs` | User documentation |
 | `tools` | Development scripts: test workspaces and a stand-in Studio link ([README](tools/README.md)) |
+| `packaging` | Release packaging and how to make a release ([README](packaging/README.md)) |
 
 ## Before sending a pull request
 

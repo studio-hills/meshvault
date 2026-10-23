@@ -1,0 +1,65 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds Meshvault, packages it, and opens a draft GitHub
+# Release with the zip and its checksum; publish the draft by hand once it looks right.
+# Run by hand, it builds and packages only, and keeps the result as a workflow artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Build and package (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the tag against the version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $manifest = Get-Content crates/meshvault/Cargo.toml -Raw
+          if ($manifest -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw "no version in Cargo.toml" }
+          if ("v$($Matches[1])" -ne $env:GITHUB_REF_NAME) {
+            throw "tag $env:GITHUB_REF_NAME does not match the app's version $($Matches[1])"
+          }
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Build
+        run: cargo build --release -p meshvault --locked
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-about@0.9.2
+      - name: Third-party licences
+        run: cargo about generate -c packaging/about.toml --locked --fail -o target/THIRD_PARTY_LICENSES.html packaging/about.hbs
+      - name: Package
+        shell: pwsh
+        run: ./packaging/package.ps1 -OutDir target/dist ${{ github.ref_type == 'tag' && '-Release' || '' }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meshvault-windows-x64
+          path: |
+            target/dist/*.zip
+            target/dist/SHA256SUMS.txt
+            target/dist/release-notes.md
+          if-no-files-found: error
+      - name: Draft the GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          gh release create $env:GITHUB_REF_NAME --draft --verify-tag `
+            --title "Meshvault $version" `
+            --notes-file target/dist/release-notes.md `
+            target/dist/Meshvault-$version-windows-x64.zip target/dist/SHA256SUMS.txt

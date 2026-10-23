@@ -21,7 +21,8 @@ impl App {
 				let path = item.done_path(AssetKind::Mesh)?;
 				Some(MeshJob {
 					name: item.name.clone(),
-					mesh: ws.root.join(path),
+					// a mesh behind a link is skipped, as one not downloaded is
+					mesh: ws.saved_file(path).ok()?,
 					maps: item_maps(&ws.root, item),
 				})
 			})

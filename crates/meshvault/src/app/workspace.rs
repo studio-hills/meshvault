@@ -199,7 +199,13 @@ impl App {
 			return;
 		};
 		let mesh_path = match &item.mesh {
-			AssetState::Done { path } => ws.root.join(path),
+			AssetState::Done { path } => match ws.saved_file(path) {
+				Ok(path) => path,
+				Err(e) => {
+					self.toasts.error(e);
+					return;
+				}
+			},
 			AssetState::Pending => {
 				self.toasts
 					.info(format!("{} has not been downloaded yet.", item.name));
@@ -241,7 +247,7 @@ impl App {
 		let path = path.canonicalize().ok()?;
 		ws.items().iter().position(|i| {
 			i.done_path(AssetKind::Mesh)
-				.and_then(|p| ws.root.join(p).canonicalize().ok())
+				.and_then(|p| ws.saved_file(p).ok()?.canonicalize().ok())
 				.is_some_and(|p| p == path)
 		})
 	}

@@ -127,30 +127,25 @@ Meshvault refuse the whole workspace and say which entry is wrong. Folders
 deeper than 64 in an export are cut off when it is imported. Meshvault also
 refuses to write or delete a file outside those folders.
 
-Links (junctions and symbolic links) inside a workspace are not followed: a
-workspace whose `workspace.json`, `Models`, `Rigs`, `Images` or `.cache` (or
-`.cache/thumbnails`, `.cache/facts.json`, `.cache/format`) is a link is refused
-when it is opened, and Meshvault does not write or delete anything through a
-link deeper in it, such as a linked folder inside `Models/`; that download,
-Remove or import says why instead. Opening a workspace, the library's
-thumbnails and mesh facts, and loading an animated model also do not read a
-file through such a link, or check whether one is there or how old it is:
-opening does not look for downloaded files behind a link (they are left as
-they are, not downloaded again); an animated model whose rig file is behind
-one does not load and says why, and its meshes behind one are left out with
-the reason; maps and images behind one are left out; facts, cached downloads
-and thumbnails (what they are drawn from, the cached pictures and their lists)
-are not read through one. So a link to a network share in a workspace someone
-sent you is not followed just by opening it and browsing the library. The
-workspace folder itself may be a link, since it is the one you chose. Cloud
-placeholders (OneDrive files not downloaded yet) are not links, and are read as
-usual. Every file Meshvault writes in a workspace (the
-manifest, rig files, cached downloads, thumbnails, facts) is written to a new
-temporary file beside it, made only if no file or link by that name is already
-there, then renamed into place, so a link or a second name (hard link) left at
-either name is replaced rather than written through. Meshvault checks the
-folders as they are when it writes; a link someone swaps in at that very moment
-is not caught.
+Links (junctions and symbolic links) inside a workspace are not followed:
+
+- A workspace whose `workspace.json`, `Models`, `Rigs`, `Images` or `.cache`
+  (or `.cache/thumbnails`, `.cache/facts.json`, `.cache/format`) is a link is
+  refused when it is opened.
+- Nothing is written, deleted or read through a link deeper inside it, such as
+  a linked folder in `Models/`, and Meshvault doesn't check whether a file is
+  there either. Opening the workspace leaves downloads behind a link as they
+  are; viewing, exporting or loading something behind one says why it can't;
+  maps, images, thumbnails and facts behind one are left out. So a link to a
+  network share in a workspace someone sent you is never followed.
+- The workspace folder itself may be a link, since you chose it. OneDrive
+  placeholders (files not downloaded yet) are not links and are read as usual.
+- Every file Meshvault writes in a workspace goes to a new temporary file,
+  created only if nothing (no file or link) has that name, then renamed into
+  place, so a link or hard link left at either name is replaced, never written
+  through.
+- The checks look at the folders when Meshvault reads or writes; a link
+  swapped in at that exact moment is not caught.
 
 A model in a manifest may have no more mesh references than a model may have
 parts (100,000), and no more images than an export may have meshes

@@ -1,37 +1,14 @@
--- Meshvault exporter, schema 2: mesh/material + rig + animation metadata as JSON.
--- Source: crates/meshvault/studio/exporter_v2.luau in the Meshvault repository.
--- Served by Meshvault (see its "Export from Roblox Studio" dialog); run in the Command Bar, in
--- Edit mode. Exports metadata, NOT mesh geometry or texture files. Animation assets must be
--- accessible to the current Studio session.
---
--- It returns a function. Called without options it exports the current selection, or, with
--- nothing selected, the whole game except Workspace, and sends it to Meshvault. Options:
---   roots   = { instances to export }            (default: the selection, or { game })
---   exclude = { instances to leave out, with everything beneath them }
---             (default: { Workspace } when exporting the whole game, otherwise nothing)
---   send    = false to keep the export here instead of sending it to Meshvault
---
--- Every line it writes to the Output window starts with [Meshvault]; problems are warnings.
--- The one exception: when sending fails, it prints the export itself as JSON chunks between
--- "=== JSON CHUNK i/n ===" and "=== END JSON EXPORT ===" lines, with no prefix, so the
--- chunks can be copied into a .json file as they are.
--- It returns three things:
---   issues  the problems, as a list (empty when there were none)
---   export  the export as a Lua table (nil when there was nothing to export)
---   send    a function sending an export, this one changed or any other, to Meshvault:
---           send(export) or send(json text), returning true, or false and why
--- e.g. to change an export before Meshvault gets it:
---   local issues, export, send = loadstring(source)()({ send = false })
---   export.Models = { export.Models[1] }
---   send(export)    -- or save HttpService:JSONEncode(export) however you like
+-- Meshvault exporter (schema 2).
+-- Run in the Roblox Studio Command Bar in Edit mode.
+-- Exports mesh, material, rig, and animation metadata (not geometry or textures).
+-- Options: roots (defaults to selection or game), exclude (defaults to Workspace for
+-- whole-game exports), send = false (return data without sending).
+-- Returns: issues, export, send(export).
 
 local SCHEMA = 2
 local MESHVAULT_VERSION = "__MESHVAULT_VERSION__"
 local TAG = "[Meshvault]"
-local MAX_MODEL_LINES = 25
 
--- What went wrong along the way: each is warned as it happens, and the function returns
--- them all, as { Kind = "...", Message = "...", Path = "..."?, AnimationId = "..."? }.
 local issues = {}
 local function log(text)
 	print(TAG .. " " .. text)
@@ -43,19 +20,11 @@ local function issue(kind, text, details)
 	warn(TAG .. " " .. text)
 end
 
--- "1 part", "2 parts"
-local function count(n, one, many)
-	return n .. " " .. (n == 1 and one or many or one .. "s")
-end
-
 local HttpService = game:GetService("HttpService")
 
--- Send an export to Meshvault, which saves it and opens it for import. HttpEnabled is
--- switched on only while sending and put back afterwards.
 local MESHVAULT_URL = "__MESHVAULT_URL__"
 local SEND_CHUNK = 2 * 1024 * 1024
 
--- Roblox's HTTP errors, with what to do about them
 local function explain(err)
 	err = tostring(err)
 	if err:find("ConnectFail") then
@@ -70,6 +39,7 @@ local function explain(err)
 	return err
 end
 
+-- Send JSON in chunks and restore the original HTTP setting.
 local function sendToMeshvault(text)
 	local wasEnabled = HttpService.HttpEnabled
 	local reply
@@ -80,10 +50,6 @@ local function sendToMeshvault(text)
 		end
 		local id = HttpService:GenerateGUID(false)
 		local pieces = math.max(1, math.ceil(#text / SEND_CHUNK))
-		local size = #text >= 1048576 and ("%.1f MB"):format(#text / 1048576)
-			or ("%d KB"):format(math.ceil(#text / 1024))
-		log(("sending %s to Meshvault at %s%s"):format(
-			size, MESHVAULT_URL, pieces > 1 and (" in " .. pieces .. " pieces") or ""))
 		for i = 1, pieces do
 			local sentOk, res = pcall(function()
 				return HttpService:RequestAsync({
@@ -105,9 +71,6 @@ local function sendToMeshvault(text)
 				error(("Meshvault refused piece %d of %d (HTTP %d): %s"):format(
 					i, pieces, res.StatusCode, tostring(res.Body)), 0)
 			end
-			if pieces > 1 then
-				log(("  sent piece %d of %d"):format(i, pieces))
-			end
 			reply = res.Body
 		end
 	end)
@@ -119,8 +82,7 @@ local function sendToMeshvault(text)
 	return ok, ok and reply or err
 end
 
--- Sends an export to Meshvault: one returned with send = false, changed or not, or its
--- JSON text. Returns true, or false and why.
+-- Send an export table or JSON string; return success and the response.
 local function send(export)
 	local text = export
 	if type(export) ~= "string" then
@@ -133,16 +95,16 @@ local function send(export)
 	end
 	local ok, result = sendToMeshvault(text)
 	if ok then
-		log(("Meshvault received the export: %s. Finish the import in Meshvault"):format(tostring(result)))
+		log("Export sent to Meshvault.")
 	else
 		warn(TAG .. " could not send the export to Meshvault: " .. tostring(result))
 	end
 	return ok, result
 end
 
+-- Collect selected content, build the export, and optionally send it.
 local function run(options)
 	local started = os.clock()
-	log(("exporter for schema %d, served by Meshvault %s"):format(SCHEMA, MESHVAULT_VERSION))
 	local selection = game:GetService("Selection"):Get()
 	local useSelection = options.roots == nil and #selection > 0
 	local roots = options.roots or { game }
@@ -156,9 +118,6 @@ local function run(options)
 				picked[root] = true
 				table.insert(roots, root)
 			end
-			if root ~= inst then
-				log(("%s is inside %s, so the whole model is exported"):format(inst:GetFullName(), root:GetFullName()))
-			end
 		end
 	end
 	local excludedRoots = options.exclude
@@ -166,21 +125,6 @@ local function run(options)
 	if game:GetService("RunService"):IsRunning() then
 		issue("PlayMode", "the game is running (Play mode): joints are exported in their current animated pose, "
 			.. "and Meshvault cannot be reached from a running game. Stop the test and run the line in Edit mode")
-	end
-	if options.roots or useSelection then
-		local names = {}
-		for i, root in ipairs(roots) do
-			if i > 3 then table.insert(names, "and " .. (#roots - 3) .. " more") break end
-			table.insert(names, root:GetFullName())
-		end
-		log("exporting " .. table.concat(names, ", ") .. (useSelection and " (from the selection)" or ""))
-	else
-		log("nothing selected: exporting the whole game except Workspace. This can take a while")
-	end
-	if #excludedRoots > 0 then
-		local names = {}
-		for _, excluded in ipairs(excludedRoots) do table.insert(names, excluded:GetFullName()) end
-		log("leaving out " .. table.concat(names, ", "))
 	end
 	local excludedSet = {}
 	for _, excluded in ipairs(excludedRoots) do
@@ -213,6 +157,7 @@ local function run(options)
 	end
 	local function v3(v) return {v.X, v.Y, v.Z} end
 	local function rgb(c) return {c.R, c.G, c.B} end
+	-- Read available texture maps from a mesh or its surface appearance.
 	local function getMaps(inst)
 		local sa = inst:FindFirstChildOfClass("SurfaceAppearance")
 		if not sa and inst:IsA("SpecialMesh") and inst.Parent then
@@ -235,6 +180,7 @@ local function run(options)
 		tex = nonempty(maps.ColorMap) or tex
 		return tex or "", maps
 	end
+	-- Read the asset ID of a file-backed mesh.
 	local function meshIdOf(inst)
 		if inst:IsA("MeshPart") then
 			local ok, id = pcall(function() return inst.MeshId end)
@@ -245,6 +191,7 @@ local function run(options)
 		end
 		return nil
 	end
+	-- Deduplicate mesh/material combinations and return their reference ID.
 	local function getOrAddMesh(inst)
 		local id = meshIdOf(inst)
 		if not id then return nil end
@@ -262,6 +209,7 @@ local function run(options)
 		end
 		return meshByKey[key]
 	end
+	-- Export a pose and its nested poses and face controls.
 	local function exportPose(pose)
 		local data = {
 			Name = pose.Name,
@@ -287,8 +235,6 @@ local function run(options)
 		end
 		return data
 	end
-	-- CurveAnimation records are nested by folder path (rig hierarchy), then channel.
-	-- Export raw keys, modes, tangents; the viewer must evaluate curves at playback time.
 	local function exportScalarKeys(curve)
 		local keys = {}
 		for _, key in ipairs(curve:GetKeys()) do
@@ -315,6 +261,7 @@ local function run(options)
 		end
 		return keys
 	end
+	-- Serialize a supported curve and its keyframe channels.
 	local function exportCurveChannel(curve)
 		if curve:IsA("FloatCurve") then
 			return {Type="FloatCurve", Keys=exportScalarKeys(curve)}
@@ -339,6 +286,7 @@ local function run(options)
 		end
 		return nil
 	end
+	-- Flatten a curve animation into named channels and find its duration.
 	local function exportCurveClip(clip)
 		local channels = {}
 		local duration = 0
@@ -381,6 +329,7 @@ local function run(options)
 	end
 
 	local CLIP_TIMEOUT = 20
+	-- Load an animation clip with a timeout to avoid hanging the export.
 	local function loadClip(animationId)
 		local done, ok, clip = false, false, nil
 		task.spawn(function()
@@ -389,7 +338,7 @@ local function run(options)
 			end)
 			done = true
 		end)
-		local waitStarted, told = os.clock(), false
+		local waitStarted = os.clock()
 		while not done do
 			local waited = os.clock() - waitStarted
 			if waited > CLIP_TIMEOUT then
@@ -401,14 +350,11 @@ local function run(options)
 				end
 				return false, why
 			end
-			if waited > 3 and not told then
-				told = true
-				log("  still loading the animation " .. animationId .. "...")
-			end
 			task.wait(0.1)
 		end
 		return ok, clip
 	end
+	-- Cache and serialize loaded keyframe or curve animations.
 	local function getClip(animationId)
 		if clipCache[animationId] then return clipCache[animationId] end
 		local item = { Status = "Unavailable", Duration = 0, Keyframes = {}, Curves = {} }
@@ -454,6 +400,7 @@ local function run(options)
 	end
 	local MaterialService = game:GetService("MaterialService")
 	local variantCache = {}
+	-- Resolve a part's material variant and associated texture maps.
 	local function materialVariantOf(part)
 		local name = part.MaterialVariant
 		if name == "" then
@@ -479,7 +426,7 @@ local function run(options)
 		end
 		return variantCache[key] or nil
 	end
-	-- One joint record. Only a Motor6D can be missing a part; that part's path is "".
+	-- Add a joint and its transforms to the model's rig data.
 	local function addJoint(m, inst, part0, part1, c0, c1, transform, kind)
 		table.insert(m.Joints, {
 			Name=inst.Name, Path=fullpath(inst),
@@ -490,6 +437,7 @@ local function run(options)
 			Kind=kind,
 		})
 	end
+	-- Export the model's parts, joints, bones, clothing, and animations.
 	local function exportRig(model)
 		local m = {Name=model.Name, Path=fullpath(model), Scale=model:GetScale(), Parts={}, Joints={}, Bones={}, Animations={}}
 		do
@@ -644,7 +592,7 @@ local function run(options)
 		end
 		return m
 	end
-	local modelLines = 0
+	-- Export a model without letting one broken model stop the entire run.
 	local function addModel(model)
 		local ok, m = pcall(exportRig, model)
 		if not ok then
@@ -653,27 +601,8 @@ local function run(options)
 			return
 		end
 		table.insert(models, m)
-		modelLines += 1
-		if modelLines > MAX_MODEL_LINES then
-			if modelLines == MAX_MODEL_LINES + 1 then
-				log("  (more models are exported; only the first " .. MAX_MODEL_LINES .. " are listed)")
-			end
-			return
-		end
-		local clips = {}
-		for _, a in ipairs(m.Animations) do
-			if a.Status == "KeyframeSequence" or a.Status == "CurveAnimation" then
-				table.insert(clips, ("%s %.2fs"):format(a.Name, a.Duration))
-			else
-				table.insert(clips, ("%s (%s)"):format(a.Name, a.Status))
-			end
-		end
-		log(("  model %s: %s, %s, %s, %s"):format(
-			m.Path, count(#m.Parts, "part"), count(#m.Joints, "joint"), count(#m.Bones, "bone"),
-			#clips > 0 and ("clips " .. table.concat(clips, ", ")) or "no clips"))
 	end
-	-- Mesh/material deduplication is global. Instances within rigs are NOT deduplicated.
-	-- GetDescendants still enumerates the tree, but excluded branches are not exported.
+	-- Collect meshes and models while respecting excluded hierarchies.
 	for _, root in ipairs(roots) do
 		if not isExcluded(root) then
 			local list = root:GetDescendants()
@@ -681,7 +610,6 @@ local function run(options)
 			for _, inst in ipairs(list) do
 				if isExcluded(inst) then continue end
 				if meshIdOf(inst) then
-					-- one odd instance should not stop the whole export
 					local ok, err = pcall(getOrAddMesh, inst)
 					if not ok then
 						issue("MeshSkipped", ("skipped the mesh of %s: %s"):format(inst:GetFullName(), tostring(err)),
@@ -704,18 +632,14 @@ local function run(options)
 			addModel(root)
 		end
 	end
-	local payload = {SchemaVersion=SCHEMA, Meshes=meshes, Models=models}
-	local clipsOk, clipsFailed = 0, 0
-	for _, clip in pairs(clipCache) do
-		if clip.Status == "KeyframeSequence" or clip.Status == "CurveAnimation" then
-			clipsOk += 1
-		else
-			clipsFailed += 1
-		end
-	end
-	log(("found %s, %s and %s%s in %.1fs"):format(
-		count(#models, "model"), count(#meshes, "mesh", "meshes"), count(clipsOk, "clip"), clipsFailed > 0 and (" (" .. clipsFailed .. " could not be read)") or "",
-		os.clock() - started))
+	local payload = {
+		SchemaVersion = SCHEMA,
+		GameName = game.Name,
+		PlaceId = game.PlaceId,
+		Meshes = meshes,
+		Models = models,
+	}
+	log(("Exported %d models and %d meshes in %.1fs."):format(#models, #meshes, os.clock() - started))
 	if #meshes == 0 and #models == 0 then
 		issue("NothingToExport", "nothing to export: no meshes or animated models in "
 			.. ((options.roots or useSelection) and "what was picked" or "the game outside Workspace")
@@ -723,8 +647,6 @@ local function run(options)
 		return
 	end
 	if options.send == false then
-		log(("done in %.1fs. Not sent to Meshvault (send = false): change the export it returns, then "
-			.. "send(export), or save HttpService:JSONEncode(export) yourself"):format(os.clock() - started))
 		return payload
 	end
 	local encoded, json = pcall(function() return HttpService:JSONEncode(payload) end)
@@ -734,12 +656,12 @@ local function run(options)
 
 	local sent, result = sendToMeshvault(json)
 	if sent then
-		log(("done in %.1fs. Meshvault received the export: %s. Finish the import in Meshvault")
-			:format(os.clock() - started, tostring(result)))
+		log("Export sent to Meshvault.")
 	else
 		issue("SendFailed", "could not send the export to Meshvault: " .. tostring(result))
+		-- so the export is not lost: chunks to copy into a .json file and import. Studio's
+		-- Output can cut long lines short, so each chunk is kept small
 		log("printing the export here instead: copy the chunks below into a .json file and import it in Meshvault")
-		-- characters per printed line: a conservative size, as Studio's Output can cut long lines short
 		local PRINT_CHUNK = 12000
 		local pieces = math.max(1, math.ceil(#json / PRINT_CHUNK))
 		for i = 1, pieces do
@@ -751,6 +673,7 @@ local function run(options)
 	return payload
 end
 
+-- Reset warnings and return the export, warnings, and reusable sender.
 return function(options)
 	issues = {}
 	local ok, result = xpcall(run, function(e)
@@ -761,9 +684,6 @@ return function(options)
 		issue("Error", "the export stopped with an error: " .. tostring(result))
 		warn(TAG .. " please report this, with the lines above, to Meshvault's developers "
 			.. "(exporter schema " .. SCHEMA .. ", Meshvault " .. MESHVAULT_VERSION .. ")")
-	elseif #issues > 0 then
-		warn(("%s finished with %d warning(s); see above"):format(TAG, #issues))
 	end
-	-- issues are empty when all went well; export is nil when there was nothing to export
 	return issues, export, send
 end

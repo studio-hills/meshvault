@@ -143,8 +143,14 @@ local services = {
 function game:GetService(name) return (assert(services[name], name)) end
 
 Enum = { MeshType = { FileMesh = "FileMesh" } }
-print = function(...) end
-warn = print
+-- what the exporter prints, a line each; warnings are not kept
+printed = {}
+print = function(...)
+	local parts = {}
+	for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+	table.insert(printed, table.concat(parts, " "))
+end
+warn = function(...) end
 "#;
 
 /// A Luau with the stand-in Studio, whose requests go to a link server of
@@ -434,6 +440,39 @@ fn a_refused_send_says_so() {
 		assert!(!sent, "schema {v}");
 		assert!(reply.contains("HTTP 503"), "schema {v}: {reply}");
 		assert!(http.get::<bool>("HttpEnabled").unwrap(), "schema {v}");
+	}
+}
+
+// Meshvault not taking the export when the exporter sends it itself: the
+// export is printed as chunks, which import as they are, so it is not lost
+#[test]
+fn a_failed_send_prints_the_export_to_import() {
+	for v in SCHEMAS {
+		let studio = Studio::new(v);
+		studio.lua.globals().set("refuse", true).unwrap();
+		let (problems, _, _) = studio.export("nil");
+		let kinds: Vec<_> = issues(&problems).into_iter().map(|(k, _)| k).collect();
+		assert_eq!(kinds, ["SendFailed"], "schema {v}");
+		let printed: Vec<String> = studio
+			.global::<Table>("printed")
+			.sequence_values()
+			.map(Result::unwrap)
+			.collect();
+		let start = printed
+			.iter()
+			.position(|l| l.starts_with("=== JSON CHUNK"))
+			.unwrap_or_else(|| panic!("schema {v}: no chunks in {printed:?}"));
+		let export = export_file::parse(&printed[start..].join(
+			"
+",
+		))
+		.unwrap();
+		let names: Vec<_> = export
+			.entries
+			.iter()
+			.map(|e| (e.name.as_str(), e.mesh_id))
+			.collect();
+		assert_eq!(names, [("Rock", 123)], "schema {v}");
 	}
 }
 

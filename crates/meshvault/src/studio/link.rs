@@ -882,7 +882,7 @@ mod tests {
 		let latest = request(port, "GET /export.luau HTTP/1.1", "");
 		assert!(latest.starts_with("HTTP/1.1 200"));
 		assert!(latest.contains("local SCHEMA = 2\n"));
-		assert!(latest.contains("{SchemaVersion=SCHEMA,"));
+		assert!(latest.contains("SchemaVersion = SCHEMA,"));
 		assert!(latest.contains(&format!("http://localhost:{PORT}/export")));
 		assert!(!latest.contains("__MESHVAULT_"));
 		assert!(latest.contains(env!("CARGO_PKG_VERSION")));

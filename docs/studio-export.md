@@ -122,19 +122,17 @@ been sent.
 
 ## The Output window
 
-Every line the exporter writes starts with `[Meshvault]`:
+Every line the exporter writes starts with `[Meshvault]`. It is quiet when
+all goes well: how many models and meshes it exported, and that the export
+was sent.
 
-- what it exports, and which model a selection stands for;
-- each model, with its parts, joints, bones and clips (the first 25 models in
-  detail);
-- the totals, and the sending.
-
-Problems are warnings that say what to do: clips that could not be loaded,
-models or meshes it had to skip, Meshvault not running, a play test in
-progress. A mesh that fails is skipped on its own; an error while a model is
-put together skips that model, and the others still export. An unexpected error prints its
-stack trace with the exporter's schema and Meshvault's version, for bug
-reports. A run with warnings ends with their count.
+Problems are warnings that say what to do: clips that could not be loaded
+(a clip still loading after 20 seconds is given up on), models or meshes it
+had to skip, Meshvault not running, a play test in progress. A mesh that
+fails is skipped on its own; an error while a model is put together skips
+that model, and the others still export. An unexpected error prints its
+stack trace, then the exporter's schema and Meshvault's version, for bug
+reports.
 
 If sending fails when the line sends the export itself, the exporter prints the export itself between
 `=== JSON CHUNK i/n ===` and `=== END JSON EXPORT ===` lines, without the

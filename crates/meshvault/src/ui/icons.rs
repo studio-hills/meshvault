@@ -40,6 +40,7 @@ pub const LIGHTBULB: &str = "\u{E2DC}";
 pub const LIST: &str = "\u{E2F0}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const MOON: &str = "\u{E330}";
+pub const PACKAGE: &str = "\u{E390}";
 pub const PAUSE: &str = "\u{E39E}";
 pub const PERSON_SIMPLE_RUN: &str = "\u{E730}";
 pub const PLAY: &str = "\u{E3D0}";

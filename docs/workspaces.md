@@ -14,7 +14,8 @@ switches between them, and the welcome screen lists the recent ones.
 2. Add Roblox access (below).
 3. Import an export: send one from Studio, click Import (Ctrl+I), or drop a
    `.json` onto the window. Pick the folders, models and maps to import; the
-   dialog can include or skip each kind of map.
+   dialog can show only animated models, static models or loose meshes, and
+   include or skip each kind of map.
 4. Downloads start in the background when the import is done.
 
 Exports are read one at a time. One that arrives (or is opened) while another

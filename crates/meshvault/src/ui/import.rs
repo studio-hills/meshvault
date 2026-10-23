@@ -1,9 +1,10 @@
 //! The import dialog: choose what to add to the workspace from an export.
 //!
-//! Everything is shown in one folder tree. An animated model sits in its
-//! folder with the meshes it uses listed under it; ticking the model brings
-//! them along. Meshes no model uses are listed on their own. Which kinds of
-//! map to download is a single choice for the whole import.
+//! Everything is shown in one folder tree. A model, animated (with clips) or
+//! static, sits in its folder with the meshes it uses listed under it;
+//! ticking the model brings them along. Meshes no model uses are listed on
+//! their own. Which kinds of map to download is a single choice for the
+//! whole import.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -24,17 +25,30 @@ use crate::workspace::{Workspace, model_folder};
 /// One line of the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
-	/// An animated model, by index into `models`.
+	/// A model, by index into `models`.
 	Model(usize),
-	/// A mesh no animated model uses, by index into `entries`.
+	/// A mesh no model uses, by index into `entries`.
 	Mesh(usize),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KindFilter {
 	All,
+	/// Models with clips.
 	Animated,
+	/// Models without.
+	Static,
+	/// Meshes no model uses.
 	Meshes,
+}
+
+/// `parts` as a list: "a", "a and b", "a, b and c".
+fn and_list(parts: &[String]) -> String {
+	match parts {
+		[] => String::new(),
+		[one] => one.clone(),
+		[rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+	}
 }
 
 pub struct ImportDialog {
@@ -86,7 +100,7 @@ pub enum Outcome {
 		origin: Origin,
 		/// Selected entries, with `maps` narrowed to what will be downloaded.
 		entries: Vec<Entry>,
-		/// Selected animated models; their meshes are among `entries`.
+		/// Selected models; their meshes are among `entries`.
 		models: Vec<AnimatedModel>,
 		download_now: bool,
 	},
@@ -166,6 +180,55 @@ impl ImportDialog {
 		}
 	}
 
+	/// Whether model `i` has clips; the rest are static.
+	fn is_animated(&self, i: usize) -> bool {
+		!self.models[i].animations.is_empty()
+	}
+
+	/// The kind of a row, as the filter sorts them.
+	fn kind(&self, row: Row) -> KindFilter {
+		match row {
+			Row::Model(i) if self.is_animated(i) => KindFilter::Animated,
+			Row::Model(_) => KindFilter::Static,
+			Row::Mesh(_) => KindFilter::Meshes,
+		}
+	}
+
+	/// How many rows there are of each kind: animated models, static
+	/// models, meshes no model uses.
+	fn counts(&self) -> (usize, usize, usize) {
+		let of = |kind| self.rows.iter().filter(|&&r| self.kind(r) == kind).count();
+		(
+			of(KindFilter::Animated),
+			of(KindFilter::Static),
+			of(KindFilter::Meshes),
+		)
+	}
+
+	/// The line above the list: what the export holds.
+	fn summary_text(&self) -> String {
+		let (animated, still, meshes) = self.counts();
+		if animated + still == 0 {
+			return format!(
+				"{} in {}",
+				plural(self.entries.len(), "mesh", "meshes"),
+				plural(self.tree.folders.len(), "folder", "folders")
+			);
+		}
+		let mut parts = Vec::new();
+		if animated > 0 {
+			parts.push(plural(animated, "animated model", "animated models"));
+		}
+		if still > 0 {
+			parts.push(plural(still, "static model", "static models"));
+		}
+		parts.push(plural(meshes, "other mesh", "other meshes"));
+		format!(
+			"{}. Ticking a model brings the meshes it uses.",
+			and_list(&parts)
+		)
+	}
+
 	fn row_name(&self, row: Row) -> &str {
 		match row {
 			Row::Model(i) => &self.models[i].name,
@@ -175,13 +238,7 @@ impl ImportDialog {
 
 	fn matches(&self, r: usize) -> bool {
 		let row = self.rows[r];
-		let kind_ok = matches!(
-			(self.show, row),
-			(KindFilter::All, _)
-				| (KindFilter::Animated, Row::Model(_))
-				| (KindFilter::Meshes, Row::Mesh(_))
-		);
-		if !kind_ok {
+		if self.show != KindFilter::All && self.show != self.kind(row) {
 			return false;
 		}
 		if self.search.is_empty() {
@@ -273,24 +330,7 @@ impl ImportDialog {
 
 	fn summary(&self, ui: &mut egui::Ui) {
 		let p = palette(ui.ctx());
-		let standalone = self
-			.rows
-			.iter()
-			.filter(|r| matches!(r, Row::Mesh(_)))
-			.count();
-		let text = if self.models.is_empty() {
-			format!(
-				"{} in {}",
-				plural(self.entries.len(), "mesh", "meshes"),
-				plural(self.tree.folders.len(), "folder", "folders")
-			)
-		} else {
-			format!(
-				"{} and {}. Ticking a model brings the meshes it uses.",
-				plural(self.models.len(), "animated model", "animated models"),
-				plural(standalone, "other mesh", "other meshes")
-			)
-		};
+		let text = self.summary_text();
 		ui.horizontal_wrapped(|ui| {
 			ui.label(RichText::new(text).color(p.text_weak));
 			let problems: Vec<&String> = self.skipped.iter().chain(&self.warnings).collect();
@@ -336,23 +376,25 @@ impl ImportDialog {
 		// and can never run into the controls
 		ui.horizontal(|ui| {
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				let both =
-					!self.models.is_empty() && self.rows.iter().any(|r| matches!(r, Row::Mesh(_)));
+				// a choice for each kind the export has, when it has more than one
+				let (animated, still, meshes) = self.counts();
+				let mut choices = vec![(KindFilter::All, "All")];
+				for (n, choice) in [
+					(animated, (KindFilter::Animated, "Animated")),
+					(still, (KindFilter::Static, "Static")),
+					(meshes, (KindFilter::Meshes, "Meshes")),
+				] {
+					if n > 0 {
+						choices.push(choice);
+					}
+				}
 				ui.spacing_mut().item_spacing.x = 0.0;
 				if let Some(command) = tree::expand_collapse_buttons(ui) {
 					self.pending = Some(command);
 				}
-				if both {
+				if choices.len() > 2 {
 					ui.add_space(8.0);
-					widgets::text_segmented(
-						ui,
-						&mut self.show,
-						&[
-							(KindFilter::All, "All"),
-							(KindFilter::Animated, "Animated"),
-							(KindFilter::Meshes, "Meshes"),
-						],
-					);
+					widgets::text_segmented(ui, &mut self.show, &choices);
 				}
 				ui.add_space(8.0);
 				ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -426,14 +468,19 @@ impl ImportDialog {
 				std::iter::once(self.entries[e].mesh_id).chain(maps.values().copied())
 			})
 			.collect();
+		let animated = models.iter().filter(|&&m| self.is_animated(m)).count();
+		let still = models.len() - animated;
 		let mut parts = Vec::new();
-		if !models.is_empty() {
-			parts.push(plural(models.len(), "animated model", "animated models"));
+		if animated > 0 {
+			parts.push(plural(animated, "animated model", "animated models"));
+		}
+		if still > 0 {
+			parts.push(plural(still, "static model", "static models"));
 		}
 		parts.push(plural(entries.len(), "mesh", "meshes"));
 		let summary = format!(
 			"{} selected · {} to download",
-			parts.join(" and "),
+			and_list(&parts),
 			plural(downloads.len(), "file", "files")
 		);
 		ui.horizontal(|ui| {
@@ -652,8 +699,8 @@ impl ImportDialog {
 		}
 	}
 
-	/// An animated model: a checkbox, with the meshes it brings along
-	/// listed underneath when expanded.
+	/// A model: a checkbox, with the meshes it brings along listed
+	/// underneath when expanded. A static model has no clips to count.
 	fn model_row(&mut self, ui: &mut egui::Ui, r: usize, i: usize) {
 		let p = palette(ui.ctx());
 		let id = egui::Id::unique(("import_model", i));
@@ -675,37 +722,54 @@ impl ImportDialog {
 			.filter(|a| a.status.is_playable())
 			.count();
 		let clips = m.animations.len();
-		let hover = format!(
-			"{}\n{} · {} · {}",
+		let animated = clips > 0;
+		let mut hover = format!(
+			"{}\n{} · {}",
 			m.path,
 			plural(m.parts.len(), "part", "parts"),
 			plural(meshes.len(), "mesh", "meshes"),
-			if playable == clips {
+		);
+		if animated {
+			hover.push_str(" · ");
+			hover.push_str(&if playable == clips {
 				plural(clips, "clip", "clips")
 			} else {
 				format!("{playable} of {clips} clips playable")
-			}
-		);
+			});
+		}
 		let name = m.name.clone();
 		let existing = self.model_existing[i];
 		let (arrow, _, _) = state
 			.show_header(ui, |ui| {
-				let label = format!("{}  {name}", icons::PERSON_SIMPLE_RUN);
+				let icon = if animated {
+					icons::PERSON_SIMPLE_RUN
+				} else {
+					icons::PACKAGE
+				};
+				let label = format!("{icon}  {name}");
 				let mut text = RichText::new(label);
 				if existing {
 					text = text.color(ui.visuals().weak_text_color());
 				}
 				widgets::pointer(ui.checkbox(&mut self.selected[r], text)).on_hover_text(hover);
-				ui.label(widgets::caption(
-					ui,
-					format!(
-						"{}  {}   {}  {playable}",
-						icons::CUBE,
-						meshes.len(),
-						icons::FILM_STRIP
-					),
-				))
-				.on_hover_text("Meshes it uses · playable clips");
+				if animated {
+					ui.label(widgets::caption(
+						ui,
+						format!(
+							"{}  {}   {}  {playable}",
+							icons::CUBE,
+							meshes.len(),
+							icons::FILM_STRIP
+						),
+					))
+					.on_hover_text("Meshes it uses · playable clips");
+				} else {
+					ui.label(widgets::caption(
+						ui,
+						format!("{}  {}", icons::CUBE, meshes.len()),
+					))
+					.on_hover_text("Meshes it uses");
+				}
 				if existing {
 					ui.label(widgets::caption(ui, "in workspace"));
 				}
@@ -783,5 +847,58 @@ mod tests {
 		dialog.search = "body".into();
 		dialog.needle = "body".into();
 		assert!(dialog.matches(0) && !dialog.matches(1));
+	}
+
+	#[test]
+	fn models_with_clips_are_animated_and_the_rest_static() {
+		let model = |name: &str, animations: &str| {
+			format!(
+				r#"{{"Name":"{name}","Path":"RS/{name}","Parts":[],"Joints":[],"Bones":[],
+				"Animations":[{animations}]}}"#
+			)
+		};
+		let clip = r#"{"Name":"Walk","AnimationId":"rbxassetid://5","Status":"KeyframeSequence",
+			"Duration":1,"Loop":true,"Priority":"Core","Keyframes":[],"Curves":[]}"#;
+		let json = format!(
+			r#"{{"SchemaVersion":2,"Meshes":[
+				{{"Id":1,"Name":"Rock","MeshId":"rbxassetid://20","Folder":"RS/Props"}}],
+			"Models":[{},{},{}]}}"#,
+			model("Crate", ""),
+			model("Shark", clip),
+			model("Barrel", "")
+		);
+		let export = crate::studio::export_file::parse(&json).unwrap();
+		let dir = TempDir::new("import_kinds");
+		let ws = Workspace::create(&dir, "Test").unwrap();
+		let mut dialog = ImportDialog::new("x.json".into(), export, &ws);
+		assert_eq!(dialog.counts(), (1, 2, 1));
+		assert_eq!(
+			dialog.summary_text(),
+			"1 animated model, 2 static models and 1 other mesh. \
+			 Ticking a model brings the meshes it uses."
+		);
+		let shown = |dialog: &ImportDialog| -> Vec<usize> {
+			(0..dialog.rows.len())
+				.filter(|&r| dialog.matches(r))
+				.collect()
+		};
+		dialog.show = KindFilter::Animated;
+		assert_eq!(shown(&dialog), [1]);
+		dialog.show = KindFilter::Static;
+		assert_eq!(shown(&dialog), [0, 2]);
+		dialog.show = KindFilter::Meshes;
+		assert_eq!(shown(&dialog), [3]);
+		dialog.show = KindFilter::All;
+		assert_eq!(shown(&dialog), [0, 1, 2, 3]);
+	}
+
+	#[test]
+	fn lists_read_as_english() {
+		let list =
+			|parts: &[&str]| and_list(&parts.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+		assert_eq!(list(&[]), "");
+		assert_eq!(list(&["a"]), "a");
+		assert_eq!(list(&["a", "b"]), "a and b");
+		assert_eq!(list(&["a", "b", "c"]), "a, b and c");
 	}
 }

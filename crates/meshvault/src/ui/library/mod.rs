@@ -179,7 +179,7 @@ impl ModelKind {
 	fn title(self) -> String {
 		match self {
 			Self::Animated => format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
-			Self::Static => format!("{}  Static models", icons::CUBE),
+			Self::Static => format!("{}  Static models", icons::PACKAGE),
 		}
 	}
 

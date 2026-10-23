@@ -196,7 +196,8 @@ impl Browser {
 				}
 				None => {
 					let icon = match key {
-						Row::Model(_) => icons::PERSON_SIMPLE_RUN,
+						Row::Model(i) if ws.models()[i].is_animated() => icons::PERSON_SIMPLE_RUN,
+						Row::Model(_) => icons::PACKAGE,
 						Row::Mesh(_) => icons::CUBE,
 					};
 					painter.text(
@@ -359,7 +360,7 @@ mod tests {
 					&[Row::Model(1), Row::Model(0)],
 				),
 				section(
-					format!("{}  Static models", icons::CUBE),
+					format!("{}  Static models", icons::PACKAGE),
 					"",
 					&[Row::Model(2)],
 				),

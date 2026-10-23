@@ -158,8 +158,7 @@ impl Workspace {
 
 	pub fn open(root: &Path) -> Result<Self, String> {
 		let path = root.join(MANIFEST);
-		let json = std::fs::read_to_string(&path)
-			.map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+		let json = crate::studio::export_file::read_text(&path)?;
 		let mut manifest: Manifest = serde_json::from_str(&json)
 			.map_err(|e| format!("{} is not a valid workspace: {e}", path.display()))?;
 		if manifest.version > MANIFEST_VERSION {

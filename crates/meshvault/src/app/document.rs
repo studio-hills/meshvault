@@ -10,8 +10,7 @@ use crate::scene::geometry::{self, GroupKind, Loaded};
 use crate::scene::maps::Slot;
 use crate::scene::surface::AlphaMode;
 use crate::scene::texture::{self, Material};
-use crate::studio::export_file;
-use crate::ui::format::format_bytes;
+use crate::studio::export_file::{self, read_limited};
 
 pub struct Document {
 	pub path: PathBuf,
@@ -59,30 +58,6 @@ const MESH_EXTENSIONS: [&str; 5] = ["mesh", "meshdata", "meshdata5", "data", "bi
 /// The largest file opened or imported: exports are the largest files
 /// Meshvault reads, and this is their limit.
 const MAX_FILE_BYTES: usize = export_file::MAX_EXPORT_BYTES;
-
-/// Reads `path` whole, unless it is longer than `limit` bytes.
-fn read_limited(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
-	use std::io::Read;
-	let too_big = |len: u64| {
-		std::io::Error::other(format!(
-			"it is {}, larger than the {} Meshvault reads",
-			format_bytes(usize::try_from(len).unwrap_or(usize::MAX)),
-			format_bytes(limit)
-		))
-	};
-	let file = std::fs::File::open(path)?;
-	let len = file.metadata()?.len();
-	if len > limit as u64 {
-		return Err(too_big(len));
-	}
-	let mut bytes = Vec::with_capacity(len as usize);
-	// the file may grow after its size was read
-	file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
-	if bytes.len() > limit {
-		return Err(too_big(bytes.len() as u64));
-	}
-	Ok(bytes)
-}
 
 impl App {
 	/// Reads the file at `path`, or reports why it could not be read.

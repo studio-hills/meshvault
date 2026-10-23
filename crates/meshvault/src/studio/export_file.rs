@@ -14,6 +14,7 @@
 //! it, and its place is sent with the downloads.
 
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -35,6 +36,39 @@ pub const MAX_FOLDER_LEN: usize = 2000;
 
 /// The largest export read, from Studio or from disk.
 pub const MAX_EXPORT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+/// Reads `path` whole, unless it is longer than `limit` bytes.
+pub fn read_limited(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+	use std::io::Read;
+	let too_big = |len: u64| {
+		std::io::Error::other(format!(
+			"it is {}, larger than the {} Meshvault reads",
+			crate::ui::format::format_bytes(usize::try_from(len).unwrap_or(usize::MAX)),
+			crate::ui::format::format_bytes(limit)
+		))
+	};
+	let file = std::fs::File::open(path)?;
+	let len = file.metadata()?.len();
+	if len > limit as u64 {
+		return Err(too_big(len));
+	}
+	let mut bytes = Vec::with_capacity(len as usize);
+	// the file may grow after its size was read
+	file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+	if bytes.len() > limit {
+		return Err(too_big(bytes.len() as u64));
+	}
+	Ok(bytes)
+}
+
+/// Reads an export, a rig file or a workspace manifest whole, unless it is
+/// larger than [`MAX_EXPORT_BYTES`]: the largest file Meshvault reads.
+pub fn read_text(path: &Path) -> Result<String, String> {
+	let bytes = read_limited(path, MAX_EXPORT_BYTES)
+		.map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+	String::from_utf8(bytes)
+		.map_err(|_| format!("Could not read {}: it is not UTF-8 text", path.display()))
+}
 
 /// The most of each thing an export may hold. Real exports have thousands
 /// of meshes and some hundred models; these only stop a document that

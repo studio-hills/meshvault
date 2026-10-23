@@ -330,11 +330,9 @@ impl App {
 			match self.create_workspace(&dialog.name, &dialog.parent) {
 				Ok(()) => {
 					if let Some(export) = dialog.then_import {
-						match std::fs::read(&export) {
-							Ok(bytes) => self.start_import(export, &bytes),
-							Err(e) => self
-								.toasts
-								.error(format!("Could not read {}: {e}", export.display())),
+						match crate::studio::export_file::read_text(&export) {
+							Ok(text) => self.start_import(export, text.as_bytes()),
+							Err(e) => self.toasts.error(e),
 						}
 					}
 				}

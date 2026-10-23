@@ -52,8 +52,7 @@ pub fn model_loader(
 		.collect();
 	let file = ws.root.join(&item.file);
 	Some(move |ctx: &egui::Context| {
-		std::fs::read_to_string(&file)
-			.map_err(|e| format!("Could not read {}: {e}", file.display()))
+		export_file::read_text(&file)
 			.and_then(|text| export_file::parse(&text))
 			.and_then(|export| {
 				export

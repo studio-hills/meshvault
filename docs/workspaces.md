@@ -123,10 +123,16 @@ it is touched: every path in the manifest must be a plain relative path, with
 reserved name such as `CON`, or a model more than 64 folders deep, makes
 Meshvault refuse the whole workspace and say which entry is wrong. Folders
 deeper than 64 in an export are cut off when it is imported. Meshvault also
-refuses to write or delete a file outside those folders. It does not follow
-links made inside a workspace any differently from other files: a junction or
-symbolic link someone puts in its folders is followed, so only open folders you
-trust.
+refuses to write or delete a file outside those folders.
+
+Links (junctions and symbolic links) inside a workspace are not followed: a
+workspace whose `workspace.json`, `Models`, `Rigs`, `Images` or `.cache` (or
+`.cache/thumbnails`, `.cache/facts.json`, `.cache/format`) is a link is refused
+when it is opened, and Meshvault does not write or delete anything through a
+link deeper in it, such as a linked folder inside `Models/`; that download,
+Remove or import says why instead. The workspace folder itself may be a link,
+since it is the one you chose. Meshvault checks the folders as they are when it
+writes; a link someone swaps in at that very moment is not caught.
 
 ## Settings
 

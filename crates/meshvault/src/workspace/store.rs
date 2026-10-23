@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, check_path};
+use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, check_no_links, check_path};
 use crate::workspace::{AssetKind, CACHE_DIR, Job, cache_path};
 
 /// Picks a file extension from the content.
@@ -30,6 +30,11 @@ pub fn sniff_extension(bytes: &[u8], kind: AssetKind) -> &'static str {
 	}
 }
 
+/// [`cache_path`] relative to the workspace's root.
+fn cache_rel(asset_id: u64) -> PathBuf {
+	Path::new(CACHE_DIR).join(asset_id.to_string())
+}
+
 /// A name beside `path` for a file being written, unique within this run of
 /// the app and across apps (by process id), so writers never share one.
 fn temp_beside(path: &Path) -> PathBuf {
@@ -50,7 +55,12 @@ const FORMAT_FILE: &str = "format";
 /// whole one, so each is downloaded again when next needed. Best effort:
 /// if one cannot be deleted, the format is not marked and it is tried again
 /// next time. Thumbnails, facts and organised files are left alone.
+/// Nothing is done if the cache or its marker is a link (see
+/// [`check_no_links`]).
 pub fn upgrade_cache(root: &Path) {
+	if check_no_links(root, &Path::new(CACHE_DIR).join(FORMAT_FILE)).is_err() {
+		return;
+	}
 	let dir = root.join(CACHE_DIR);
 	let marker = dir.join(FORMAT_FILE);
 	if std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == CACHE_FORMAT) {
@@ -82,8 +92,10 @@ pub fn upgrade_cache(root: &Path) {
 }
 
 /// The raw download of an asset, if it is cached. An empty file is not
-/// trusted: it is what a write cut short leaves behind.
+/// trusted: it is what a write cut short leaves behind. Nor is one read
+/// through a link (see [`check_no_links`]).
 pub fn read_cache(root: &Path, asset_id: u64) -> Option<Vec<u8>> {
+	check_no_links(root, &cache_rel(asset_id)).ok()?;
 	std::fs::read(cache_path(root, asset_id))
 		.ok()
 		.filter(|bytes| !bytes.is_empty())
@@ -94,6 +106,9 @@ pub fn read_cache(root: &Path, asset_id: u64) -> Option<Vec<u8>> {
 /// downloading again next time. The file is written under a temporary name
 /// and renamed, so the cache never holds part of an asset.
 pub fn write_cache(root: &Path, asset_id: u64, bytes: &[u8]) {
+	if check_no_links(root, &cache_rel(asset_id)).is_err() {
+		return;
+	}
 	let cache = cache_path(root, asset_id);
 	if let Some(dir) = cache.parent() {
 		let _ = std::fs::create_dir_all(dir);
@@ -126,7 +141,8 @@ pub struct Stored {
 impl Stored {
 	/// Moves the file into place under `root`, replacing any file there.
 	/// Refused unless its path is a plain one under `Images/` (an image) or
-	/// `Models/` (see [`check_path`]), so no stem can put it elsewhere.
+	/// `Models/` (see [`check_path`]) with no link on the way (see
+	/// [`check_no_links`]), so no stem can put it elsewhere.
 	pub fn publish(&mut self, root: &Path) -> Result<(), String> {
 		let top = if self.kind == AssetKind::Image {
 			IMAGES_DIR
@@ -134,6 +150,8 @@ impl Stored {
 			MODELS_DIR
 		};
 		check_path(&self.path, top).map_err(|e| format!("Could not write {:?}: {e}", self.path))?;
+		check_no_links(root, Path::new(&self.path))
+			.map_err(|e| format!("Could not write {}: {e}", self.path))?;
 		let path = root.join(&self.path);
 		if let Some(parent) = path.parent() {
 			std::fs::create_dir_all(parent)
@@ -160,6 +178,13 @@ impl Drop for Stored {
 /// that finishes after its item was removed (and its stem perhaps reused)
 /// cannot touch another item's files.
 pub fn stage(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String> {
+	// the staged files go in the cache folder
+	check_no_links(root, &cache_rel(job.asset_id)).map_err(|e| {
+		format!(
+			"Could not write {}: {e}",
+			cache_path(root, job.asset_id).display()
+		)
+	})?;
 	// dropped, and so deleted, if a later target cannot be written
 	let mut written: Vec<Stored> = Vec::new();
 	for (stem, kind) in &job.targets {

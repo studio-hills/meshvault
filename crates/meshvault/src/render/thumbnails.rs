@@ -20,7 +20,7 @@ use crate::scene::model_view::ModelView;
 use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
 use crate::workspace::view_loader::{item_maps, model_loader};
-use crate::workspace::{AssetState, CACHE_DIR, Workspace};
+use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
 
 /// Pixels on each side of a thumbnail.
 const SIZE: u32 = 192;
@@ -103,6 +103,7 @@ fn versions(files: &[PathBuf]) -> Vec<Version> {
 }
 
 pub struct Thumbnails {
+	root: PathBuf,
 	dir: PathBuf,
 	states: HashMap<Subject, Entry>,
 	/// The workspace generation at the last update.
@@ -115,6 +116,7 @@ pub struct Thumbnails {
 impl Thumbnails {
 	pub fn new(root: &Path) -> Self {
 		Self {
+			root: root.to_path_buf(),
 			dir: root.join(CACHE_DIR).join("thumbnails"),
 			states: HashMap::new(),
 			generation: 0,
@@ -239,10 +241,12 @@ impl Thumbnails {
 			return;
 		}
 		let state = match result {
-			Ok(prepared) => match keep(&self.dir, &job.file, &job.files, draw(prepared)) {
-				Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
-				None => State::Failed,
-			},
+			Ok(prepared) => {
+				match keep(&self.root, &self.dir, &job.file, &job.files, draw(prepared)) {
+					Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
+					None => State::Failed,
+				}
+			}
 			// the reader's (or the GPU's) reason is not shown anywhere
 			Err(_) => State::Failed,
 		};
@@ -254,8 +258,10 @@ impl Thumbnails {
 /// The thumbnail `drawn` from `files`, saved to `file` in `dir` for later
 /// runs, with the list of `files` beside it. One the GPU could not hand
 /// back is neither saved nor shown, so it is drawn again rather than kept
-/// as a black square.
+/// as a black square. Nothing is saved through a link in the workspace
+/// at `root` (see [`check_no_links`]).
 fn keep(
+	root: &Path,
 	dir: &Path,
 	file: &Path,
 	files: &[PathBuf],
@@ -264,7 +270,15 @@ fn keep(
 	let image = drawn.ok()?;
 	// a thumbnail that cannot be saved is still shown (and drawn again
 	// next time); one whose list cannot be saved is drawn again next run
-	if std::fs::create_dir_all(dir).is_ok() && image.save(file).is_ok() {
+	let unlinked = |p: &Path| {
+		p.strip_prefix(root)
+			.is_ok_and(|rel| check_no_links(root, rel).is_ok())
+	};
+	if unlinked(file)
+		&& unlinked(&drawn_from(file))
+		&& std::fs::create_dir_all(dir).is_ok()
+		&& image.save(file).is_ok()
+	{
 		let _ = std::fs::write(drawn_from(file), list(files));
 	}
 	Some(image)
@@ -660,15 +674,33 @@ mod tests {
 		let dir = TempDir::new("thumb_keep");
 		let (cache, file) = (dir.join("cache"), dir.join("cache").join("t.png"));
 		let files = [dir.join("a.mesh")];
-		assert_eq!(keep(&cache, &file, &files, Err("lost".into())), None);
+		assert_eq!(keep(&dir, &cache, &file, &files, Err("lost".into())), None);
 		assert!(!file.exists() && !drawn_from(&file).exists());
 		let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
 		assert_eq!(
-			keep(&cache, &file, &files, Ok(image.clone())),
+			keep(&dir, &cache, &file, &files, Ok(image.clone())),
 			Some(image.clone())
 		);
 		assert_eq!(image::open(&file).unwrap().to_rgba8(), image);
 		assert!(is_fresh(&file, &files));
+	}
+
+	/// A thumbnail is shown but not saved when its folder in the workspace
+	/// links elsewhere (N01).
+	#[test]
+	fn thumbnails_are_not_saved_through_a_link() {
+		let dir = TempDir::new("thumb_linked");
+		let (root, outside) = (dir.join("ws"), dir.join("outside"));
+		std::fs::create_dir_all(root.join(CACHE_DIR)).unwrap();
+		std::fs::create_dir_all(&outside).unwrap();
+		let cache = root.join(CACHE_DIR).join("thumbnails");
+		if !crate::workspace::junction(&cache, &outside) {
+			return;
+		}
+		let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let kept = keep(&root, &cache, &cache.join("t.png"), &[], Ok(image.clone()));
+		assert_eq!(kept, Some(image));
+		assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 	}
 
 	/// A thumbnail drawn before a map or image arrived (or after one went)
@@ -706,7 +738,13 @@ mod tests {
 		let (_, files) = source(&ws, &subject).unwrap();
 		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
 		let cache = thumbnails.dir.clone();
-		keep(&cache, &thumbnails.file(&subject), &files, Ok(picture));
+		keep(
+			&dir,
+			&cache,
+			&thumbnails.file(&subject),
+			&files,
+			Ok(picture),
+		);
 		assert!(thumbnails.get(&subject).is_none());
 		thumbnails.update(&ctx, &ws, None);
 		let shown = thumbnails.get(&subject).expect("read from the cache");

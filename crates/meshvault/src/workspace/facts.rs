@@ -10,7 +10,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::scene::geometry;
-use crate::workspace::{AssetState, CACHE_DIR, Workspace};
+use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MeshFacts {
@@ -34,6 +34,7 @@ struct Known {
 type Scanned = (String, u64, Option<MeshFacts>);
 
 pub struct Facts {
+	root: PathBuf,
 	file: PathBuf,
 	/// By the mesh's path in the workspace.
 	known: HashMap<String, Known>,
@@ -49,14 +50,16 @@ pub struct Facts {
 
 impl Facts {
 	pub fn open(root: &Path) -> Self {
-		let file = root.join(CACHE_DIR).join("facts.json");
+		let file = root.join(facts_rel());
 		// a file from before facts recorded the asset does not parse, so
-		// every mesh is read again once
-		let known = std::fs::read_to_string(&file)
+		// every mesh is read again once; nor is one read through a link
+		let known = check_no_links(root, &facts_rel())
 			.ok()
+			.and_then(|()| std::fs::read_to_string(&file).ok())
 			.and_then(|text| serde_json::from_str(&text).ok())
 			.unwrap_or_default();
 		Self {
+			root: root.to_path_buf(),
 			file,
 			known,
 			unreadable: HashMap::new(),
@@ -163,7 +166,10 @@ impl Facts {
 		}
 		self.dirty = false;
 		// facts.json is a cache that can be rebuilt, so failing to write it
-		// is not worth reporting
+		// is not worth reporting; nor is one written through a link
+		if check_no_links(&self.root, &facts_rel()).is_err() {
+			return;
+		}
 		if let Some(dir) = self.file.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
@@ -177,6 +183,11 @@ impl Drop for Facts {
 	fn drop(&mut self) {
 		self.save();
 	}
+}
+
+/// Where the facts are kept, under the workspace's root.
+fn facts_rel() -> PathBuf {
+	Path::new(CACHE_DIR).join("facts.json")
 }
 
 /// Reads a mesh's facts, or `None` if the file cannot be read. A file that
@@ -298,5 +309,24 @@ mod tests {
 		let mut facts = Facts::open(&dir);
 		facts.scan_all(&ws);
 		assert!(facts.get("Models/A.mesh", 1).unwrap().triangles > 0);
+	}
+	/// Facts are neither read nor saved through a `.cache` that links
+	/// elsewhere (N01).
+	#[test]
+	fn facts_are_not_kept_through_a_link() {
+		let parent = TempDir::new("facts_linked");
+		let (dir, outside) = (parent.join("ws"), parent.join("outside"));
+		std::fs::create_dir_all(&outside).unwrap();
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		download_a(&mut ws, "torso.mesh", 1);
+		std::fs::remove_dir_all(dir.join(CACHE_DIR)).unwrap();
+		if !crate::workspace::junction(&dir.join(CACHE_DIR), &outside) {
+			return;
+		}
+		let mut facts = Facts::open(&dir);
+		facts.scan_all(&ws);
+		assert!(facts.get("Models/A.mesh", 1).is_some());
+		drop(facts);
+		assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 	}
 }

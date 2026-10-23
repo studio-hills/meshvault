@@ -32,6 +32,9 @@ use crate::studio::export_file::{Entry, Origin};
 
 pub use self::manifest::{AssetState, Item, MapRef, ModelItem, ModelVersion};
 use self::manifest::{MANIFEST_VERSION, Manifest};
+pub(crate) use self::paths::check_no_links;
+#[cfg(test)]
+pub(crate) use self::paths::junction;
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
 use self::paths::{MODELS_DIR, RIGS_DIR, fit_folder, image_id, image_stem, rig_stem, stem_name};
 use self::rig_file::write_rig;
@@ -157,6 +160,12 @@ impl Workspace {
 	}
 
 	pub fn open(root: &Path) -> Result<Self, String> {
+		// before anything reads or writes in it: a shared workspace whose own
+		// folders link elsewhere could have the cache upgrade delete there
+		for entry in paths::OWN_ENTRIES {
+			check_no_links(root, Path::new(entry))
+				.map_err(|e| format!("{} is not a valid workspace: {e}", root.display()))?;
+		}
 		let path = root.join(MANIFEST);
 		let json = crate::studio::export_file::read_text(&path)?;
 		let mut manifest: Manifest = serde_json::from_str(&json)
@@ -213,7 +222,12 @@ impl Workspace {
 	fn write(&self) -> Result<(), String> {
 		let json = serde_json::to_string_pretty(&self.manifest).map_err(|e| e.to_string())?;
 		// write then rename so a crash never leaves a half-written manifest
-		let tmp = self.root.join(format!("{MANIFEST}.tmp"));
+		let tmp_name = format!("{MANIFEST}.tmp");
+		for name in [MANIFEST, &tmp_name] {
+			check_no_links(&self.root, Path::new(name))
+				.map_err(|e| format!("Could not save workspace: {e}"))?;
+		}
+		let tmp = self.root.join(tmp_name);
 		std::fs::write(&tmp, json).map_err(|e| format!("Could not save workspace: {e}"))?;
 		std::fs::rename(&tmp, self.root.join(MANIFEST))
 			.map_err(|e| format!("Could not save workspace: {e}"))
@@ -738,9 +752,10 @@ impl Workspace {
 /// Deletes a file in the workspace's folder `top`. One that is already gone
 /// counts as deleted. A path that is not a plain one in `top` (see
 /// [`paths::check_path`]) is refused, though `open` refuses manifests with
-/// such paths already.
+/// such paths already, and so is one through a link (see [`check_no_links`]).
 fn delete_file(root: &Path, top: &str, path: &str) -> Result<(), String> {
 	paths::check_path(path, top).map_err(|e| format!("Could not delete {path:?}: {e}"))?;
+	check_no_links(root, Path::new(path)).map_err(|e| format!("Could not delete {path}: {e}"))?;
 	match std::fs::remove_file(root.join(path)) {
 		Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
 			Err(format!("Could not delete {path}: {e}"))
@@ -1775,6 +1790,154 @@ mod tests {
 				.is_err()
 		);
 		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me");
+	}
+
+	/// A folder `outside` beside the workspace folder `ws` in a new
+	/// temporary folder, holding `file` with "keep me".
+	fn beside_outside(tag: &str, file: &str) -> (TempDir, PathBuf, PathBuf) {
+		let parent = TempDir::new(tag);
+		let dir = parent.join("ws");
+		let outside = parent.join("outside");
+		std::fs::create_dir_all(&outside).unwrap();
+		std::fs::write(outside.join(file), b"keep me").unwrap();
+		(parent, dir, outside)
+	}
+
+	/// N01: opening a shared workspace whose `.cache` links to a folder
+	/// elsewhere upgraded that folder's cache: it deleted the numeric files
+	/// there and wrote its marker. Now a workspace whose own entries are
+	/// links is refused before anything touches them.
+	#[test]
+	fn open_refuses_linked_entries_and_leaves_their_targets_alone() {
+		let (_parent, dir, outside) = beside_outside("ws_linked_cache", "123");
+		Workspace::create(&dir, "Test").unwrap();
+		std::fs::remove_dir_all(dir.join(CACHE_DIR)).unwrap();
+		if !junction(&dir.join(CACHE_DIR), &outside) {
+			return;
+		}
+		let opened = Workspace::open(&dir);
+		assert_eq!(
+			std::fs::read(outside.join("123")).unwrap(),
+			b"keep me",
+			"opening deleted a file outside the workspace"
+		);
+		assert!(!outside.join("format").exists());
+		let error = opened
+			.err()
+			.expect("a workspace with a linked .cache opened");
+		assert!(error.contains(".cache"), "{error}");
+
+		// each other folder or file of the workspace's own
+		for name in [
+			"Models",
+			"Rigs",
+			"Images",
+			".cache/thumbnails",
+			".cache/facts.json",
+		] {
+			let (_parent, dir, outside) = beside_outside("ws_linked_entry", "123");
+			Workspace::create(&dir, "Test").unwrap();
+			if !junction(&dir.join(name), &outside) {
+				return;
+			}
+			let error = Workspace::open(&dir).err().expect(name);
+			assert!(error.contains(name), "{error}");
+		}
+	}
+
+	/// Remove deletes nothing through a linked folder inside `Models/` or
+	/// `Rigs/` (N01).
+	#[test]
+	fn remove_never_deletes_through_a_link() {
+		let (_parent, dir, outside) = beside_outside("ws_remove_linked", "A.mesh");
+		std::fs::write(outside.join("M.rig.json"), b"keep me").unwrap();
+		std::fs::create_dir_all(dir.join("Models")).unwrap();
+		std::fs::create_dir_all(dir.join("Rigs")).unwrap();
+		write_manifest(
+			&dir,
+			serde_json::json!([done_item("Models/F/A", "Models/F/A.mesh")]),
+			serde_json::json!([done_model(
+				"Rigs/F/M.rig.json",
+				"Models/F/A",
+				"Images/7.png"
+			)]),
+		);
+		if !junction(&dir.join("Models/F"), &outside)
+			|| !paths::junction(&dir.join("Rigs/F"), &outside)
+		{
+			return;
+		}
+		let mut ws = Workspace::open(&dir).unwrap();
+		let removed = (ws.remove(&[0]), ws.remove_models(&[0]));
+		assert_eq!(std::fs::read(outside.join("A.mesh")).unwrap(), b"keep me");
+		assert_eq!(
+			std::fs::read(outside.join("M.rig.json")).unwrap(),
+			b"keep me"
+		);
+		assert!(removed.0.is_err() && removed.1.is_err(), "{removed:?}");
+	}
+
+	/// Downloads are not put in place, staged or cached through a link
+	/// (N01).
+	#[test]
+	fn downloads_are_never_written_through_a_link() {
+		let (_parent, dir, outside) = beside_outside("ws_publish_linked", "A.mesh");
+		Workspace::create(&dir, "Test").unwrap();
+		std::fs::create_dir_all(dir.join("Models")).unwrap();
+		if !junction(&dir.join("Models/F"), &outside) {
+			return;
+		}
+		let job = Job {
+			asset_id: 1,
+			targets: vec![("Models/F/A".into(), AssetKind::Mesh)],
+			place_id: None,
+		};
+		let mut written = store::stage(&dir, &job, b"version 4.00\n").unwrap();
+		let published = written[0].publish(&dir);
+		assert_eq!(std::fs::read(outside.join("A.mesh")).unwrap(), b"keep me");
+		assert!(published.is_err());
+
+		// the cache linked elsewhere after the workspace was opened
+		let (_parent, dir, outside) = beside_outside("ws_stage_linked", "keep");
+		Workspace::create(&dir, "Test").unwrap();
+		std::fs::remove_dir_all(dir.join(CACHE_DIR)).unwrap();
+		if !junction(&dir.join(CACHE_DIR), &outside) {
+			return;
+		}
+		let staged = store::stage(&dir, &job, b"version 4.00\n");
+		store::write_cache(&dir, 1, b"version 4.00\n");
+		let names: Vec<_> = std::fs::read_dir(&outside)
+			.unwrap()
+			.map(|e| e.unwrap().file_name())
+			.collect();
+		assert_eq!(
+			names,
+			["keep"],
+			"a download was written outside the workspace"
+		);
+		assert!(staged.is_err());
+	}
+
+	/// Importing a model again does not write its rig through a linked
+	/// folder inside `Rigs/` (N01).
+	#[test]
+	fn importing_a_model_again_never_writes_through_a_link() {
+		let (_parent, dir, outside) = beside_outside("ws_rig_linked", "Wolf.rig.json");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+			.unwrap();
+		assert_eq!(ws.models()[0].file, "Rigs/Workspace/Wolf.rig.json");
+		std::fs::remove_dir_all(dir.join("Rigs/Workspace")).unwrap();
+		if !junction(&dir.join("Rigs/Workspace"), &outside) {
+			return;
+		}
+		let added = ws.add_model(&rig_model("Wolf", 2), &[], &Origin::default());
+		assert_eq!(
+			std::fs::read(outside.join("Wolf.rig.json")).unwrap(),
+			b"keep me"
+		);
+		assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+		assert!(added.is_err());
 	}
 
 	/// A download that finishes after its item was removed changes nothing.

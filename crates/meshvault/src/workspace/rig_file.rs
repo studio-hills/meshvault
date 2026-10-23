@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
 use crate::studio::export_file::{self, Entry};
-use crate::workspace::paths::{RIGS_DIR, check_path};
+use crate::workspace::paths::{RIGS_DIR, check_no_links, check_path};
 
 /// Writes a model as an export in the current schema
 /// ([`export_file::SCHEMA_VERSION`]) holding just that model and the meshes
@@ -14,8 +14,9 @@ use crate::workspace::paths::{RIGS_DIR, check_path};
 /// those, so they load as they are.
 ///
 /// `file` is relative to the workspace's `root`, and is refused unless it is
-/// a plain path under `Rigs/` (see [`check_path`]), so a manifest's model
-/// file can never point the write elsewhere.
+/// a plain path under `Rigs/` (see [`check_path`]) with no link on the way
+/// (see [`check_no_links`]), so a manifest's model file can never point
+/// the write elsewhere.
 pub(super) fn write_rig(
 	root: &Path,
 	file: &str,
@@ -23,6 +24,11 @@ pub(super) fn write_rig(
 	meshes: &[(&Entry, String)],
 ) -> Result<(), String> {
 	check_path(file, RIGS_DIR).map_err(|e| format!("Could not write {file:?}: {e}"))?;
+	// nor through a link, to the file or the temporary one beside it
+	let tmp_name = format!("{file}.tmp");
+	for rel in [file, &tmp_name] {
+		check_no_links(root, Path::new(rel)).map_err(|e| format!("Could not write {file}: {e}"))?;
+	}
 	let path = &root.join(file);
 	let meshes: Vec<serde_json::Value> = meshes
 		.iter()

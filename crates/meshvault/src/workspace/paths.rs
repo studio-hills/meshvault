@@ -123,6 +123,64 @@ pub(super) fn check_path(path: &str, top: &str) -> Result<(), String> {
 	Ok(())
 }
 
+/// The workspace's own folders and files, under its root. A workspace in
+/// which any of them is a link is refused when opened (see
+/// [`check_no_links`]).
+pub(super) const OWN_ENTRIES: [&str; 8] = [
+	MANIFEST,
+	CACHE_DIR,
+	MODELS_DIR,
+	RIGS_DIR,
+	IMAGES_DIR,
+	".cache/format",
+	".cache/thumbnails",
+	".cache/facts.json",
+];
+
+/// Refuses `rel`, a path inside the workspace at `root`, if any part of it
+/// below `root` is a symbolic link or a junction, which could take a read,
+/// write or delete out of the workspace. Parts that do not exist yet are
+/// fine: Meshvault makes them as plain folders and files. `root` itself
+/// may be a link: it is the folder the user chose.
+///
+/// On Windows a junction and a symbolic link are both "name surrogate"
+/// reparse points, which is what [`std::fs::FileType::is_symlink`] tests
+/// for. Other reparse points (OneDrive's placeholders, deduplicated files)
+/// redirect nothing, so they are allowed.
+///
+/// This checks the folder as it is now: a link put in while Meshvault is
+/// writing is not caught.
+pub(crate) fn check_no_links(root: &Path, rel: &Path) -> Result<(), String> {
+	let mut path = root.to_path_buf();
+	let mut shown = String::new();
+	for part in rel.components() {
+		let std::path::Component::Normal(name) = part else {
+			return Err(format!(
+				"{} is not a path inside the workspace",
+				rel.display()
+			));
+		};
+		path.push(name);
+		if !shown.is_empty() {
+			shown.push('/');
+		}
+		shown.push_str(&name.to_string_lossy());
+		match std::fs::symlink_metadata(&path) {
+			Ok(meta) if meta.file_type().is_symlink() => {
+				return Err(format!(
+					"{shown} in the workspace is a link to somewhere else (a junction or \
+					 symbolic link), which Meshvault does not follow"
+				));
+			}
+			Ok(_) => {}
+			// nothing below a missing part exists either
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			Err(e) => return Err(format!("Could not check {shown} in the workspace: {e}")),
+		}
+	}
+	Ok(())
+}
+
 /// Whether a name read from a manifest is a device name: the part before
 /// its first dot is one, unless a later part ends with the underscore
 /// older versions added at the end.
@@ -163,6 +221,32 @@ pub fn sanitize(name: &str) -> String {
 	} else {
 		s
 	}
+}
+
+/// Makes `link` a directory junction (a symbolic link elsewhere) to
+/// `target`, for tests. Junctions need no admin rights, but some machines
+/// still refuse them: then this prints a note and returns false, and the
+/// test calling it is skipped.
+#[cfg(test)]
+pub(crate) fn junction(link: &Path, target: &Path) -> bool {
+	// mklink reads a `/` in a path as the start of an option
+	#[cfg(windows)]
+	let backslashed = |p: &Path| p.components().collect::<PathBuf>();
+	#[cfg(windows)]
+	let made = std::process::Command::new("cmd")
+		.arg("/C")
+		.arg("mklink")
+		.arg("/J")
+		.arg(backslashed(link))
+		.arg(backslashed(target))
+		.output()
+		.is_ok_and(|out| out.status.success());
+	#[cfg(not(windows))]
+	let made = std::os::unix::fs::symlink(target, link).is_ok();
+	if !made {
+		println!("skipped: could not make a junction at {}", link.display());
+	}
+	made
 }
 
 #[cfg(test)]
@@ -278,5 +362,35 @@ mod tests {
 		assert_eq!(image_id("77"), Some(77));
 		assert_eq!(image_id("Other/77"), Some(77));
 		assert_eq!(image_id("Images/sub/77"), Some(77));
+	}
+	/// A link anywhere below the root is refused, at the end of the path or
+	/// on the way; missing parts are fine, and so is a root that is a link.
+	#[test]
+	fn finds_links_in_a_path() {
+		let dir = crate::test_support::TempDir::new("paths_links");
+		let (root, outside) = (dir.join("ws"), dir.join("outside"));
+		std::fs::create_dir_all(root.join("Models/F")).unwrap();
+		std::fs::create_dir_all(&outside).unwrap();
+		let check = |rel: &str| check_no_links(&root, Path::new(rel));
+		assert_eq!(check("Models/F/A.mesh"), Ok(()));
+		assert_eq!(check("Models/new/deeper/A.mesh"), Ok(()));
+		assert!(check("Models/../x").is_err());
+		if !junction(&root.join("Models/L"), &outside) {
+			return;
+		}
+		let error = check("Models/L/A.mesh").unwrap_err();
+		assert!(
+			error.starts_with("Models/L in the workspace is a link"),
+			"{error}"
+		);
+		assert!(check("Models/L").is_err());
+		assert_eq!(check("Models/F/A.mesh"), Ok(()));
+
+		let linked_root = dir.join("chosen");
+		if !junction(&linked_root, &root) {
+			return;
+		}
+		assert_eq!(check_no_links(&linked_root, Path::new("Models/F")), Ok(()));
+		assert!(check_no_links(&linked_root, Path::new("Models/L/A.mesh")).is_err());
 	}
 }

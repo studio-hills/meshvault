@@ -122,6 +122,7 @@ end
 HttpService = http
 
 game = Instance.new("DataModel", "Place")
+game.PlaceId = 4242
 local workspaceService = Instance.new("Workspace", "Workspace", game)
 Instance.new("MeshPart", "Sentinel", workspaceService, { MeshId = "rbxassetid://999", TextureID = "" })
 local storage = Instance.new("Folder", "ReplicatedStorage", game)
@@ -269,8 +270,27 @@ fn forward(port: u16, request: &Table) -> (u16, String) {
 	(status, body.to_string())
 }
 
-/// The meshes of an export as Meshvault reads it: (name, id, folder).
+/// The meshes of an export from the stand-in Studio as Meshvault reads it:
+/// (name, id, folder below the game). Schema 2 names the place it came
+/// from, and its game heads every folder.
 fn meshes(json: &str, schema: u32) -> Vec<(String, u64, String)> {
+	let origin = match schema {
+		1 => export_file::Origin::default(),
+		_ => export_file::Origin {
+			game: Some("Place".into()),
+			place_id: Some(4242),
+		},
+	};
+	meshes_from(json, schema, &origin)
+}
+
+/// The meshes of an export from `origin` as Meshvault reads it, as for
+/// [`meshes`].
+fn meshes_from(
+	json: &str,
+	schema: u32,
+	origin: &export_file::Origin,
+) -> Vec<(String, u64, String)> {
 	let header: serde_json::Value = serde_json::from_str(json).unwrap();
 	assert_eq!(header["SchemaVersion"], schema, "{json}");
 	let export = export_file::parse(json).unwrap();
@@ -278,10 +298,14 @@ fn meshes(json: &str, schema: u32) -> Vec<(String, u64, String)> {
 		export.models.is_empty() && export.skipped.is_empty(),
 		"{json}"
 	);
+	assert_eq!(&export.origin, origin, "{json}");
 	export
 		.entries
 		.into_iter()
-		.map(|e| (e.name, e.mesh_id, e.folder.join("/")))
+		.map(|e| {
+			let below = &e.folder[usize::from(origin.game.is_some())..];
+			(e.name, e.mesh_id, below.join("/"))
+		})
 		.collect()
 }
 
@@ -380,7 +404,9 @@ fn keeping_the_export_then_sending_it() {
 		let (sent, reply): (bool, String) = send.call(&other).unwrap();
 		assert!(sent, "schema {v}: {reply}");
 		let elsewhere = ("Other".to_string(), 321, "Elsewhere".to_string());
-		assert_eq!(meshes(&studio.received(), v), [elsewhere], "schema {v}");
+		// written by hand, it names no place
+		let received = meshes_from(&studio.received(), v, &export_file::Origin::default());
+		assert_eq!(received, [elsewhere], "schema {v}");
 
 		// JSON text is sent as it is
 		let text = format!(

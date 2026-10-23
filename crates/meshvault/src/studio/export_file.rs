@@ -8,6 +8,10 @@
 //!   transforms; both read into the same types.
 //!
 //! Missing fields and empty strings both mean "none".
+//!
+//! Schema 2 exports also name the place they came from (`GameName`,
+//! `PlaceId`): the game becomes the top folder of everything imported from
+//! it, and its place is sent with the downloads.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -67,7 +71,19 @@ pub struct Entry {
 	pub source_id: Option<u32>,
 }
 
+/// Where an export came from: the place it was exported from, in schema 2.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Origin {
+	/// `game.Name`; the top folder of everything imported from it.
+	pub game: Option<String>,
+	/// `game.PlaceId`, sent as `Roblox-Place-Id` with its downloads. An
+	/// unpublished place's 0 is `None`.
+	pub place_id: Option<u64>,
+}
+
 pub struct Export {
+	/// Where it came from; entries' folders already start with its game.
+	pub origin: Origin,
 	pub entries: Vec<Entry>,
 	/// Animated models (schemas 1 and 2).
 	pub models: Vec<AnimatedModel>,
@@ -85,6 +101,10 @@ struct Header {
 
 #[derive(Deserialize)]
 struct Document {
+	#[serde(rename = "GameName", default)]
+	game_name: Option<String>,
+	#[serde(rename = "PlaceId", default)]
+	place_id: Option<u64>,
 	#[serde(rename = "Meshes")]
 	meshes: Vec<RawEntry>,
 	#[serde(rename = "Models")]
@@ -121,7 +141,7 @@ pub fn parse(text: &str) -> Result<Export, String> {
 	if json.starts_with('[') {
 		let raw: Vec<RawEntry> =
 			serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
-		return Ok(convert(raw, Vec::new()));
+		return Ok(convert(raw, Vec::new(), Origin::default()));
 	}
 	let header: Header =
 		serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
@@ -138,10 +158,17 @@ pub fn parse(text: &str) -> Result<Export, String> {
 	}
 	let doc: Document = serde_json::from_str(json)
 		.map_err(|e| format!("Not a valid schema {version} export: {e}"))?;
-	Ok(convert(doc.meshes, doc.models))
+	let origin = Origin {
+		game: doc
+			.game_name
+			.map(|g| g.trim().to_owned())
+			.filter(|g| !g.is_empty()),
+		place_id: doc.place_id.filter(|&id| id != 0),
+	};
+	Ok(convert(doc.meshes, doc.models, origin))
 }
 
-fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
+fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Export {
 	let mut entries = Vec::with_capacity(raw.len());
 	let mut skipped = Vec::new();
 	let mut warnings = Vec::new();
@@ -171,12 +198,17 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
 				)),
 			}
 		}
-		let folder = r
-			.folder
-			.split('/')
-			.map(str::trim)
-			.filter(|s| !s.is_empty())
-			.map(String::from)
+		let folder = origin
+			.game
+			.iter()
+			.cloned()
+			.chain(
+				r.folder
+					.split('/')
+					.map(str::trim)
+					.filter(|s| !s.is_empty())
+					.map(String::from),
+			)
 			.collect();
 		entries.push(Entry {
 			name: r.name,
@@ -187,6 +219,7 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>) -> Export {
 		});
 	}
 	Export {
+		origin,
 		entries,
 		models,
 		skipped,
@@ -317,6 +350,37 @@ mod tests {
 		let v1 = parse(&json.replace("\"SchemaVersion\":2", "\"SchemaVersion\":1")).unwrap();
 		assert_eq!(v1.models.len(), 1);
 		assert_eq!(v1.models[0].scale, Some(0.25));
+	}
+
+	/// A schema 2 export names its place: the game heads every folder, and
+	/// an unpublished place (0) has no place id.
+	#[test]
+	fn the_place_heads_the_folders() {
+		let json = |game: &str, place: u64| {
+			format!(
+				r#"{{"SchemaVersion":2,"GameName":"{game}","PlaceId":{place},
+				"Meshes":[{{"Id":1,"Name":"Body","MeshId":"rbxassetid://10","Folder":"RS/Wolf"}}],
+				"Models":[]}}"#
+			)
+		};
+		let export = parse(&json(" Pet Sim ", 1234)).unwrap();
+		assert_eq!(
+			export.origin,
+			Origin {
+				game: Some("Pet Sim".into()),
+				place_id: Some(1234),
+			}
+		);
+		assert_eq!(export.entries[0].folder, ["Pet Sim", "RS", "Wolf"]);
+		let unpublished = parse(&json("Place1", 0)).unwrap();
+		assert_eq!(unpublished.origin.place_id, None);
+		// an empty name, or none (older exports), adds no folder
+		let nameless = parse(&json("", 5)).unwrap();
+		assert_eq!(nameless.origin.game, None);
+		assert_eq!(nameless.entries[0].folder, ["RS", "Wolf"]);
+		let older = parse(r#"{"SchemaVersion":1,"Meshes":[{"Id":1,"Name":"B","MeshId":"rbxassetid://1","Folder":"X"}],"Models":[]}"#).unwrap();
+		assert_eq!(older.origin, Origin::default());
+		assert_eq!(older.entries[0].folder, ["X"]);
 	}
 
 	#[test]

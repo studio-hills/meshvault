@@ -12,14 +12,14 @@ use eframe::egui::{self, Align, Layout, RichText};
 
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
-use crate::studio::export_file::{Entry, Export};
+use crate::studio::export_file::{Entry, Export, Origin};
 use crate::ui::format::plural;
 use crate::ui::icons;
 use crate::ui::library::{folder_matches, mesh_name_or_id_matches};
 use crate::ui::theme::{ROW, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::widgets;
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, model_folder};
 
 /// One line of the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +42,10 @@ pub struct ImportDialog {
 	entries: Vec<Entry>,
 	/// Entries already in the workspace.
 	existing: Vec<bool>,
+	/// The place the export came from.
+	origin: Origin,
 	models: Vec<AnimatedModel>,
-	/// Models already in the workspace (same instance path).
+	/// Models already in the workspace (see `Workspace::find_model`).
 	model_existing: Vec<bool>,
 	/// Entry indices of the meshes each model uses.
 	model_meshes: Vec<Vec<usize>>,
@@ -80,6 +82,8 @@ const CHECKBOX_INDENT: f32 = 22.0;
 pub enum Outcome {
 	Cancel,
 	Import {
+		/// The place the export came from.
+		origin: Origin,
 		/// Selected entries, with `maps` narrowed to what will be downloaded.
 		entries: Vec<Entry>,
 		/// Selected animated models; their meshes are among `entries`.
@@ -90,22 +94,17 @@ pub enum Outcome {
 
 impl ImportDialog {
 	pub fn new(source: PathBuf, export: Export, workspace: &Workspace) -> Self {
-		let in_ws: HashSet<(&[String], &str, u64)> = workspace
-			.items()
-			.iter()
-			.map(|i| (i.folder.as_slice(), i.name.as_str(), i.mesh_id))
-			.collect();
+		// what the workspace already has, as importing will find it
+		let origin = &export.origin;
 		let existing: Vec<bool> = export
 			.entries
 			.iter()
-			.map(|e| in_ws.contains(&(e.folder.as_slice(), e.name.as_str(), e.mesh_id)))
+			.map(|e| workspace.find_entry(e, origin).is_some())
 			.collect();
-		let model_paths: HashSet<&str> =
-			workspace.models().iter().map(|m| m.path.as_str()).collect();
 		let model_existing = export
 			.models
 			.iter()
-			.map(|m| model_paths.contains(m.path.as_str()))
+			.map(|m| workspace.find_model(&m.path, origin).is_some())
 			.collect();
 
 		let by_source: HashMap<u32, usize> = export
@@ -134,15 +133,8 @@ impl ImportDialog {
 		let mut rows = Vec::new();
 		let mut folders: Vec<Vec<String>> = Vec::new();
 		for (i, m) in export.models.iter().enumerate() {
-			let mut folder: Vec<String> = m
-				.path
-				.split('/')
-				.filter(|s| !s.is_empty())
-				.map(String::from)
-				.collect();
-			folder.pop();
 			rows.push(Row::Model(i));
-			folders.push(folder);
+			folders.push(model_folder(origin, &m.path));
 		}
 		for (i, e) in export.entries.iter().enumerate() {
 			if !used.contains(&i) {
@@ -161,6 +153,7 @@ impl ImportDialog {
 			existing,
 			model_existing,
 			model_meshes,
+			origin: export.origin,
 			models: export.models,
 			entries: export.entries,
 			skipped: export.skipped,
@@ -488,6 +481,7 @@ impl ImportDialog {
 						.map(|(_, m)| m)
 						.collect();
 					outcome = Some(Outcome::Import {
+						origin: self.origin.clone(),
 						entries: entries
 							.iter()
 							.zip(chosen)

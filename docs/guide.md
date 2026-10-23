@@ -60,8 +60,9 @@ them: Studio, Daylight, Overcast, Sunset, Night (so a model's own lights stand o
 
 ## The library
 
-The library shows the workspace's models, either as the export's folder tree
-or as a grid of thumbnails grouped by folder (the button beside the title
+The library shows the workspace's models, grouped by the game they were
+exported from, either as the export's folder tree or as a grid of thumbnails
+grouped by folder (the button beside the title
 switches). Each thumbnail is drawn once, when it first scrolls into view, and
 kept in the workspace's `.cache/thumbnails`.
 
@@ -84,7 +85,8 @@ an export and downloading.
 
 Schema 1 and 2 exports list animated models in the import dialog; selecting
 one also selects the meshes its parts use. In the library they appear under
-Animated models. Click one to play it, or open its `.rig.json` while its
+Animated models (with a heading per game when they come from more than one).
+Click one to play it, or open its `.rig.json` while its
 workspace is open. A `.rig.json` from elsewhere is imported into a workspace
 like any export.
 

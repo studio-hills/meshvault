@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use crate::anim::schema::AnimatedModel;
 use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
-use crate::studio::export_file::Entry;
+use crate::studio::export_file::{Entry, Origin};
 
 pub use self::manifest::{AssetState, Item, MapRef, ModelItem, ModelVersion};
 use self::manifest::{MANIFEST_VERSION, Manifest};
@@ -63,11 +63,45 @@ impl AssetKind {
 pub struct Job {
 	pub asset_id: u64,
 	pub targets: Vec<(String, AssetKind)>,
+	/// The place to send with the download: that of the first item or
+	/// model wanting it that has one.
+	pub place_id: Option<u64>,
 }
 
 impl Job {
 	pub fn wants_image(&self) -> bool {
 		self.targets.iter().any(|(_, k)| k.is_image())
+	}
+}
+
+/// Where a model from an export shows in the library: its game, then the
+/// folder holding its instance.
+pub fn model_folder(origin: &Origin, path: &str) -> Vec<String> {
+	let mut folder: Vec<String> = origin
+		.game
+		.iter()
+		.cloned()
+		.chain(path.split('/').filter(|s| !s.is_empty()).map(String::from))
+		.collect();
+	folder.pop();
+	folder
+}
+
+/// Whether something stored with `game` in `folder` is where an export
+/// from `origin` puts `entry_folder` (which starts with the export's game,
+/// when it names one). Something imported before exports named their game
+/// is there when it was in the same folder below the game.
+fn same_place(
+	game: Option<&str>,
+	folder: &[String],
+	origin: &Origin,
+	entry_folder: &[String],
+) -> bool {
+	match (game, origin.game.as_deref()) {
+		(None, Some(g)) => {
+			entry_folder.first().is_some_and(|f| f == g) && folder == &entry_folder[1..]
+		}
+		_ => game == origin.game.as_deref() && folder == entry_folder,
 	}
 }
 
@@ -230,7 +264,10 @@ impl Workspace {
 	/// were added.
 	#[cfg(test)]
 	pub(crate) fn add(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
-		let added = entries.into_iter().filter(|e| self.add_entry(e).1).count();
+		let added = entries
+			.into_iter()
+			.filter(|e| self.add_entry(e, &Origin::default()).1)
+			.count();
 		self.generation += 1;
 		added
 	}
@@ -250,7 +287,11 @@ impl Workspace {
 	/// being duplicated, so re-importing an export is safe. An entry whose
 	/// maps conflict with the item's is a separate item. Returns the stem of
 	/// its item and whether the item is new.
-	pub fn add_entry(&mut self, entry: &Entry) -> (String, bool) {
+	///
+	/// An item imported before exports named their game is the same item,
+	/// and moves into its game's folder (its files stay where they are). The
+	/// item keeps the place it was last imported from, for its downloads.
+	pub fn add_entry(&mut self, entry: &Entry, origin: &Origin) -> (String, bool) {
 		let maps = entry.maps.iter().map(|(&kind, &id)| {
 			(
 				kind,
@@ -260,16 +301,18 @@ impl Workspace {
 				},
 			)
 		});
-		// the same mesh with a different image is a different item
-		let existing = self.manifest.items.iter_mut().find(|i| {
-			i.folder == entry.folder
-				&& i.name == entry.name
-				&& i.mesh_id == entry.mesh_id
-				&& i.maps
-					.iter()
-					.all(|(k, m)| entry.maps.get(k).is_none_or(|&id| id == m.id))
-		});
-		if let Some(item) = existing {
+		if let Some(i) = self.find_entry(entry, origin) {
+			let item = &mut self.manifest.items[i];
+			if item.game.is_none() && origin.game.is_some() {
+				item.game = origin.game.clone();
+				item.folder = entry.folder.clone();
+				self.dirty = true;
+				self.generation += 1;
+			}
+			if origin.place_id.is_some() && item.place_id != origin.place_id {
+				item.place_id = origin.place_id;
+				self.dirty = true;
+			}
 			for (kind, map) in maps {
 				if let std::collections::btree_map::Entry::Vacant(slot) = item.maps.entry(kind) {
 					slot.insert(map);
@@ -280,38 +323,57 @@ impl Workspace {
 		}
 		let stem = self.unique_stem(MODELS_DIR, &entry.folder, &entry.name);
 		let maps = maps.collect();
-		self.manifest.items.push(Item::new(
+		let mut item = Item::new(
 			entry.name.clone(),
 			entry.folder.clone(),
 			entry.mesh_id,
 			stem.clone(),
 			maps,
-		));
+		);
+		item.game = origin.game.clone();
+		item.place_id = origin.place_id;
+		self.manifest.items.push(item);
 		self.dirty = true;
 		self.generation += 1;
 		(stem, true)
 	}
 
+	/// The item an export entry from `origin` is, if the workspace has it:
+	/// in the same place (see `same_place`), with the same name and mesh,
+	/// and no map id that differs from the item's (the same mesh with a
+	/// different image is a different item).
+	pub fn find_entry(&self, entry: &Entry, origin: &Origin) -> Option<usize> {
+		self.manifest.items.iter().position(|i| {
+			same_place(i.game.as_deref(), &i.folder, origin, &entry.folder)
+				&& i.name == entry.name
+				&& i.mesh_id == entry.mesh_id
+				&& i.maps
+					.iter()
+					.all(|(k, m)| entry.maps.get(k).is_none_or(|&id| id == m.id))
+		})
+	}
+
+	/// The stored model that an export's model at instance `path` from
+	/// `origin` is, if any: the same path from the same game, or one
+	/// imported before exports named their game.
+	pub fn find_model(&self, path: &str, origin: &Origin) -> Option<usize> {
+		self.manifest.models.iter().position(|m| {
+			m.path == path && (m.game == origin.game || (m.game.is_none() && origin.game.is_some()))
+		})
+	}
+
 	/// Stores an animated model. `meshes` are the entries its parts use, each
-	/// with the stem of the item holding it (from [`Self::add_entry`]). A model
-	/// with the same instance path is replaced. Returns whether it is new.
+	/// with the stem of the item holding it (from [`Self::add_entry`]). The
+	/// same model already stored (see [`Self::find_model`]) is replaced,
+	/// keeping its rig file. Returns whether it is new.
 	pub fn add_model(
 		&mut self,
 		model: &AnimatedModel,
 		meshes: &[(&Entry, String)],
+		origin: &Origin,
 	) -> Result<bool, String> {
-		let existing = self
-			.manifest
-			.models
-			.iter()
-			.position(|m| m.path == model.path);
-		let mut folder: Vec<String> = model
-			.path
-			.split('/')
-			.filter(|s| !s.is_empty())
-			.map(String::from)
-			.collect();
-		folder.pop();
+		let existing = self.find_model(&model.path, origin);
+		let folder = model_folder(origin, &model.path);
 		let file = match existing {
 			Some(i) => self.manifest.models[i].file.clone(),
 			None => format!(
@@ -343,6 +405,8 @@ impl Workspace {
 			name: model.name.clone(),
 			path: model.path.clone(),
 			folder,
+			game: origin.game.clone(),
+			place_id: origin.place_id,
 			file,
 			meshes: meshes
 				.iter()
@@ -436,38 +500,40 @@ impl Workspace {
 	pub fn pending_jobs(&self) -> Vec<Job> {
 		let mut jobs: Vec<Job> = Vec::new();
 		let mut index = HashMap::new();
-		let mut push = |asset_id: u64, stem: &String, kind: AssetKind| {
+		let mut push = |asset_id: u64, stem: &String, kind: AssetKind, place_id: Option<u64>| {
 			let i = *index.entry(asset_id).or_insert_with(|| {
 				jobs.push(Job {
 					asset_id,
 					targets: Vec::new(),
+					place_id: None,
 				});
 				jobs.len() - 1
 			});
 			jobs[i].targets.push((stem.clone(), kind));
+			jobs[i].place_id = jobs[i].place_id.or(place_id);
 		};
 		for item in &self.manifest.items {
 			if item.mesh == AssetState::Pending {
-				push(item.mesh_id, &item.stem, AssetKind::Mesh);
+				push(item.mesh_id, &item.stem, AssetKind::Mesh, item.place_id);
 			}
 			for (&kind, map) in &item.maps {
 				if map.state == AssetState::Pending {
-					push(map.id, &item.stem, AssetKind::Map(kind));
+					push(map.id, &item.stem, AssetKind::Map(kind), item.place_id);
 				}
 			}
 		}
-		let mut images: Vec<u64> = self
-			.manifest
-			.models
-			.iter()
-			.flat_map(|m| &m.images)
-			.filter(|(_, state)| **state == AssetState::Pending)
-			.map(|(&id, _)| id)
-			.collect();
-		images.sort_unstable();
-		images.dedup();
-		for id in images {
-			push(id, &image_stem(id), AssetKind::Image);
+		// each image once, with the first place of the models wanting it
+		let mut images: BTreeMap<u64, Option<u64>> = BTreeMap::new();
+		for model in &self.manifest.models {
+			for (&id, state) in &model.images {
+				if *state == AssetState::Pending {
+					let place = images.entry(id).or_insert(None);
+					*place = place.or(model.place_id);
+				}
+			}
+		}
+		for (id, place_id) in images {
+			push(id, &image_stem(id), AssetKind::Image, place_id);
 		}
 		jobs
 	}
@@ -722,6 +788,8 @@ mod tests {
 			name: name.into(),
 			path: format!("Workspace/{name}"),
 			folder: Vec::new(),
+			game: None,
+			place_id: None,
 			file: format!("Rigs/{name}.rig.json"),
 			meshes: (0..).zip(stems.iter().map(|s| s.to_string())).collect(),
 			parts: stems.len(),
@@ -780,6 +848,121 @@ mod tests {
 			Some((0, "Fin".to_string()))
 		);
 		assert_eq!(ws.item_with_stem("Models/Leg"), None);
+	}
+
+	fn from(game: &str, place_id: Option<u64>) -> Origin {
+		Origin {
+			game: Some(game.into()),
+			place_id,
+		}
+	}
+
+	/// An export naming its place: its items go under the game's folder,
+	/// and remember the game and the place for their downloads.
+	#[test]
+	fn an_import_is_filed_under_its_game() {
+		let dir = TempDir::new("ws_game");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let pets = from("Pet Sim", Some(11));
+		let (stem, new) = ws.add_entry(&entry("Pet Sim/RS/Wolf", "Body", 1, &[]), &pets);
+		assert!(new);
+		assert_eq!(stem, "Models/Pet Sim/RS/Wolf/Body");
+		let item = &ws.items()[0];
+		assert_eq!(item.game.as_deref(), Some("Pet Sim"));
+		assert_eq!(item.place_id, Some(11));
+		// the same mesh in the same folder of another game is another item
+		let (stem, new) = ws.add_entry(&entry("Zoo/RS/Wolf", "Body", 1, &[]), &from("Zoo", None));
+		assert!(new);
+		assert_eq!(stem, "Models/Zoo/RS/Wolf/Body");
+		// and the same game again is the same item
+		let (_, new) = ws.add_entry(&entry("Pet Sim/RS/Wolf", "Body", 1, &[]), &pets);
+		assert!(!new);
+		assert_eq!(ws.items().len(), 2);
+	}
+
+	/// Items imported before exports named their game are the same items
+	/// when the export is imported again: they move under the game in the
+	/// library, keep their files, and take its place for downloads.
+	#[test]
+	fn older_items_are_adopted_by_their_game() {
+		let dir = TempDir::new("ws_adopt");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let (old_stem, _) = ws.add_entry(&entry("RS/Wolf", "Body", 1, &[]), &Origin::default());
+		let pets = from("Pet Sim", Some(11));
+		let again = entry("Pet Sim/RS/Wolf", "Body", 1, &[]);
+		assert_eq!(ws.find_entry(&again, &pets), Some(0));
+		let (stem, new) = ws.add_entry(&again, &pets);
+		assert!(!new);
+		assert_eq!(stem, old_stem);
+		let item = &ws.items()[0];
+		assert_eq!(item.folder, ["Pet Sim", "RS", "Wolf"]);
+		assert_eq!(item.game.as_deref(), Some("Pet Sim"));
+		assert_eq!(item.place_id, Some(11));
+		// once adopted it belongs to that game: another game's copy is new
+		let zoo = entry("Zoo/RS/Wolf", "Body", 1, &[]);
+		assert_eq!(ws.find_entry(&zoo, &from("Zoo", None)), None);
+		// and an export naming no game does not find it either
+		assert_eq!(
+			ws.find_entry(&entry("RS/Wolf", "Body", 1, &[]), &Origin::default()),
+			None
+		);
+	}
+
+	/// A model is the same model only from the same game (or, imported before
+	/// exports named their game, from any); each game's rig file is its own.
+	#[test]
+	fn models_are_told_apart_by_game() {
+		let dir = TempDir::new("ws_game_models");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let wolf = rig_model("Wolf", 1);
+		assert!(ws.add_model(&wolf, &[], &Origin::default()).unwrap());
+		let old_file = ws.models()[0].file.clone();
+		// adopted by the first game that brings it
+		let pets = from("Pet Sim", Some(11));
+		assert!(!ws.add_model(&wolf, &[], &pets).unwrap());
+		assert_eq!(ws.models().len(), 1);
+		let model = &ws.models()[0];
+		assert_eq!(model.file, old_file);
+		assert_eq!(model.folder, ["Pet Sim", "Workspace"]);
+		assert_eq!(
+			(model.game.as_deref(), model.place_id),
+			(Some("Pet Sim"), Some(11))
+		);
+		// another game's model at the same path is another model
+		assert!(ws.add_model(&wolf, &[], &from("Zoo", None)).unwrap());
+		assert_eq!(ws.models()[1].file, "Rigs/Zoo/Workspace/Wolf.rig.json");
+		assert_eq!(ws.find_model("Workspace/Wolf", &pets), Some(0));
+	}
+
+	/// Each download is sent with the place its asset was exported from.
+	#[test]
+	fn downloads_carry_their_place() {
+		let dir = TempDir::new("ws_place_jobs");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.add_entry(
+			&entry("A/X", "One", 1, &[(MapKind::Texture, 5)]),
+			&from("A", Some(11)),
+		);
+		ws.add_entry(&entry("X", "Two", 2, &[]), &Origin::default());
+		// the same mesh from two places: the first place that has one
+		ws.add_entry(&entry("X", "Again", 1, &[]), &Origin::default());
+		let mut model = rig_model("Wolf", 1);
+		model.parts[0].decals = vec![crate::anim::schema::DecalInfo {
+			texture: "rbxassetid://77".into(),
+			..Default::default()
+		}];
+		ws.add_model(&model, &[], &from("B", Some(22))).unwrap();
+		let place = |id| {
+			ws.pending_jobs()
+				.into_iter()
+				.find(|j| j.asset_id == id)
+				.unwrap()
+				.place_id
+		};
+		assert_eq!(place(1), Some(11));
+		assert_eq!(place(5), Some(11));
+		assert_eq!(place(2), None);
+		assert_eq!(place(77), Some(22));
 	}
 
 	#[test]
@@ -852,7 +1035,7 @@ mod tests {
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		let mut torso = entry("Workspace/Wolf", "Torso", 10, &[(MapKind::Color, 11)]);
 		torso.source_id = Some(1);
-		let (stem, new) = ws.add_entry(&torso);
+		let (stem, new) = ws.add_entry(&torso, &Origin::default());
 		assert!(new);
 		let model = AnimatedModel {
 			name: "Wolf".into(),
@@ -871,9 +1054,15 @@ mod tests {
 			],
 			..Default::default()
 		};
-		assert!(ws.add_model(&model, &[(&torso, stem.clone())]).unwrap());
+		assert!(
+			ws.add_model(&model, &[(&torso, stem.clone())], &Origin::default())
+				.unwrap()
+		);
 		// re-importing replaces it in place
-		assert!(!ws.add_model(&model, &[(&torso, stem.clone())]).unwrap());
+		assert!(
+			!ws.add_model(&model, &[(&torso, stem.clone())], &Origin::default())
+				.unwrap()
+		);
 		let m = ws.models()[0].clone();
 		assert_eq!(m.file, "Rigs/Workspace/Animals/Wolf.rig.json");
 		assert_eq!(m.folder, ["Workspace", "Animals"]);
@@ -912,13 +1101,15 @@ mod tests {
 	fn importing_a_model_again_replaces_its_rig_file_whole() {
 		let dir = TempDir::new("ws_rig_replace");
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+			.unwrap();
 		let rig = dir.join(&ws.models()[0].file);
 		let old = std::fs::read_to_string(&rig).unwrap();
 		let link = dir.join("old.rig.json");
 		std::fs::hard_link(&rig, &link).unwrap();
 
-		ws.add_model(&rig_model("Wolf", 2), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 2), &[], &Origin::default())
+			.unwrap();
 		assert_eq!(std::fs::read_to_string(&link).unwrap(), old);
 		let new = export_file::parse(&std::fs::read_to_string(&rig).unwrap()).unwrap();
 		assert_eq!(new.models[0].parts.len(), 2);
@@ -926,7 +1117,10 @@ mod tests {
 		// when the new file cannot be written, the old one and its record stay
 		std::fs::create_dir(dir.join("Rigs/Workspace/Wolf.rig.json.tmp")).unwrap();
 		let written = std::fs::read_to_string(&rig).unwrap();
-		assert!(ws.add_model(&rig_model("Wolf", 3), &[]).is_err());
+		assert!(
+			ws.add_model(&rig_model("Wolf", 3), &[], &Origin::default())
+				.is_err()
+		);
 		assert_eq!(std::fs::read_to_string(&rig).unwrap(), written);
 		assert_eq!(ws.models()[0].parts, 2);
 	}
@@ -939,10 +1133,16 @@ mod tests {
 		let mut ws = Workspace::create(&dir, "Test").unwrap();
 		// a file where the Rigs folder should be
 		std::fs::write(dir.join("Rigs"), b"x").unwrap();
-		assert!(ws.add_model(&rig_model("Wolf", 1), &[]).is_err());
+		assert!(
+			ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+				.is_err()
+		);
 		assert!(ws.models().is_empty());
 		std::fs::remove_file(dir.join("Rigs")).unwrap();
-		assert!(ws.add_model(&rig_model("Wolf", 1), &[]).unwrap());
+		assert!(
+			ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+				.unwrap()
+		);
 		assert_eq!(ws.models()[0].file, "Rigs/Workspace/Wolf.rig.json");
 	}
 
@@ -969,8 +1169,8 @@ mod tests {
 			}],
 			..Default::default()
 		};
-		ws.add_model(&model("A"), &[]).unwrap();
-		ws.add_model(&model("B"), &[]).unwrap();
+		ws.add_model(&model("A"), &[], &Origin::default()).unwrap();
+		ws.add_model(&model("B"), &[], &Origin::default()).unwrap();
 		// one job per image, for both models
 		let jobs = ws.pending_jobs();
 		assert_eq!(jobs.len(), 2);
@@ -996,7 +1196,7 @@ mod tests {
 		ws.retry_images();
 		assert_eq!(ws.image_counts(), (1, 0));
 		// importing again keeps what was downloaded
-		ws.add_model(&model("A"), &[]).unwrap();
+		ws.add_model(&model("A"), &[], &Origin::default()).unwrap();
 		assert_eq!(ws.models()[0].images[&77], done);
 		// a MaterialVariant's maps are downloaded the same way
 		let mut tiled = model("C");
@@ -1007,7 +1207,7 @@ mod tests {
 			normal_map: "rbxassetid://100".into(),
 			..Default::default()
 		});
-		ws.add_model(&tiled, &[]).unwrap();
+		ws.add_model(&tiled, &[], &Origin::default()).unwrap();
 		let images = &ws.models()[2].images;
 		assert!(images.contains_key(&99) && images.contains_key(&100) && images.contains_key(&77));
 	}
@@ -1154,8 +1354,8 @@ mod tests {
 			}),
 			..Default::default()
 		};
-		ws.add_model(&model("A"), &[]).unwrap();
-		ws.add_model(&model("B"), &[]).unwrap();
+		ws.add_model(&model("A"), &[], &Origin::default()).unwrap();
+		ws.add_model(&model("B"), &[], &Origin::default()).unwrap();
 		std::fs::create_dir_all(dir.join("Images")).unwrap();
 		std::fs::write(dir.join("Images/66.png"), b"x").unwrap();
 		let done = |id: u64| AssetState::Done {
@@ -1239,7 +1439,7 @@ mod tests {
 		assert!(cache.exists());
 		assert_eq!(ws.generation(), generation + 1);
 
-		let (stem, new) = ws.add_entry(&entry("F", "a", 1, &[]));
+		let (stem, new) = ws.add_entry(&entry("F", "a", 1, &[]), &Origin::default());
 		assert!(new);
 		assert_eq!(stem, "Models/F/a");
 	}
@@ -1275,11 +1475,12 @@ mod tests {
 		assert_eq!(a.mesh, done("Models/F/A.mesh"));
 		assert_eq!(a.maps[&MapKind::Color].state, AssetState::Pending);
 		assert!(!dir.join("Models/F/A.color.png").exists());
-		let (stem, _) = ws.add_entry(&entry("F", "A", 4, &[]));
+		let (stem, _) = ws.add_entry(&entry("F", "A", 4, &[]), &Origin::default());
 		assert_eq!(stem, "Models/F/A (2)");
 
 		// the same for a model's rig file
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+			.unwrap();
 		let rig = dir.join(&ws.models()[0].file);
 		std::fs::remove_file(&rig).unwrap();
 		std::fs::create_dir(&rig).unwrap();

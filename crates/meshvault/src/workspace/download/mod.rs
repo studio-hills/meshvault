@@ -391,10 +391,12 @@ fn worker(run: &Arc<Run>, tx: &Sender<Message>, ctx: &eframe::egui::Context) {
 		let bytes = match store::read_cache(root, asset_id) {
 			Some(bytes) => Ok(bytes),
 			None => {
-				match run
-					.client
-					.fetch_with_retry(asset_id, wants_image, &run.cancel)
-				{
+				match run.client.fetch_with_retry(
+					asset_id,
+					wants_image,
+					popped.place_id,
+					&run.cancel,
+				) {
 					Ok(bytes) => {
 						store::write_cache(root, asset_id, &bytes);
 						Ok(bytes)
@@ -617,7 +619,6 @@ mod test_server {
 			Credentials {
 				method,
 				secret: "SECRET".into(),
-				place_id: Some(77),
 			},
 			Endpoints {
 				open_cloud: format!("{base}/oc/"),
@@ -807,6 +808,7 @@ mod tests {
 				format!("Models/{asset_id}"),
 				crate::workspace::AssetKind::Mesh,
 			)],
+			place_id: None,
 		};
 		let run = Arc::new(Run::new(
 			PathBuf::new(),
@@ -831,6 +833,7 @@ mod tests {
 		Job {
 			asset_id,
 			targets: vec![(stem.into(), crate::workspace::AssetKind::Mesh)],
+			place_id: None,
 		}
 	}
 
@@ -1063,6 +1066,41 @@ mod tests {
 		);
 	}
 
+	/// Each asset is fetched with the place it was exported from, if any,
+	/// which lets an account that can edit the place fetch its private
+	/// assets.
+	#[test]
+	fn assets_are_fetched_with_their_place() {
+		let dir = TempDir::new("download_place");
+		let assets = Assets::new(&[(1, b"version 4.00\nONE"), (2, b"version 4.00\nTWO")]);
+		let ctx = eframe::egui::Context::default();
+		let mut downloader = Downloader::default();
+		let mut from_place = mesh_job(1, "Models/One");
+		from_place.place_id = Some(4242);
+		downloader.start(
+			&ctx,
+			dir.to_path_buf(),
+			assets.client(),
+			vec![from_place, mesh_job(2, "Models/Two")],
+			1,
+		);
+		run_to_end(&mut downloader, &dir);
+		let log = assets.api.log.lock().unwrap();
+		let request = |id: u64| {
+			let line = format!("GET /oc/{id} ");
+			log.iter()
+				.find(|r| r.starts_with(&line))
+				.unwrap()
+				.to_lowercase()
+		};
+		assert!(
+			request(1).contains("roblox-place-id: 4242"),
+			"{}",
+			request(1)
+		);
+		assert!(!request(2).contains("roblox-place-id"), "{}", request(2));
+	}
+
 	/// Jobs queued with a new credential are fetched with it, not by
 	/// workers still holding the old one (B01).
 	#[test]
@@ -1085,7 +1123,6 @@ mod tests {
 			Credentials {
 				method: AuthMethod::ApiKey,
 				secret: "OTHER".into(),
-				place_id: Some(77),
 			},
 			Endpoints {
 				open_cloud: format!("{}/oc/", assets.api.base),
@@ -1418,6 +1455,7 @@ mod tests {
 				("Models/One".into(), crate::workspace::AssetKind::Mesh),
 				("Models/One copy".into(), crate::workspace::AssetKind::Mesh),
 			],
+			place_id: None,
 		}];
 		downloader.start(&ctx, root, assets.client(), jobs, 2);
 		assert_eq!(downloader.total, 1);

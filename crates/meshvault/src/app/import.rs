@@ -59,6 +59,7 @@ impl App {
 
 	pub fn finish_import(&mut self, outcome: import::Outcome) {
 		let import::Outcome::Import {
+			origin,
 			entries,
 			models,
 			download_now,
@@ -73,7 +74,7 @@ impl App {
 		let mut added = 0;
 		let mut stems = HashMap::new();
 		for entry in &entries {
-			let (stem, new) = ws.add_entry(entry);
+			let (stem, new) = ws.add_entry(entry, &origin);
 			added += usize::from(new);
 			if let Some(id) = entry.source_id {
 				stems.insert(id, stem);
@@ -95,7 +96,7 @@ impl App {
 				.iter()
 				.filter_map(|r| Some((*by_id.get(r)?, stems.get(r)?.clone())))
 				.collect();
-			match ws.add_model(model, &meshes) {
+			match ws.add_model(model, &meshes, &origin) {
 				Ok(_) => rigs += 1,
 				Err(e) => self.toasts.error(format!("{}: {e}", model.name)),
 			}

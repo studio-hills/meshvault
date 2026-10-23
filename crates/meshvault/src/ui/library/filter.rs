@@ -149,6 +149,8 @@ mod tests {
 			name: name.into(),
 			path: path.into(),
 			folder: Vec::new(),
+			game: None,
+			place_id: None,
 			file: format!("Rigs/{name}.rig.json"),
 			meshes: stems
 				.iter()

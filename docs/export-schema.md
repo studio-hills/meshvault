@@ -9,7 +9,7 @@ Meshvault reads three layouts:
 | --- | --- | --- |
 | 0 | An array of mesh entries | The original layout: meshes and their maps only |
 | 1 | `{ "SchemaVersion": 1, "Meshes": [...], "Models": [...] }` | Animated models: parts, joints, bones and clips |
-| 2 | The same, with `"SchemaVersion": 2` | Model scale, part appearance, SpecialMesh, captured joint poses, clothing, decals, MaterialVariants, lights |
+| 2 | The same, with `"SchemaVersion": 2` | The place it came from, model scale, part appearance, SpecialMesh, captured joint poses, clothing, decals, MaterialVariants, lights |
 
 Other `SchemaVersion` values are refused, with a message naming the versions
 this build reads. The Studio exporter writes schema 2.
@@ -33,6 +33,16 @@ General rules:
   `ReplicatedStorage/Pets/Wolf/Head`.
 - Studio output split into `=== JSON CHUNK i/n ===` blocks (ending with
   `=== END JSON EXPORT ===`) can be imported as it is.
+
+## The place (schema 2)
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `GameName` | string | `game.Name`. Everything imported from the export goes under a folder of this name, so the library groups imports by game |
+| `PlaceId` | integer | `game.PlaceId`, sent as `Roblox-Place-Id` when downloading the export's assets. 0 (an unpublished place) means none |
+
+Both are optional: an export without them imports as before, with no game
+folder and no place id.
 
 ## Mesh entries
 

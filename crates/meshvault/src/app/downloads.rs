@@ -11,11 +11,11 @@ const DOWNLOAD_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 
 impl App {
 	pub fn open_settings(&mut self, notice: Option<String>) {
-		let test_id = self
+		let test_asset = self
 			.workspace
 			.as_ref()
-			.and_then(|ws| ws.items().first().map(|i| i.mesh_id));
-		let mut dialog = SettingsDialog::new(&self.config, test_id);
+			.and_then(|ws| ws.items().first().map(|i| (i.mesh_id, i.place_id)));
+		let mut dialog = SettingsDialog::new(&self.config, test_asset);
 		dialog.notice = notice;
 		self.settings = Some(dialog);
 	}

@@ -55,6 +55,14 @@ pub struct Item {
 	/// Maps selected for import. Maps that were not selected are absent.
 	#[serde(default)]
 	pub maps: BTreeMap<MapKind, MapRef>,
+	/// The game it was imported from (its `folder` starts with it), or
+	/// `None` for exports that do not name one and items imported before
+	/// exports did.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub game: Option<String>,
+	/// The place it was exported from, sent with its downloads.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub place_id: Option<u64>,
 	// Version 1 manifests stored only a texture; migrated into `maps` on open.
 	#[serde(default, skip_serializing)]
 	texture_id: Option<u64>,
@@ -78,6 +86,8 @@ impl Item {
 			stem,
 			mesh: AssetState::Pending,
 			maps,
+			game: None,
+			place_id: None,
 			texture_id: None,
 			texture: None,
 		}
@@ -112,9 +122,17 @@ impl Item {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelItem {
 	pub name: String,
-	/// Roblox instance path; identifies the model when an export is re-imported.
+	/// Roblox instance path; with `game`, identifies the model when an export
+	/// is re-imported.
 	pub path: String,
+	/// Where it shows in the library: its game, then its instance's folder.
 	pub folder: Vec<String>,
+	/// The game it was imported from, as for [`Item::game`].
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub game: Option<String>,
+	/// The place it was exported from, sent with its images' downloads.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub place_id: Option<u64>,
 	/// The stored model record, relative to the workspace root.
 	pub file: String,
 	/// `Parts[].MeshRef` to the stem of the item holding that mesh.

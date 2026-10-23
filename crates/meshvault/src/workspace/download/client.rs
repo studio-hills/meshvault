@@ -26,8 +26,6 @@ pub enum AuthMethod {
 pub struct Credentials {
 	pub method: AuthMethod,
 	pub secret: String,
-	/// Sent as `Roblox-Place-Id`; lets you fetch assets used in a place you can edit.
-	pub place_id: Option<u64>,
 }
 
 // The secret must never end up in logs or error messages.
@@ -35,7 +33,6 @@ impl std::fmt::Debug for Credentials {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("Credentials")
 			.field("method", &self.method)
-			.field("place_id", &self.place_id)
 			.finish_non_exhaustive()
 	}
 }
@@ -118,7 +115,7 @@ fn status_error(status: u16, retry_after: Option<Duration>, method: AuthMethod) 
 		}),
 		403 => FetchError::Permanent(
 			"Access denied (403): your account cannot access this asset. \
-			Setting a Place ID for a place that uses it may help."
+			Importing it from an export of a place that uses it may help."
 				.into(),
 		),
 		404 => FetchError::Permanent("Asset not found (404)".into()),
@@ -192,12 +189,11 @@ impl Client {
 		}
 	}
 
-	/// Whether `other` sends the same credential to the same places.
+	/// Whether `other` sends the same credential to the same endpoints.
 	pub fn same_as(&self, other: &Client) -> bool {
 		let (a, b) = (&self.credentials, &other.credentials);
 		a.method == b.method
 			&& a.secret == b.secret
-			&& a.place_id == b.place_id
 			&& self.endpoints.open_cloud == other.endpoints.open_cloud
 			&& self.endpoints.asset_delivery == other.endpoints.asset_delivery
 	}
@@ -219,8 +215,10 @@ impl Client {
 		read_body(&mut response)
 	}
 
-	/// Downloads the raw content of one asset.
-	pub fn fetch_raw(&self, asset_id: u64) -> Result<Vec<u8>, FetchError> {
+	/// Downloads the raw content of one asset. `place_id`, the place it was
+	/// exported from, is sent as `Roblox-Place-Id`, which lets an account
+	/// that can edit the place fetch assets private to it.
+	pub fn fetch_raw(&self, asset_id: u64, place_id: Option<u64>) -> Result<Vec<u8>, FetchError> {
 		let c = &self.credentials;
 		let request = match c.method {
 			AuthMethod::ApiKey => self
@@ -234,7 +232,7 @@ impl Client {
 					.header("Cookie", format!(".ROBLOSECURITY={cookie}"))
 			}
 		};
-		let request = match c.place_id {
+		let request = match place_id {
 			Some(place) => request.header("Roblox-Place-Id", place.to_string()),
 			None => request,
 		};
@@ -273,14 +271,19 @@ impl Client {
 
 	/// Downloads an asset. When an image is wanted, Decal ids are resolved
 	/// to the image they wrap.
-	pub fn fetch(&self, asset_id: u64, want_image: bool) -> Result<Vec<u8>, FetchError> {
-		let bytes = self.fetch_raw(asset_id)?;
+	pub fn fetch(
+		&self,
+		asset_id: u64,
+		want_image: bool,
+		place_id: Option<u64>,
+	) -> Result<Vec<u8>, FetchError> {
+		let bytes = self.fetch_raw(asset_id, place_id)?;
 		if want_image
 			&& bytes.starts_with(b"<roblox")
 			&& let Some(image_id) = decal_image_id(&bytes)
 			&& image_id != asset_id
 		{
-			return self.fetch_raw(image_id);
+			return self.fetch_raw(image_id, place_id);
 		}
 		Ok(bytes)
 	}
@@ -290,11 +293,12 @@ impl Client {
 		&self,
 		asset_id: u64,
 		want_image: bool,
+		place_id: Option<u64>,
 		cancel: &AtomicBool,
 	) -> Result<Vec<u8>, FetchError> {
 		let mut attempt = 0;
 		loop {
-			match self.fetch(asset_id, want_image) {
+			match self.fetch(asset_id, want_image, place_id) {
 				Err(FetchError::Transient(msg, wait)) if attempt < MAX_RETRIES => {
 					let wait = wait.unwrap_or(Duration::from_millis(BACKOFF_BASE_MS << attempt));
 					attempt += 1;
@@ -355,11 +359,15 @@ mod tests {
 			format!(r#"{{"location":"{}/cdn/5"}}"#, cdn.base).into_bytes(),
 		)]);
 		let c = client(&api.base, AuthMethod::ApiKey);
-		let bytes = c.fetch(5, false).unwrap();
+		let bytes = c.fetch(5, false, Some(77)).unwrap();
 		assert_eq!(bytes, b"version 4.00\nDATA");
 		let api_req = api.log.lock().unwrap()[0].to_lowercase();
 		assert!(api_req.contains("x-api-key: secret"));
 		assert!(api_req.contains("roblox-place-id: 77"));
+		// an asset from an export that names no place is fetched without one
+		c.fetch(5, false, None).unwrap();
+		let api_req = api.log.lock().unwrap()[1].to_lowercase();
+		assert!(!api_req.contains("roblox-place-id"), "{api_req}");
 		let cdn_req = cdn.log.lock().unwrap()[0].to_lowercase();
 		assert!(!cdn_req.contains("secret"), "credentials leaked to CDN");
 	}
@@ -385,7 +393,7 @@ mod tests {
 			),
 		]);
 		let c = client(&server.base, AuthMethod::Cookie);
-		let bytes = c.fetch(10, true).unwrap();
+		let bytes = c.fetch(10, true, None).unwrap();
 		assert_eq!(
 			sniff_extension(&bytes, AssetKind::Map(MapKind::Color)),
 			"png"
@@ -404,17 +412,23 @@ mod tests {
 			("/oc/3", 429, vec![("Retry-After", "0".into())], vec![]),
 		]);
 		let c = client(&server.base, AuthMethod::ApiKey);
-		assert!(matches!(c.fetch(1, false), Err(FetchError::Auth(_))));
-		assert!(matches!(c.fetch(2, false), Err(FetchError::Permanent(_))));
+		assert!(matches!(c.fetch(1, false, None), Err(FetchError::Auth(_))));
 		assert!(matches!(
-			c.fetch(3, false),
+			c.fetch(2, false, None),
+			Err(FetchError::Permanent(_))
+		));
+		assert!(matches!(
+			c.fetch(3, false, None),
 			Err(FetchError::Transient(_, Some(_)))
 		));
-		assert!(matches!(c.fetch(4, false), Err(FetchError::Permanent(_))));
+		assert!(matches!(
+			c.fetch(4, false, None),
+			Err(FetchError::Permanent(_))
+		));
 		let cancel = AtomicBool::new(false);
 		// retries a few times then gives up
 		assert!(matches!(
-			c.fetch_with_retry(3, false, &cancel),
+			c.fetch_with_retry(3, false, None, &cancel),
 			Err(FetchError::Transient(..))
 		));
 	}
@@ -441,7 +455,7 @@ mod tests {
 			}
 		}));
 		let started = std::time::Instant::now();
-		let result = c.fetch_with_retry(3, false, &cancel);
+		let result = c.fetch_with_retry(3, false, None, &cancel);
 		// a watchdog only: the wait is 30 s, one slice is 0.1 s
 		assert!(started.elapsed() < WATCHDOG, "the 30 s wait ran on");
 		assert!(matches!(result, Err(FetchError::Transient(_, None))));
@@ -461,7 +475,7 @@ mod tests {
 		)]);
 		let c = client(&server.base, AuthMethod::ApiKey);
 		let cancel = AtomicBool::new(true);
-		let result = c.fetch_with_retry(3, false, &cancel);
+		let result = c.fetch_with_retry(3, false, None, &cancel);
 		assert!(matches!(result, Err(FetchError::Transient(_, None))));
 		assert_eq!(server.log.lock().unwrap().len(), 1);
 	}
@@ -498,7 +512,6 @@ mod tests {
 		let c = Credentials {
 			method: AuthMethod::Cookie,
 			secret: "TOPSECRET".into(),
-			place_id: None,
 		};
 		assert!(!format!("{c:?}").contains("TOPSECRET"));
 	}

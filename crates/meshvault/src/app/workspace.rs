@@ -360,6 +360,7 @@ impl App {
 mod tests {
 	use super::*;
 	use crate::anim::schema::AnimatedModel;
+	use crate::studio::export_file::Origin;
 	use crate::test_support::TempDir;
 
 	fn rig_model(name: &str, parts: usize) -> AnimatedModel {
@@ -378,7 +379,8 @@ mod tests {
 		let dir = TempDir::new("loading-model-reopen");
 		let root = dir.join("ws");
 		let mut ws = Workspace::create(&root, "ws").unwrap();
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+			.unwrap();
 		ws.save_if_dirty().unwrap();
 		let before = ws.models()[0].version;
 		let reopened = Workspace::open(&root).unwrap();
@@ -430,15 +432,18 @@ mod tests {
 	fn a_load_that_ends_after_a_reimport_is_read_again_then_shown() {
 		let dir = TempDir::new("loading-model-restart");
 		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
-		ws.add_model(&rig_model("Other", 1), &[]).unwrap();
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Other", 1), &[], &Origin::default())
+			.unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+			.unwrap();
 		let (loading, read, tx) = start(&ws, 1);
 		let (failing, _, failed) = start(&ws, 1);
 		// one more read of the old import, still going after the removal below
 		let (late, late_read, late_tx) = start(&ws, 1);
 		assert_eq!(outcome(loading.finish(Some(&ws))), "still loading");
 
-		ws.add_model(&rig_model("Wolf", 2), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 2), &[], &Origin::default())
+			.unwrap();
 		tx.send(read).unwrap();
 		assert_eq!(outcome(loading.finish(Some(&ws))), "read again at 1");
 		failed
@@ -470,13 +475,15 @@ mod tests {
 	fn a_load_that_ends_after_its_file_name_is_reused_is_dropped() {
 		let dir = TempDir::new("loading-model-reused");
 		let mut ws = Workspace::create(&dir.join("ws"), "ws").unwrap();
-		ws.add_model(&rig_model("Wolf", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default())
+			.unwrap();
 		let file = ws.models()[0].file.clone();
 		let (loading, read, tx) = start(&ws, 0);
 		let (failing, _, failed) = start(&ws, 0);
 
 		ws.remove_models(&[0]).unwrap();
-		ws.add_model(&rig_model("Wolf", 3), &[]).unwrap();
+		ws.add_model(&rig_model("Wolf", 3), &[], &Origin::default())
+			.unwrap();
 		assert_eq!(ws.models()[0].file, file);
 		tx.send(read).unwrap();
 		assert_eq!(outcome(loading.finish(Some(&ws))), "discarded");
@@ -491,7 +498,8 @@ mod tests {
 		);
 		// and a load whose model is removed with nothing put in its place is
 		// dropped too, though another model now has its place
-		ws.add_model(&rig_model("Other", 1), &[]).unwrap();
+		ws.add_model(&rig_model("Other", 1), &[], &Origin::default())
+			.unwrap();
 		let (loading, read, tx) = start(&ws, 0);
 		ws.remove_models(&[0]).unwrap();
 		assert_eq!(ws.models().len(), 1);

@@ -1,7 +1,9 @@
 # Workspaces and downloads
 
 A workspace is a folder of models downloaded from Roblox, laid out to mirror
-the folders of the [export](export-schema.md) they came from. Meshvault opens
+the folders of the [export](export-schema.md) they came from. Exports from
+Studio name their game, and everything imported from one goes under a folder
+named after the game, so a workspace can hold several games. Meshvault opens
 the most recent workspace when it starts; the workspace menu in the top bar
 switches between them, and the welcome screen lists the recent ones.
 
@@ -17,11 +19,15 @@ switches between them, and the welcome screen lists the recent ones.
 
 Importing an export again merges it with what is there:
 
-- A mesh entry with the same folder, name and mesh id as one already in the
-  workspace is the same model; newly picked maps are added to it. If one of
-  its maps has a different id, the entry becomes a separate model.
-- An animated model with the same `Path` replaces the saved one: its rig,
-  appearance and clips are those of the new export.
+- A mesh entry with the same game, folder, name and mesh id as one already in
+  the workspace is the same model; newly picked maps are added to it. If one
+  of its maps has a different id, the entry becomes a separate model.
+- An animated model from the same game with the same `Path` replaces the saved
+  one: its rig, appearance and clips are those of the new export.
+- The same mesh or model from another game is another model.
+- Models imported before exports named their game (or from exports that name
+  none) are taken in by the first game whose export has them: they move under
+  its folder in the library, and their files stay where they are.
 
 The app also takes a workspace folder and an export on the command line:
 `meshvault <workspace> <export.json>`.
@@ -44,16 +50,15 @@ the settings file.
 
 To try a credential before saving it, enter an asset id it should be able to
 download under *Test with asset id* and click Test. Testing does not save it.
-Forget deletes the saved credential.
-
-The same dialog has two optional settings:
-
-- **Place ID**: a place you can edit. It is sent as `Roblox-Place-Id`, which
-  can grant access to private assets used in that place.
-- **Parallel downloads**: from 1 to 8 (4 by default).
+Forget deletes the saved credential. The same dialog sets how many downloads
+run at once, from 1 to 8 (4 by default).
 
 ## Downloading
 
+- Each asset is requested with the place it was exported from (the export's
+  `PlaceId`, sent as `Roblox-Place-Id`). If your account can edit that place,
+  this lets it download assets private to the place. An unpublished place has
+  no place id, and exports that name none are downloaded without one.
 - Rate limits and server errors are retried.
 - Each asset id is downloaded once, even when several models or maps use it.
 - Decal ids are resolved to their image.
@@ -82,11 +87,11 @@ out of the workspace:
 ```text
 <workspace>/
   workspace.json                      the manifest: items and their download state
-  Models/<Folder>/<Name>.mesh         each mesh, in the export's folders
-  Models/<Folder>/<Name>.png          its TextureID, beside it
-  Models/<Folder>/<Name>.color.png    its SurfaceAppearance maps
+  Models/<Game>/<Folder>/<Name>.mesh  each mesh, under its game, in the export's folders
+  Models/<Game>/<Folder>/<Name>.png   its TextureID, beside it
+  Models/<Game>/<Folder>/<Name>.color.png   its SurfaceAppearance maps
                      .normal.png, .roughness.png, .metalness.png
-  Rigs/<Path>.rig.json                each animated model, as an export holding just that model
+  Rigs/<Game>/<Path>.rig.json         each animated model, as an export holding just that model
   Images/<asset id>.<ext>             decal, clothing and MaterialVariant images
   .cache/<asset id>                   one raw copy of each asset
   .cache/thumbnails/                  the library's pictures of models
@@ -98,13 +103,14 @@ Each file's extension comes from what was downloaded, so a map may be `.jpg`,
 `.bmp` or `.webp` rather than `.png`, and data Meshvault doesn't recognise is
 saved as `.bin`.
 When two models' files would have the same name, the later ones are numbered.
+Models from exports that name no game have no `<Game>` folder.
 
 The manifest has a format version (3 at present). A newer Meshvault upgrades an
 older workspace when it opens it.
 
 ## Settings
 
-Settings (theme, lighting, recent workspaces, credential type, place id,
-parallel downloads, the update check) are in `%APPDATA%\meshvault\config.json`. Meshvault writes
+Settings (theme, lighting, recent workspaces, credential type, parallel
+downloads, the update check) are in `%APPDATA%\meshvault\config.json`. Meshvault writes
 them when they change and when a workspace is opened. Deleting the file resets
 them; it holds no credentials.

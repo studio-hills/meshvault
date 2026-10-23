@@ -380,6 +380,8 @@ mod tests {
 			name: "Blocks".into(),
 			path: "Workspace.Blocks".into(),
 			folder: Vec::new(),
+			game: None,
+			place_id: None,
 			file: "Rigs/Blocks.rig.json".into(),
 			meshes: BTreeMap::new(),
 			parts: 3,

@@ -25,7 +25,6 @@ const MAX_RECENT: usize = 8;
 pub struct Config {
 	pub recent_workspaces: Vec<PathBuf>,
 	pub auth_method: AuthMethod,
-	pub place_id: Option<u64>,
 	pub concurrency: usize,
 	pub theme: ThemeMode,
 	/// How the 3D view is lit.
@@ -43,7 +42,6 @@ impl Default for Config {
 		Self {
 			recent_workspaces: Vec::new(),
 			auth_method: AuthMethod::ApiKey,
-			place_id: None,
 			concurrency: DEFAULT_CONCURRENCY,
 			theme: ThemeMode::Dark,
 			lighting: Default::default(),
@@ -429,7 +427,6 @@ mod tests {
 		let dir = TempDir::new("config");
 		let path = dir.join("meshvault").join("config.json");
 		let mut config = Config {
-			place_id: Some(42),
 			concurrency: 7,
 			theme: ThemeMode::Light,
 			..Default::default()
@@ -447,12 +444,12 @@ mod tests {
 		let primary = dir.join("meshvault").join("config.json");
 		let legacy = dir.join("rbx_mesh_gui").join("config.json");
 		std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-		let old = r#"{"place_id": 9, "concurrency": 2}"#;
+		let old = r#"{"concurrency": 9, "theme": "Light"}"#;
 		std::fs::write(&legacy, old).unwrap();
 
 		let config = load(Some(primary.clone()), Some(legacy.clone()));
-		assert_eq!(config.place_id, Some(9));
-		assert_eq!(config.concurrency, 2);
+		assert_eq!(config.concurrency, 9);
+		assert_eq!(config.theme, ThemeMode::Light);
 		// saved to the new path; the old file is left as it was
 		let saved: serde_json::Value =
 			serde_json::from_str(&std::fs::read_to_string(&primary).unwrap()).unwrap();
@@ -460,18 +457,18 @@ mod tests {
 		assert_eq!(std::fs::read_to_string(&legacy).unwrap(), old);
 
 		// from then on the new file is the one read
-		std::fs::write(&legacy, r#"{"place_id": 1}"#).unwrap();
+		std::fs::write(&legacy, r#"{"concurrency": 1}"#).unwrap();
 		let config = load(Some(primary), Some(legacy));
-		assert_eq!(config.place_id, Some(9));
+		assert_eq!(config.concurrency, 9);
 	}
 
 	#[test]
 	fn without_a_new_path_old_settings_load_but_are_not_saved() {
 		let dir = TempDir::new("config");
 		let legacy = dir.join("config.json");
-		std::fs::write(&legacy, r#"{"place_id": 9}"#).unwrap();
+		std::fs::write(&legacy, r#"{"concurrency": 9}"#).unwrap();
 		let config = load(None, Some(legacy));
-		assert_eq!(config.place_id, Some(9));
+		assert_eq!(config.concurrency, 9);
 		let files: Vec<_> = std::fs::read_dir(&*dir).unwrap().collect();
 		assert_eq!(files.len(), 1);
 	}
@@ -494,12 +491,12 @@ mod tests {
 		let path = dir.join("config.json");
 		std::fs::write(
 			&path,
-			r#"{"place_id": 5, "theme": "Light", "from_the_future": [1, 2]}"#,
+			r#"{"concurrency": 5, "theme": "Light", "from_the_future": [1, 2]}"#,
 		)
 		.unwrap();
 		let config = load(Some(path), None);
 		let expected = Config {
-			place_id: Some(5),
+			concurrency: 5,
 			theme: ThemeMode::Light,
 			..Default::default()
 		};
@@ -525,9 +522,9 @@ mod tests {
 		let path = dir.join("config.json");
 		// a valid field next to an unknown variant, a wrong type, or bad JSON
 		let texts = [
-			r#"{"place_id": 5, "theme": "Purple"}"#,
-			r#"{"place_id": 5, "concurrency": "four"}"#,
-			r#"{"place_id": 5,"#,
+			r#"{"concurrency": 5, "theme": "Purple"}"#,
+			r#"{"theme": "Light", "concurrency": "four"}"#,
+			r#"{"concurrency": 5,"#,
 		];
 		for text in texts {
 			std::fs::write(&path, text).unwrap();
@@ -554,9 +551,9 @@ mod tests {
 		let primary = dir.join("config.json");
 		let legacy = dir.join("old.json");
 		std::fs::write(&primary, "not json").unwrap();
-		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
+		std::fs::write(&legacy, r#"{"concurrency": 3}"#).unwrap();
 		let (config, problems) = Config::load_from(Some(primary.clone()), Some(legacy));
-		assert_eq!(config.place_id, Some(3));
+		assert_eq!(config.concurrency, 3);
 		assert_eq!(problems.len(), 1, "{problems:?}");
 		assert!(problems[0].contains("config.json.bad-"), "{problems:?}");
 		assert_eq!(kept(&dir), ["not json"]);
@@ -571,11 +568,11 @@ mod tests {
 		let path = dir.join("config.json");
 		std::fs::write(&path, "old").unwrap();
 		let mut config = Config {
-			place_id: Some(1),
+			concurrency: 1,
 			..Default::default()
 		};
 		config.save_to(&path).unwrap();
-		assert_eq!(load(Some(path.clone()), None).place_id, Some(1));
+		assert_eq!(load(Some(path.clone()), None).concurrency, 1);
 		let files: Vec<_> = std::fs::read_dir(&*dir).unwrap().collect();
 		assert_eq!(files.len(), 1);
 
@@ -592,13 +589,13 @@ mod tests {
 	fn a_failed_carry_over_is_reported() {
 		let dir = TempDir::new("config");
 		let legacy = dir.join("old.json");
-		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
+		std::fs::write(&legacy, r#"{"concurrency": 3}"#).unwrap();
 		// the new file cannot be made inside a file
 		std::fs::write(dir.join("file"), "").unwrap();
 		let primary = dir.join("file").join("config.json");
 		let (config, problems) = Config::load_from(Some(primary), Some(legacy));
 		// the old settings still load
-		assert_eq!(config.place_id, Some(3));
+		assert_eq!(config.concurrency, 3);
 		assert!(
 			problems
 				.iter()
@@ -621,7 +618,7 @@ mod tests {
 		let primary = dir.join("config.json");
 		let legacy = dir.join("old.json");
 		std::fs::write(&primary, "not json").unwrap();
-		std::fs::write(&legacy, r#"{"place_id": 3}"#).unwrap();
+		std::fs::write(&legacy, r#"{"concurrency": 3}"#).unwrap();
 		let held = std::fs::OpenOptions::new()
 			.read(true)
 			.share_mode(FILE_SHARE_READ)
@@ -629,7 +626,7 @@ mod tests {
 			.unwrap();
 
 		let (mut config, problems) = Config::load_from(Some(primary.clone()), Some(legacy));
-		assert_eq!(config.place_id, Some(3));
+		assert_eq!(config.concurrency, 3);
 		assert!(
 			problems
 				.iter()
@@ -648,9 +645,9 @@ mod tests {
 		assert_eq!(kept(&dir), ["not json"]);
 		assert_eq!(load(Some(primary.clone()), None).theme, ThemeMode::Light);
 		// and from then on saves replace the file as usual
-		config.place_id = Some(4);
+		config.concurrency = 4;
 		config.save_to(&primary).unwrap();
-		assert_eq!(load(Some(primary), None).place_id, Some(4));
+		assert_eq!(load(Some(primary), None).concurrency, 4);
 		assert_eq!(kept(&dir), ["not json"]);
 	}
 
@@ -672,11 +669,11 @@ mod tests {
 		let dir = TempDir::new("config");
 		let path = dir.join("config.json");
 		let mut first = Config {
-			place_id: Some(1),
+			concurrency: 1,
 			..Default::default()
 		};
 		let mut second = Config {
-			place_id: Some(2),
+			concurrency: 2,
 			..Default::default()
 		};
 		first
@@ -687,7 +684,7 @@ mod tests {
 					// the other app saves between this one writing its file and
 					// moving it into place
 					second.save_with(&path, || {}, || {}).unwrap();
-					assert_eq!(load(Some(path.clone()), None).place_id, Some(2));
+					assert_eq!(load(Some(path.clone()), None).concurrency, 2);
 					// and this one's file is still there, whole
 					let waiting: Vec<_> = names(&dir)
 						.into_iter()
@@ -696,13 +693,13 @@ mod tests {
 					assert_eq!(waiting.len(), 1, "{waiting:?}");
 					let text = std::fs::read_to_string(dir.join(&waiting[0])).unwrap();
 					assert_eq!(
-						serde_json::from_str::<Config>(&text).unwrap().place_id,
-						Some(1)
+						serde_json::from_str::<Config>(&text).unwrap().concurrency,
+						1
 					);
 				},
 			)
 			.unwrap();
-		assert_eq!(load(Some(path.clone()), None).place_id, Some(1));
+		assert_eq!(load(Some(path.clone()), None).concurrency, 1);
 		assert_eq!(names(&dir), ["config.json"]);
 
 		// a save that fails removes its own file and no other
@@ -725,9 +722,9 @@ mod tests {
 		kept
 	}
 
-	/// The place id in `text`, if it is a whole settings file.
-	fn place_id(text: &str) -> Option<u64> {
-		serde_json::from_str::<Config>(text).ok()?.place_id
+	/// The concurrency in `text`, if it is a whole settings file.
+	fn concurrency(text: &str) -> Option<usize> {
+		Some(serde_json::from_str::<Config>(text).ok()?.concurrency)
 	}
 
 	/// Two apps that both found the settings unreadable each keep what they
@@ -740,8 +737,8 @@ mod tests {
 		let dir = TempDir::new("config");
 		let path = dir.join("config.json");
 		std::fs::write(&path, "not json").unwrap();
-		let recovering = |place_id| Config {
-			place_id: Some(place_id),
+		let recovering = |concurrency| Config {
+			concurrency,
 			unreadable: Some(path.clone()),
 			..Default::default()
 		};
@@ -751,17 +748,17 @@ mod tests {
 				&path,
 				|| {
 					second.save_to(&path).unwrap();
-					assert_eq!(load(Some(path.clone()), None).place_id, Some(2));
+					assert_eq!(load(Some(path.clone()), None).concurrency, 2);
 				},
 				|| {},
 			)
 			.unwrap();
-		assert_eq!(load(Some(path.clone()), None).place_id, Some(1));
+		assert_eq!(load(Some(path.clone()), None).concurrency, 1);
 		// the original, and the other app's settings this one moved aside
 		let kept = kept(&dir);
 		assert_eq!(kept.len(), 2, "{kept:?}");
 		assert_eq!(kept[0], "not json");
-		assert_eq!(place_id(&kept[1]), Some(2), "{kept:?}");
+		assert_eq!(concurrency(&kept[1]), Some(2), "{kept:?}");
 		assert_eq!(names(&dir).len(), 3, "{:?}", names(&dir));
 	}
 
@@ -774,8 +771,8 @@ mod tests {
 		let dir = TempDir::new("config");
 		let path = dir.join("config.json");
 		std::fs::write(&path, "not json").unwrap();
-		let recovering = |place_id| Config {
-			place_id: Some(place_id),
+		let recovering = |concurrency| Config {
+			concurrency,
 			unreadable: Some(path.clone()),
 			..Default::default()
 		};
@@ -792,7 +789,7 @@ mod tests {
 		assert_eq!(kept.len(), 2, "{kept:?}");
 		assert_eq!(kept[0], "not json");
 		assert_eq!(
-			place_id(&kept[1]),
+			concurrency(&kept[1]),
 			Some(2),
 			"the other app's settings were lost: {kept:?}"
 		);

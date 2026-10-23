@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Vec2};
 
 use super::menus::item_hover;
-use super::{Action, Browser, Row, SCOPE, Status, status, status_dot};
+use super::{Action, Browser, Row, SCOPE, Status, game_label, models_by_game, status, status_dot};
 use crate::ui::theme::{CAPTION, CONTROL_RADIUS, LIST_TEXT, Palette, ROW, palette};
 use crate::ui::tree::{self, FolderTree};
 use crate::ui::{icons, widgets};
@@ -98,27 +98,35 @@ impl Browser {
 				});
 			})
 			.body(|ui| {
-				for &i in &visible {
-					let model = &ws.models()[i];
-					let key = Row::Model(i);
-					let response = library_row(
-						ui,
-						&p,
-						self.model_status(ws, model),
-						&model.name,
-						open_model == Some(i),
-						self.is_selected(key),
-						Trailing::Clips(model.playable_clips),
-					);
-					self.drawn(key);
-					if open_model == Some(i) && self.scroll_to_open.replace(false) {
-						response.scroll_to_me(Some(egui::Align::Center));
+				// a heading per game, when they come from more than one
+				let groups = models_by_game(ws.models(), &visible);
+				let by_game = groups.len() > 1;
+				for (game, group) in groups {
+					if by_game {
+						ui.label(widgets::caption(ui, game_label(game)));
 					}
-					let response = response.on_hover_text(self.model_hover(ws, model));
-					if response.clicked() {
-						self.click(ui, key, actions);
+					for i in group {
+						let model = &ws.models()[i];
+						let key = Row::Model(i);
+						let response = library_row(
+							ui,
+							&p,
+							self.model_status(ws, model),
+							&model.name,
+							open_model == Some(i),
+							self.is_selected(key),
+							Trailing::Clips(model.playable_clips),
+						);
+						self.drawn(key);
+						if open_model == Some(i) && self.scroll_to_open.replace(false) {
+							response.scroll_to_me(Some(egui::Align::Center));
+						}
+						let response = response.on_hover_text(self.model_hover(ws, model));
+						if response.clicked() {
+							self.click(ui, key, actions);
+						}
+						response.context_menu(|ui| self.model_menu(ui, ws, i, actions));
 					}
-					response.context_menu(|ui| self.model_menu(ui, ws, i, actions));
 				}
 			});
 		widgets::pointer(arrow);

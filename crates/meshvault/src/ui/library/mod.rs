@@ -27,7 +27,7 @@ use crate::ui::theme::{Palette, ROW, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::widgets;
 use crate::workspace::facts::Facts;
-use crate::workspace::{Item, Workspace};
+use crate::workspace::{Item, ModelItem, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum StatusFilter {
@@ -170,6 +170,34 @@ enum Status {
 	Done,
 	Pending,
 	Failed,
+}
+
+/// Shown animated models (indices into `models`) grouped by the game they
+/// came from, each group in the order given: games by name, then models
+/// from exports that named no game.
+fn models_by_game<'a>(
+	models: &'a [ModelItem],
+	shown: &[usize],
+) -> Vec<(Option<&'a str>, Vec<usize>)> {
+	let mut groups: Vec<(Option<&str>, Vec<usize>)> = Vec::new();
+	for &i in shown {
+		let game = models[i].game.as_deref();
+		match groups.iter_mut().find(|(g, _)| *g == game) {
+			Some((_, group)) => group.push(i),
+			None => groups.push((game, vec![i])),
+		}
+	}
+	groups.sort_by(|(a, _), (b, _)| match (a, b) {
+		(Some(a), Some(b)) => a.to_lowercase().cmp(&b.to_lowercase()),
+		_ => b.is_some().cmp(&a.is_some()),
+	});
+	groups
+}
+
+/// A group of animated models' heading: its game, or "Other" for models
+/// from exports that named none.
+fn game_label(game: Option<&str>) -> &str {
+	game.unwrap_or("Other")
 }
 
 fn status(item: &Item) -> Status {
@@ -334,6 +362,33 @@ mod tests {
 
 	fn is_open(ctx: &egui::Context, id: egui::Id) -> Option<bool> {
 		egui::collapsing_header::CollapsingState::load(ctx, id).map(|s| s.is_open())
+	}
+
+	/// Models from more than one game are shown under a heading each:
+	/// games by name, then those from exports that named none.
+	#[test]
+	fn animated_models_are_grouped_by_game() {
+		use super::fixtures::model;
+		let models = [
+			model("A", Some("Zoo")),
+			model("B", None),
+			model("C", Some("pets")),
+			model("D", Some("Zoo")),
+		];
+		assert_eq!(
+			models_by_game(&models, &[0, 1, 2, 3]),
+			[
+				(Some("pets"), vec![2]),
+				(Some("Zoo"), vec![0, 3]),
+				(None, vec![1]),
+			]
+		);
+		// only what is shown, in the order given
+		assert_eq!(
+			models_by_game(&models, &[3, 0]),
+			[(Some("Zoo"), vec![3, 0])]
+		);
+		assert_eq!(game_label(None), "Other");
 	}
 
 	#[test]

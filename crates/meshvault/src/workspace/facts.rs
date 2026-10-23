@@ -198,7 +198,7 @@ fn read(path: &Path) -> Option<MeshFacts> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::studio::export_file::Entry;
+	use crate::studio::export_file::{Entry, Origin};
 	use crate::test_support::{SAMPLE_MESHES, TempDir};
 	use crate::workspace::AssetKind;
 
@@ -235,7 +235,7 @@ mod tests {
 			maps: Default::default(),
 			source_id: None,
 		};
-		let (stem, _) = ws.add_entry(&entry);
+		let (stem, _) = ws.add_entry(&entry, &Origin::default());
 		std::fs::create_dir_all(ws.root.join("Models")).unwrap();
 		std::fs::copy(
 			Path::new(SAMPLE_MESHES).join(sample),

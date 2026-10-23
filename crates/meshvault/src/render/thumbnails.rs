@@ -499,6 +499,7 @@ mod tests {
 	use crate::render::maths::IDENTITY;
 	use crate::scene::maps::MapKind;
 	use crate::scene::surface::{DecalDraw, Surface};
+	use crate::studio::export_file::Origin;
 	use crate::test_support::TempDir;
 
 	/// Cached thumbnails are named by these hashes, so they must never change.
@@ -816,7 +817,8 @@ mod tests {
 			}],
 			..Default::default()
 		};
-		ws.add_model(&rig_model([1.0, 2.0, 3.0]), &[]).unwrap();
+		ws.add_model(&rig_model([1.0, 2.0, 3.0]), &[], &Origin::default())
+			.unwrap();
 		let rig = ws.root.join(&ws.models()[0].file);
 		let then = SystemTime::now() - Duration::from_secs(60);
 		let set_modified = || {
@@ -860,7 +862,8 @@ mod tests {
 		let read = thumbnails.job.as_ref().unwrap().read.clone();
 		let old = std::fs::read(&rig).unwrap();
 		// re-imported with the part's size changed, before the result is taken
-		ws.add_model(&rig_model([3.0, 2.0, 1.0]), &[]).unwrap();
+		ws.add_model(&rig_model([3.0, 2.0, 1.0]), &[], &Origin::default())
+			.unwrap();
 		set_modified();
 		assert_ne!(std::fs::read(&rig).unwrap(), old);
 		assert_eq!(versions(std::slice::from_ref(&rig)), read);

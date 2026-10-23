@@ -4,7 +4,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Sense, Stroke, V
 
 use super::list::nothing_matches;
 use super::menus::item_hover;
-use super::{Action, Browser, Opened, Row, Status, status, status_dot};
+use super::{Action, Browser, Opened, Row, Status, game_label, models_by_game, status, status_dot};
 use crate::render::thumbnails::Subject;
 use crate::ui::theme::{CAPTION, CARD_RADIUS, palette};
 use crate::ui::{icons, widgets};
@@ -23,15 +23,30 @@ struct Section {
 	rows: Vec<Row>,
 }
 
-/// The grid's sections: the animated models in `models` first, then the
-/// meshes in `meshes` sorted by folder and name, one section per folder.
-fn grid_sections(items: &[Item], models: Vec<Row>, mut meshes: Vec<usize>) -> Vec<Section> {
+/// The grid's sections: the animated models first, a section per game in
+/// `models` when they come from more than one, then the meshes in `meshes`
+/// sorted by folder and name, one section per folder.
+fn grid_sections(
+	items: &[Item],
+	models: Vec<(Option<&str>, Vec<Row>)>,
+	mut meshes: Vec<usize>,
+) -> Vec<Section> {
 	let mut sections: Vec<Section> = Vec::new();
-	if !models.is_empty() {
+	let by_game = models.len() > 1;
+	for (game, rows) in models {
+		let title = if by_game {
+			format!(
+				"{}  Animated models · {}",
+				icons::PERSON_SIMPLE_RUN,
+				game_label(game)
+			)
+		} else {
+			format!("{}  Animated models", icons::PERSON_SIMPLE_RUN)
+		};
 		sections.push(Section {
-			title: format!("{}  Animated models", icons::PERSON_SIMPLE_RUN),
+			title,
 			path: String::new(),
-			rows: models,
+			rows,
 		});
 	}
 	meshes.sort_by(|&a, &b| {
@@ -73,9 +88,12 @@ impl Browser {
 		actions: &mut Vec<Action>,
 	) {
 		let items = ws.items();
-		let models: Vec<Row> = (0..ws.models().len())
+		let shown: Vec<usize> = (0..ws.models().len())
 			.filter(|&i| self.model_matches(ws, &ws.models()[i]))
-			.map(Row::Model)
+			.collect();
+		let models = models_by_game(ws.models(), &shown)
+			.into_iter()
+			.map(|(game, group)| (game, group.into_iter().map(Row::Model).collect()))
 			.collect();
 		let meshes: Vec<usize> = (0..items.len())
 			.filter(|&i| self.matches(&items[i]))
@@ -285,10 +303,36 @@ mod tests {
 	}
 
 	#[test]
+	fn models_from_several_games_get_a_section_each() {
+		let items = grid_items();
+		let sections = grid_sections(
+			&items,
+			vec![
+				(Some("Pets"), vec![Row::Model(0)]),
+				(None, vec![Row::Model(1)]),
+			],
+			Vec::new(),
+		);
+		let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
+		let run = icons::PERSON_SIMPLE_RUN;
+		assert_eq!(
+			titles,
+			[
+				format!("{run}  Animated models · Pets"),
+				format!("{run}  Animated models · Other"),
+			]
+		);
+	}
+
+	#[test]
 	fn grid_puts_models_first_and_root_meshes_in_their_own_section() {
 		// root meshes once joined the "Animated models" section (bug B32)
 		let items = grid_items();
-		let sections = grid_sections(&items, vec![Row::Model(1), Row::Model(0)], vec![5, 1, 2]);
+		let sections = grid_sections(
+			&items,
+			vec![(None, vec![Row::Model(1), Row::Model(0)])],
+			vec![5, 1, 2],
+		);
 		assert_eq!(
 			sections,
 			[

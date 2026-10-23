@@ -18,9 +18,11 @@ pub struct SettingsDialog {
 	method: AuthMethod,
 	/// Newly typed secret; empty means "keep the saved one".
 	secret: String,
-	place_id: String,
 	concurrency: usize,
 	test_id: String,
+	/// The workspace asset offered for testing, and the place it came from,
+	/// sent when that asset is the one tested.
+	test_asset: Option<(u64, Option<u64>)>,
 	test: Option<Receiver<Result<String, String>>>,
 	message: Option<Message>,
 	/// Shown at the top, e.g. why the dialog was opened.
@@ -81,14 +83,15 @@ pub fn client_from_config(config: &Config) -> Result<Option<Arc<Client>>, String
 		Credentials {
 			method: config.auth_method,
 			secret,
-			place_id: config.place_id,
 		},
 		Endpoints::default(),
 	))))
 }
 
 impl SettingsDialog {
-	pub fn new(config: &Config, test_id: Option<u64>) -> Self {
+	/// `test_asset` is an asset to offer for the connection test, with the
+	/// place it was exported from.
+	pub fn new(config: &Config, test_asset: Option<(u64, Option<u64>)>) -> Self {
 		// a store that cannot be read shows why, rather than looking empty
 		let mut message = None;
 		let mut is_saved = |method| {
@@ -103,9 +106,9 @@ impl SettingsDialog {
 		Self {
 			method: config.auth_method,
 			secret: String::new(),
-			place_id: config.place_id.map(|p| p.to_string()).unwrap_or_default(),
 			concurrency: config.concurrency,
-			test_id: test_id.map(|i| i.to_string()).unwrap_or_default(),
+			test_id: test_asset.map(|(id, _)| id.to_string()).unwrap_or_default(),
+			test_asset,
 			test: None,
 			message,
 			notice: None,
@@ -114,37 +117,18 @@ impl SettingsDialog {
 		}
 	}
 
-	fn place_id(&self) -> Result<Option<u64>, String> {
-		let s = self.place_id.trim();
-		if s.is_empty() {
-			return Ok(None);
-		}
-		s.parse()
-			.map(Some)
-			.map_err(|_| "Place ID must be a number".into())
-	}
-
 	fn save(&mut self, config: &mut Config) -> Result<(), String> {
-		let place_id = self.place_id()?;
 		if !self.secret.trim().is_empty() {
 			config::save_secret(self.method, &self.secret)?;
 			self.saved.set(self.method, true);
 			self.secret.clear();
 		}
 		config.auth_method = self.method;
-		config.place_id = place_id;
 		config.concurrency = self.concurrency;
 		config.save()
 	}
 
 	fn start_test(&mut self, ctx: &egui::Context) {
-		let place_id = match self.place_id() {
-			Ok(p) => p,
-			Err(e) => {
-				self.message = Some(Message::Err(e));
-				return;
-			}
-		};
 		let secret = if self.secret.trim().is_empty() {
 			config::load_secret(self.method)
 		} else {
@@ -169,15 +153,18 @@ impl SettingsDialog {
 			Credentials {
 				method: self.method,
 				secret,
-				place_id,
 			},
 			Endpoints::default(),
 		);
+		// the offered asset is fetched as its downloads are, from its place
+		let place_id = self
+			.test_asset
+			.and_then(|(asset, place)| (asset == id).then_some(place).flatten());
 		let (tx, rx) = channel();
 		let ctx = ctx.clone();
 		std::thread::spawn(move || {
 			let result = client
-				.fetch(id, false)
+				.fetch(id, false, place_id)
 				.map(|bytes| {
 					let kind = sniff_extension(&bytes, AssetKind::Mesh);
 					let header = String::from_utf8_lossy(&bytes[..bytes.len().min(12)])
@@ -289,7 +276,7 @@ impl SettingsDialog {
 		}
 	}
 
-	/// The credential, place id, concurrency and test fields.
+	/// The credential, concurrency and test fields.
 	fn fields_grid(&mut self, ui: &mut egui::Ui) {
 		// read once, so the whole frame shows the state it started with
 		let saved = self.saved.get(self.method);
@@ -302,20 +289,6 @@ impl SettingsDialog {
 					AuthMethod::Cookie => "Cookie",
 				});
 				field(ui, |ui| self.credential_row(ui, saved));
-				ui.end_row();
-
-				ui.label("Place ID");
-				field(ui, |ui| {
-					ui.add(
-						widgets::input(&mut self.place_id)
-							.desired_width(ui.available_width())
-							.hint_text("optional"),
-					)
-					.on_hover_text(
-						"A place you can edit. Sent as Roblox-Place-Id, which can grant access \
-						to private assets used in that place.",
-					);
-				});
 				ui.end_row();
 
 				ui.label("Parallel downloads");
@@ -441,9 +414,9 @@ mod tests {
 		SettingsDialog {
 			method: AuthMethod::ApiKey,
 			secret: String::new(),
-			place_id: String::new(),
 			concurrency: 1,
 			test_id: String::new(),
+			test_asset: None,
 			test: None,
 			message: None,
 			notice: None,

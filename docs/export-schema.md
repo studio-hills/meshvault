@@ -38,7 +38,7 @@ General rules:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `GameName` | string | `game.Name`. Everything imported from the export goes under a folder of this name, so the library groups imports by game |
+| `GameName` | string | The game's published name (`MarketplaceService:GetProductInfo(game.PlaceId).Name`), else `game.Name`, else `game_<PlaceId>`. Everything imported from the export goes under a folder of this name, so the library groups imports by game |
 | `PlaceId` | integer | `game.PlaceId`, sent as `Roblox-Place-Id` when downloading the export's assets. 0 (an unpublished place) means none |
 
 Both are optional: an export without them imports as before, with no game

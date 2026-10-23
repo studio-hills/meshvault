@@ -39,6 +39,26 @@ local function explain(err)
 	return err
 end
 
+-- The game's name: its published name, else the place's name in Studio, else its ID.
+local cachedGameName
+local function gameName()
+	if cachedGameName then return cachedGameName end
+	local name
+	if game.PlaceId ~= 0 then
+		local ok, info = pcall(function()
+			return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+		end)
+		if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
+			name = info.Name
+		end
+	end
+	if not name and game.Name ~= "" then
+		name = game.Name
+	end
+	cachedGameName = name or ("game_" .. game.PlaceId)
+	return cachedGameName
+end
+
 -- Send JSON in chunks and restore the original HTTP setting.
 local function sendToMeshvault(text)
 	local wasEnabled = HttpService.HttpEnabled
@@ -59,7 +79,7 @@ local function sendToMeshvault(text)
 						["Content-Type"] = "application/json",
 						["X-Meshvault-Export"] = id,
 						["X-Meshvault-Chunk"] = i .. "/" .. pieces,
-						["X-Meshvault-Name"] = game.Name,
+						["X-Meshvault-Name"] = gameName(),
 					},
 					Body = text:sub((i - 1) * SEND_CHUNK + 1, math.min(i * SEND_CHUNK, #text)),
 				})
@@ -602,46 +622,58 @@ local function run(options)
 		end
 		table.insert(models, m)
 	end
-	-- Collect meshes and models while respecting excluded hierarchies.
+	-- Discover models containing geometry or animations, including static models.
+	local function modelFor(inst, root)
+		local candidate = nil
+		local current = inst
+		while current do
+			if current:IsA("Model") then
+				candidate = current
+			end
+			if current == root then break end
+			current = current.Parent
+		end
+		return candidate
+	end
+
+	-- Scan meshes once and export each discovered model only once.
 	for _, root in ipairs(roots) do
-		if not isExcluded(root) then
-			local list = root:GetDescendants()
-			table.insert(list, 1, root)
-			for _, inst in ipairs(list) do
-				if isExcluded(inst) then continue end
-				if meshIdOf(inst) then
-					local ok, err = pcall(getOrAddMesh, inst)
-					if not ok then
-						issue("MeshSkipped", ("skipped the mesh of %s: %s"):format(inst:GetFullName(), tostring(err)),
-							{ Path = inst:GetFullName() })
-					end
+		if isExcluded(root) then continue end
+		local list = root:GetDescendants()
+		table.insert(list, 1, root)
+		for _, inst in ipairs(list) do
+			if isExcluded(inst) then continue end
+			if meshIdOf(inst) then
+				local ok, err = pcall(getOrAddMesh, inst)
+				if not ok then
+					issue("MeshSkipped", ("skipped the mesh of %s: %s"):format(inst:GetFullName(), tostring(err)),
+						{ Path = inst:GetFullName() })
 				end
-				if inst:IsA("Animation") then
-					local model = inst:FindFirstAncestorOfClass("Model")
-					if model and not modelSeen[model] then
-						modelSeen[model] = true
-						addModel(model)
-					end
+			end
+			if inst:IsA("BasePart") or inst:IsA("Animation") then
+				local model = modelFor(inst, root)
+				if model and not modelSeen[model] and not isExcluded(model) then
+					modelSeen[model] = true
+					addModel(model)
 				end
 			end
 		end
-	end
-	for _, root in ipairs(roots) do
-		if root:IsA("Model") and not modelSeen[root] and not isExcluded(root) then
+		-- An explicitly selected model is exported even if it has no parts or animations.
+		if root:IsA("Model") and not modelSeen[root] then
 			modelSeen[root] = true
 			addModel(root)
 		end
 	end
 	local payload = {
 		SchemaVersion = SCHEMA,
-		GameName = game.Name,
+		GameName = gameName(),
 		PlaceId = game.PlaceId,
 		Meshes = meshes,
 		Models = models,
 	}
 	log(("Exported %d models and %d meshes in %.1fs."):format(#models, #meshes, os.clock() - started))
 	if #meshes == 0 and #models == 0 then
-		issue("NothingToExport", "nothing to export: no meshes or animated models in "
+		issue("NothingToExport", "nothing to export: no meshes or models in "
 			.. ((options.roots or useSelection) and "what was picked" or "the game outside Workspace")
 			.. ". Select a model (or anything inside one) in the Explorer and run the line again")
 		return

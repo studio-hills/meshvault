@@ -31,10 +31,10 @@ and opens it for import, making a workspace first if none is open.
 - **With nothing selected**, the whole game except Workspace.
 
 When the exporter scans the whole game or a folder, it collects every file
-mesh, but it only finds animated models through their Animation objects: each
-Model holding an Animation is exported as a model. To export a model without
-Animations (a static model, or one with only bones), select it, or pass it in
-`roots`.
+mesh and exports every Model holding parts or Animations, static or animated.
+Each is exported once, as its outermost Model below what is scanned: a Model
+inside another is part of it. To export an inner Model on its own, select it,
+or pass it in `roots`. Parts outside any Model are exported as meshes only.
 - When nothing exportable is found, the exporter says so in the Output window
   instead of sending an empty export.
 

@@ -28,6 +28,7 @@ const STUDIO: &str = r#"
 local classes = {
 	MeshPart = { "MeshPart", "BasePart", "PVInstance", "Instance" },
 	Folder = { "Folder", "Instance" },
+	Model = { "Model", "PVInstance", "Instance" },
 }
 local Instance = {}
 Instance.__index = Instance
@@ -69,6 +70,9 @@ function Instance:FindFirstAncestorOfClass(class)
 	end
 	return nil
 end
+-- for tests that build more of the place
+newInstance = Instance.new
+function Instance:GetScale() return 1 end
 function Instance:GetFullName()
 	local names = {}
 	local inst = self
@@ -104,6 +108,9 @@ local function encode(v)
 end
 
 posts = {}
+-- the published name GetProductInfo gives, or nil for it to fail (as offline)
+productName = nil
+productCalls = 0
 selectionFails = false
 refuse = false
 local http = { HttpEnabled = false }
@@ -139,6 +146,12 @@ local services = {
 	end },
 	RunService = { IsRunning = function() return false end },
 	AnimationClipProvider = {},
+	MarketplaceService = { GetProductInfo = function(_, id)
+		assert(id == game.PlaceId, "asked about another place")
+		productCalls += 1
+		if not productName then error("HTTP 403 (Forbidden)") end
+		return { Name = productName }
+	end },
 	MaterialService = Instance.new("MaterialService", "MaterialService"),
 }
 function game:GetService(name) return (assert(services[name], name)) end
@@ -529,4 +542,99 @@ fn no_export_says_why() {
 		assert!(message.contains("Selection broke"), "schema {v}: {message}");
 		assert!(export.is_nil() && studio.posts() == 0, "schema {v}");
 	}
+}
+
+// Schema 2 names the game by its published name, else the place's name in
+// Studio, else its ID; the export and its requests say the same, and an
+// unpublished place is not looked up
+#[test]
+fn the_game_is_named_by_its_published_name() {
+	let named = |studio: &Studio| {
+		let (problems, _, _) = studio.export("nil");
+		assert_eq!(issues(&problems), []);
+		let export = export_file::parse(&studio.received()).unwrap();
+		let header: String = studio.headers(1).get("X-Meshvault-Name").unwrap();
+		assert_eq!(export.origin.game.as_ref(), Some(&header));
+		(header, export.origin.place_id)
+	};
+
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.globals()
+		.set("productName", "Rock Game")
+		.unwrap();
+	assert_eq!(named(&studio), ("Rock Game".into(), Some(4242)));
+
+	let studio = Studio::new(2);
+	assert_eq!(named(&studio), ("Place".into(), Some(4242)));
+
+	let studio = Studio::new(2);
+	studio.lua.load("game.Name = ''").exec().unwrap();
+	assert_eq!(named(&studio), ("game_4242".into(), Some(4242)));
+
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load("game.PlaceId = 0; productName = 'Unused'")
+		.exec()
+		.unwrap();
+	assert_eq!(named(&studio), ("Place".into(), None));
+	assert_eq!(studio.global::<u32>("productCalls"), 0);
+}
+
+// Every model with parts is exported, not only animated ones, once each as
+// its outermost model below what was picked; parts outside any model are
+// meshes only
+#[test]
+fn static_models_are_exported_whole() {
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load(
+			r#"
+			local function block(name, parent)
+				return newInstance("MeshPart", name, parent, {
+					MeshId = "rbxassetid://77", TextureID = "",
+					CFrame = { GetComponents = function() return 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 end },
+					Size = { X = 1, Y = 1, Z = 1 }, Color = { R = 1, G = 1, B = 1 },
+					BrickColor = { Name = "White" }, Material = { Name = "Plastic" },
+					Transparency = 0, Reflectance = 0, MaterialVariant = "",
+				})
+			end
+			local storage = part.Parent
+			crate = newInstance("Model", "Crate", storage)
+			block("Lid", crate)
+			block("Hinge", newInstance("Model", "Hardware", crate))
+			"#,
+		)
+		.exec()
+		.unwrap();
+	let (problems, _, _) = studio.export("nil");
+	assert_eq!(issues(&problems), []);
+	let export = export_file::parse(&studio.received()).unwrap();
+	let models: Vec<_> = export
+		.models
+		.iter()
+		.map(|m| (m.name.as_str(), m.parts.len()))
+		.collect();
+	assert_eq!(models, [("Crate", 2)]);
+
+	// picked on its own, the inner model stands alone
+	let studio_inner = studio
+		.lua
+		.load("return { roots = { crate.children[2] }, send = false }")
+		.eval::<Value>()
+		.unwrap();
+	let out: MultiValue = studio.entry.call(studio_inner).unwrap();
+	let Some(Value::Table(export)) = out.into_iter().nth(1) else {
+		panic!("no export");
+	};
+	let names: Vec<String> = export
+		.get::<Table>("Models")
+		.unwrap()
+		.sequence_values::<Table>()
+		.map(|m| m.unwrap().get("Name").unwrap())
+		.collect();
+	assert_eq!(names, ["Hardware"]);
 }

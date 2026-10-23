@@ -30,7 +30,9 @@ The first public release.
 
 - A Studio exporter served by Meshvault itself, run with one Command Bar line,
   that sends the export straight to Meshvault; options to pick roots, exclude
-  instances, or keep and change the export before sending it
+  instances, or keep and change the export before sending it; a whole-game
+  export takes every model with parts, static or animated, and names the
+  game by its published name
 - Export schema 2: meshes, maps, and animated models with their parts,
   joints, bones, clips, appearance, clothing, decals, MaterialVariants and
   lights (schemas 0 and 1 are still read)

@@ -170,7 +170,8 @@ pub struct Entry {
 /// Where an export came from: the place it was exported from, in schema 2.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Origin {
-	/// `game.Name`; the top folder of everything imported from it.
+	/// The game's published name, else `game.Name`; the top folder of
+	/// everything imported from it.
 	pub game: Option<String>,
 	/// `game.PlaceId`, sent as `Roblox-Place-Id` with its downloads. An
 	/// unpublished place's 0 is `None`.

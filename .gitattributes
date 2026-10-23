@@ -9,4 +9,5 @@ crates/rbx_mesh/meshes/** binary
 
 *.ttf binary
 *.png binary
+*.gif binary
 *.glb binary

@@ -5,7 +5,7 @@ materials in a 3D view, downloads every mesh, texture and animated model a game
 uses into a folder you can browse, plays those models' animations as Roblox
 does, and exports them to Blender.
 
-<!-- screenshot: the library, viewport and inspector with an animated model -->
+![Meshvault playing a chicken's walk cycle, with the library on the left and the inspector on the right](docs/images/meshvault.png)
 
 - **View** any Roblox mesh version (v1 to v7, including Draco-compressed v6/v7),
   union and physics files, with their colour, normal, roughness and metalness
@@ -18,6 +18,8 @@ does, and exports them to Blender.
   curve clips with Roblox's own easing, and facial animation on FACS heads.
 - **Export** to Blender as glTF (one armature, every clip baked) or to OBJ, and
   save stills or turntable GIFs.
+
+<p align="center"><img src="docs/images/chicken-walk.gif" alt="A blocky chicken walking, played in Meshvault" width="532"></p>
 
 Meshvault runs on Windows 10 and 11. It draws with the GPU (wgpu) and falls
 back to a simpler CPU renderer, without most materials and image saving,

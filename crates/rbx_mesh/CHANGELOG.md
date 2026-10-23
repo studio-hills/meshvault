@@ -13,6 +13,7 @@
 ### Fixed
 
 - CSGPHS v8: zstd output is capped at `MAX_DECODED_LEN` (64 MiB) for both the `zstd` and `ruzstd` backends; larger streams are an error
+- CSGPHS v8 with `ruzstd`: each frame header is checked before decoding, refusing a window over 128 MiB (as the `zstd` backend does) or a declared content size over the 64 MiB budget, since ruzstd does not limit the first frame's window. Concatenated frames are decoded (as with `zstd`) within one budget; skippable frames and trailing bytes are errors
 - Counts no longer size allocations before the data is checked: mesh v1 (also `3 * face_count` overflow), CSGMDL5 face indices, CSGPHS v8 face/hull buffers (bounded by the symbol bits and 4,194,304 faces), mesh v5 FACS matrix `x * y` overflow, and Draco decoding (face, point and attribute-byte ceilings)
 - Counted byte fields (bone names, FACS names, Draco bitstreams, HSRAVIS bits, unknown chunk data, CSGMDL5 index data, CSGPHS v8 symbols) check the bytes remaining before reserving, instead of reserving up to 4 GiB
 - CSGPHS v8 edgebreaker decoding returns errors instead of panicking on inconsistent hull/face counts or bad edges, decodes Split branches without recursion, and caps boundary-walk steps

@@ -322,3 +322,66 @@ fn random_symbol_strings_never_panic() {
 		assert!(result.is_ok(), "panicked on {symbols:?} with {faces} faces");
 	}
 }
+
+/// A zstd frame of RLE zero blocks after `header` (magic and descriptor
+/// fields), `len` bytes in all.
+fn zstd_zeros_after(header: &[u8], len: usize) -> Vec<u8> {
+	let mut out = header.to_vec();
+	let mut left = len;
+	while left != 0 {
+		let size = left.min(BLOCK);
+		left -= size;
+		let header = (size as u32) << 3 | 1 << 1 | u32::from(left == 0);
+		out.extend(&header.to_le_bytes()[..3]);
+		out.push(0);
+	}
+	out
+}
+
+#[test]
+fn a_huge_zstd_window_is_refused_before_decoding() {
+	// N06: a 1 GiB window (log 30) and 256 MiB of RLE zeros; ruzstd buffers
+	// a whole window before yielding output, so the output cap is too late
+	let header = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 20 << 3];
+	let bytes = csgphs8(zstd_zeros_after(&header, 256 << 20));
+	assert!(bytes.len() < 16 << 10);
+	let read = with_alloc_cap(CAP, || Cursor::new(bytes).read_le::<CSGPHS8>());
+	assert!(read.is_err(), "a 1 GiB zstd window was accepted");
+}
+
+#[test]
+fn a_huge_single_segment_content_size_is_refused_before_decoding() {
+	// single segment: the window is the declared content size, here 1 GiB
+	let mut header = vec![0x28, 0xb5, 0x2f, 0xfd, 0b1010_0000];
+	header.extend((1u32 << 30).to_le_bytes());
+	let bytes = csgphs8(zstd_zeros_after(&header, 256 << 20));
+	let read = with_alloc_cap(CAP, || Cursor::new(bytes).read_le::<CSGPHS8>());
+	assert!(read.is_err(), "a 1 GiB single segment frame was accepted");
+}
+
+#[test]
+fn concatenated_zstd_frames_read() {
+	// both backends decode every frame, within one output budget
+	let payload = Payload::default().bytes();
+	let (head, tail) = payload.split_at(10);
+	let mut zstd = zstd_raw(head);
+	zstd.extend(zstd_raw(tail));
+	with_alloc_cap(CAP, || Cursor::new(csgphs8(zstd)).read_le::<CSGPHS8>()).unwrap();
+}
+
+#[test]
+fn concatenated_zstd_frames_share_the_output_limit() {
+	let half = MAX_DECODED_LEN as usize / 2 + BLOCK;
+	let mut zstd = zstd_zeros(half);
+	zstd.extend(zstd_zeros(half));
+	assert!(Cursor::new(csgphs8(zstd)).read_le::<CSGPHS8>().is_err());
+}
+
+#[cfg(not(feature = "csgphs-v8-zstd"))]
+#[test]
+fn a_skippable_zstd_frame_is_refused() {
+	let mut zstd = vec![0x50, 0x2a, 0x4d, 0x18];
+	zstd.extend(u32::MAX.to_le_bytes());
+	zstd.extend(zstd_raw(&Payload::default().bytes()));
+	assert!(Cursor::new(csgphs8(zstd)).read_le::<CSGPHS8>().is_err());
+}

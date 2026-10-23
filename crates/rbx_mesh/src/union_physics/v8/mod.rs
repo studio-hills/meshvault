@@ -84,7 +84,6 @@ pub struct Mesh8 {
 
 /// zstd's own default window limit (128 MiB), set explicitly so the
 /// decoder's window buffer stays bounded whatever the frame asks for.
-#[cfg(feature = "csgphs-v8-zstd")]
 const WINDOW_LOG_MAX: u32 = 27;
 
 fn invalid(pos: u64, message: String) -> binrw::Error {
@@ -93,25 +92,16 @@ fn invalid(pos: u64, message: String) -> binrw::Error {
 
 /// Decompresses the zstd payload, refusing more than [`MAX_DECODED_LEN`]
 /// bytes of output.
+#[cfg(feature = "csgphs-v8-zstd")]
 fn decompress<R: BinReaderExt>(reader: &mut R) -> binrw::BinResult<Vec<u8>> {
-	let pos = reader.stream_position()?;
 	// with both backends enabled, zstd is used
-	#[cfg(all(feature = "csgphs-v8-ruzstd", not(feature = "csgphs-v8-zstd")))]
-	let decoder =
-		ruzstd::decoding::StreamingDecoder::new(reader).map_err(|e| binrw::Error::Custom {
-			pos,
-			err: Box::new(e),
-		})?;
-	#[cfg(feature = "csgphs-v8-zstd")]
-	let decoder = {
-		let custom = |e: std::io::Error| binrw::Error::Custom {
-			pos,
-			err: Box::new(e),
-		};
-		let mut decoder = zstd::stream::Decoder::new(reader).map_err(custom)?;
-		decoder.window_log_max(WINDOW_LOG_MAX).map_err(custom)?;
-		decoder
+	let pos = reader.stream_position()?;
+	let custom = |e: std::io::Error| binrw::Error::Custom {
+		pos,
+		err: Box::new(e),
 	};
+	let mut decoder = zstd::stream::Decoder::new(reader).map_err(custom)?;
+	decoder.window_log_max(WINDOW_LOG_MAX).map_err(custom)?;
 
 	// reading one byte past the limit tells a stream that is too large from
 	// one that ends exactly at it
@@ -119,13 +109,112 @@ fn decompress<R: BinReaderExt>(reader: &mut R) -> binrw::BinResult<Vec<u8>> {
 	decoder
 		.take(MAX_DECODED_LEN + 1)
 		.read_to_end(&mut decoded)?;
+	check_decoded_len(pos, &decoded)?;
+	Ok(decoded)
+}
+
+/// Decompresses the zstd payload, refusing more than [`MAX_DECODED_LEN`]
+/// bytes of output. ruzstd decodes one frame at a time and does not limit
+/// the first frame's window, buffering up to a whole window before it
+/// returns any output, so each frame header is checked here first.
+#[cfg(all(feature = "csgphs-v8-ruzstd", not(feature = "csgphs-v8-zstd")))]
+fn decompress<R: BinReaderExt>(reader: &mut R) -> binrw::BinResult<Vec<u8>> {
+	let mut decoded = Vec::new();
+	let mut first = true;
+	loop {
+		let pos = reader.stream_position()?;
+		// frames run to the end of the file, as with the zstd backend
+		if !first {
+			if reader.read(&mut [0u8; 1])? == 0 {
+				break;
+			}
+			reader.seek(std::io::SeekFrom::Start(pos))?;
+		}
+		first = false;
+		let left = MAX_DECODED_LEN - decoded.len() as u64;
+		check_frame_header(&mut *reader, left).map_err(|message| invalid(pos, message))?;
+		reader.seek(std::io::SeekFrom::Start(pos))?;
+
+		let decoder = ruzstd::decoding::StreamingDecoder::new(&mut *reader).map_err(|e| {
+			binrw::Error::Custom {
+				pos,
+				err: Box::new(e),
+			}
+		})?;
+		// one byte past the limit tells a stream that is too large from one
+		// that ends exactly at it
+		decoder.take(left + 1).read_to_end(&mut decoded)?;
+		check_decoded_len(pos, &decoded)?;
+	}
+	Ok(decoded)
+}
+
+fn check_decoded_len(pos: u64, decoded: &[u8]) -> binrw::BinResult<()> {
 	if MAX_DECODED_LEN < decoded.len() as u64 {
 		return Err(invalid(
 			pos,
 			format!("zstd data decompresses to more than {MAX_DECODED_LEN} bytes"),
 		));
 	}
-	Ok(decoded)
+	Ok(())
+}
+
+/// Reads a zstd frame header (RFC 8878 3.1.1) and refuses a frame whose
+/// window is over the zstd backend's limit, or whose declared content is
+/// over the `left` output budget. Skippable frames are refused: Roblox does
+/// not write them.
+#[cfg(all(feature = "csgphs-v8-ruzstd", not(feature = "csgphs-v8-zstd")))]
+fn check_frame_header(mut reader: impl Read, left: u64) -> Result<(), String> {
+	const MAGIC: u32 = 0xfd2f_b528;
+	let mut read = |len: usize| -> Result<u64, String> {
+		let mut buf = [0u8; 8];
+		reader
+			.read_exact(&mut buf[..len])
+			.map_err(|e| format!("zstd frame header: {e}"))?;
+		Ok(u64::from_le_bytes(buf))
+	};
+	let magic = read(4)? as u32;
+	if magic & 0xffff_fff0 == 0x184d_2a50 {
+		return Err("skippable zstd frames are not supported".to_owned());
+	}
+	if magic != MAGIC {
+		return Err(format!("bad zstd magic number {magic:#010x}"));
+	}
+	let descriptor = read(1)? as u8;
+	let single_segment = descriptor & 0x20 != 0;
+	let window = if single_segment {
+		None
+	} else {
+		let window = read(1)?;
+		let log = 10 + (window >> 3);
+		Some((1u64 << log) + (1u64 << log) / 8 * (window & 7))
+	};
+	let dict_len = [0, 1, 2, 4][usize::from(descriptor & 3)];
+	read(dict_len)?;
+	let content_len = match (descriptor >> 6, single_segment) {
+		(0, false) => None,
+		(0, true) => Some(read(1)?),
+		(1, _) => Some(read(2)? + 256),
+		(2, _) => Some(read(4)?),
+		_ => Some(read(8)?),
+	};
+
+	// a single segment frame's window is its whole content
+	let window = window.or(content_len).unwrap_or(0);
+	if 1u64 << WINDOW_LOG_MAX < window {
+		return Err(format!(
+			"zstd window of {window} bytes is over {} bytes",
+			1u64 << WINDOW_LOG_MAX
+		));
+	}
+	if let Some(len) = content_len
+		&& left < len
+	{
+		return Err(format!(
+			"zstd frame declares {len} bytes, more than {MAX_DECODED_LEN} in all"
+		));
+	}
+	Ok(())
 }
 
 fn read_mesh<R: BinReaderExt>(

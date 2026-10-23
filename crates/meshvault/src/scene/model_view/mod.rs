@@ -405,21 +405,17 @@ fn translation_scales(
 			skin.track_scale = s;
 		}
 	}
-	let bone_scale = (0..rig.bones.len())
-		.map(|mut b| {
-			if let Some(s) = model_scale {
-				return s;
-			}
-			for _ in 0..=rig.bones.len() {
-				match rig.bones[b].parent {
-					BoneParent::Part(p) => return part_scale.get(&p).copied().unwrap_or(1.0),
-					BoneParent::Bone(q) => b = q,
-					BoneParent::None => break,
-				}
-			}
-			1.0
-		})
-		.collect();
+	// a bone takes its parent's scale, so parents first, each once
+	let mut bone_scale = vec![model_scale.unwrap_or(1.0); rig.bones.len()];
+	if model_scale.is_none() {
+		for &b in rig.bone_order() {
+			bone_scale[b] = match rig.bones[b].parent {
+				BoneParent::Part(p) => part_scale.get(&p).copied().unwrap_or(1.0),
+				BoneParent::Bone(q) => bone_scale[q],
+				BoneParent::None => 1.0,
+			};
+		}
+	}
 	(joint_scale, bone_scale)
 }
 
@@ -1433,5 +1429,36 @@ mod tests {
 			assert_eq!(slot.mesh_bone_tracks, mesh_bone_tracks);
 			assert_eq!(slot.unmatched, unmatched);
 		}
+	}
+
+	/// A long chain of bones loads quickly: each bone's scale comes from
+	/// its parent's, found once.
+	#[test]
+	fn a_long_bone_chain_loads_quickly() {
+		use crate::anim::schema::BoneInfo;
+		const N: usize = 100_000;
+		let model = AnimatedModel {
+			name: "Chain".into(),
+			path: "Workspace/Chain".into(),
+			parts: vec![placed_part(Some("Part"), Some("Block"), "Root", [0.0; 3])],
+			bones: (0..N)
+				.map(|i| BoneInfo {
+					name: format!("B{i}"),
+					path: format!("B{i}"),
+					parent_path: match i {
+						0 => "Workspace/Chain/Root".into(),
+						_ => format!("B{}", i - 1),
+					},
+					..Default::default()
+				})
+				.collect(),
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let start = std::time::Instant::now();
+		let view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		let took = start.elapsed();
+		assert!(took.as_secs_f32() < 2.0, "took {took:?}");
+		assert_eq!(view.rig.bones.len(), N);
 	}
 }

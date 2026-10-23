@@ -263,22 +263,61 @@ impl Rig {
 		order
 	}
 
-	fn bone_solve_order(&self) -> Vec<usize> {
-		let depth = |mut i: usize| {
-			let mut d = 0;
-			while let BoneParent::Bone(p) = self.bones[i].parent {
-				i = p;
-				d += 1;
-				// a parent cycle in bad data must not hang
-				if d > self.bones.len() {
-					break;
+	/// Orders the bones parents first, visiting each once. Bad data can loop
+	/// a bone's parents back to it: walking up from the first bone in the
+	/// loop, the last bone before the walk comes back drops its parent and
+	/// is placed from the origin.
+	fn bone_solve_order(&mut self) -> Vec<usize> {
+		#[derive(Clone, Copy, PartialEq)]
+		enum Seen {
+			No,
+			OnWalk,
+			Ordered,
+		}
+		let mut seen = vec![Seen::No; self.bones.len()];
+		let mut order = Vec::with_capacity(self.bones.len());
+		let mut walk = Vec::new();
+		let mut broken = Vec::new();
+		for start in 0..self.bones.len() {
+			let mut b = start;
+			while seen[b] == Seen::No {
+				seen[b] = Seen::OnWalk;
+				walk.push(b);
+				match self.bones[b].parent {
+					BoneParent::Bone(p) => b = p,
+					_ => break,
 				}
 			}
-			d
-		};
-		let mut order: Vec<(usize, usize)> = (0..self.bones.len()).map(|i| (depth(i), i)).collect();
-		order.sort();
-		order.into_iter().map(|(_, i)| i).collect()
+			if seen[b] == Seen::OnWalk
+				&& let Some(&last) = walk.last()
+				&& self.bones[last].parent == BoneParent::Bone(b)
+			{
+				self.bones[last].parent = BoneParent::None;
+				broken.push(last);
+			}
+			// the walk went up from `start`, so its top is solved first
+			for &b in walk.iter().rev() {
+				seen[b] = Seen::Ordered;
+				order.push(b);
+			}
+			walk.clear();
+		}
+		if let Some(&first) = broken.first() {
+			let others = match broken.len() {
+				1 => String::new(),
+				n => format!(" (and {} other bones)", n - 1),
+			};
+			self.warnings.push(format!(
+				"Bone {}{others}: its parents loop back to it, so it is placed from the origin",
+				self.bones[first].path
+			));
+		}
+		order
+	}
+
+	/// Bones in an order where parents come first.
+	pub fn bone_order(&self) -> &[usize] {
+		&self.bone_order
 	}
 
 	/// Matches each clip track to a joint (by its Part1 name) or a bone.
@@ -764,5 +803,71 @@ mod tests {
 		let rig = Rig::build(&m);
 		assert_eq!(rig.joints.len(), 0);
 		assert_eq!(rig.warnings.len(), 1);
+	}
+
+	fn bones(parents: impl Fn(usize) -> String, n: usize) -> AnimatedModel {
+		AnimatedModel {
+			bones: (0..n)
+				.map(|i| BoneInfo {
+					name: format!("B{i}"),
+					path: format!("B{i}"),
+					parent_path: parents(i),
+					cframe: at(0.0, 1.0, 0.0),
+				})
+				.collect(),
+			..Default::default()
+		}
+	}
+
+	/// Bones are ordered in one pass over their parents: many bones each
+	/// their own parent, or one long chain, build quickly.
+	#[test]
+	fn bone_order_is_linear() {
+		const N: usize = 100_000;
+		for (what, model) in [
+			("self-parented", bones(|i| format!("B{i}"), N)),
+			("chain", bones(|i| format!("B{}", i.wrapping_sub(1)), N)),
+		] {
+			let start = std::time::Instant::now();
+			let rig = Rig::build(&model);
+			let took = start.elapsed();
+			assert!(took.as_secs_f32() < 1.0, "{what} took {took:?}");
+			assert_eq!(rig.bone_order.len(), N);
+		}
+		// a chain is solved from its root, each bone a stud above its parent
+		let rig = Rig::build(&bones(|i| format!("B{}", i.wrapping_sub(1)), 1000));
+		let posed = rig.rest();
+		assert!((posed.bones[999].pos[1] - 1000.0).abs() < 1e-2);
+	}
+
+	/// A loop of parents is broken where the walk from the first bone in it
+	/// closes it: that bone's parent link is dropped, with a warning, so
+	/// the same data always gives the same rig.
+	#[test]
+	fn bone_parent_loops_are_broken() {
+		// B0 -> B1 -> B2 -> B0, and B3 under B2
+		let parent = |i: usize| ["B1", "B2", "B0", "B2"][i].to_owned();
+		let rig = Rig::build(&bones(parent, 4));
+		let parents: Vec<_> = rig.bones.iter().map(|b| b.parent).collect();
+		assert_eq!(
+			parents,
+			[
+				BoneParent::Bone(1),
+				BoneParent::Bone(2),
+				BoneParent::None,
+				BoneParent::Bone(2),
+			]
+		);
+		assert!(
+			rig.warnings.iter().any(|w| w.contains("B2")),
+			"{:?}",
+			rig.warnings
+		);
+		let order = &rig.bone_order;
+		let at = |b: usize| order.iter().position(|&o| o == b).unwrap();
+		assert!(at(2) < at(1) && at(1) < at(0) && at(2) < at(3), "{order:?}");
+		// a bone its own parent is a root too
+		let rig = Rig::build(&bones(|_| "B0".into(), 1));
+		assert_eq!(rig.bones[0].parent, BoneParent::None);
 	}
 }

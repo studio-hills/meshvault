@@ -24,7 +24,7 @@ pub struct RobloxBitReader<'a> {
 }
 impl<'a> RobloxBitReader<'a> {
 	pub fn new(bytes: &'a [u8], bit_count_limit: u32) -> Result<Self, BitCounterError> {
-		if (bytes.len() as u32 * u8::BITS) < bit_count_limit {
+		if (bytes.len() as u64 * u64::from(u8::BITS)) < u64::from(bit_count_limit) {
 			return Err(BitCounterError::NotEnoughBytes);
 		}
 

@@ -105,3 +105,47 @@ fn empirical() {
 	assert_eq!(r.read(), Ok(Symbol::End));
 	assert_eq!(r.read(), Err(BitCounterError::NotEnoughBits));
 }
+
+/// Packs symbols written as `C`, `S`, `L`, `R`, `E` the way
+/// [`SymbolReader`] reads them, returning the bytes and the bit count.
+#[cfg(test)]
+pub fn pack(symbols: &str) -> (Vec<u8>, u32) {
+	let mut bits = Vec::new();
+	for symbol in symbols.chars() {
+		match symbol {
+			'C' => bits.push(false),
+			'S' => bits.extend([true, false, false]),
+			'L' => bits.extend([true, false, true]),
+			'R' => bits.extend([true, true, false]),
+			'E' => bits.extend([true, true, true]),
+			_ => panic!("not a symbol: {symbol}"),
+		}
+	}
+	let mut bytes = Vec::new();
+	// each 32-bit word holds its bits lsb-aligned, read msb-first
+	for word in bits.chunks(32) {
+		let value = word
+			.iter()
+			.fold(0u32, |value, &bit| (value << 1) | u32::from(bit));
+		bytes.extend(value.to_le_bytes());
+	}
+	(bytes, bits.len() as u32)
+}
+
+#[test]
+fn pack_round_trips() {
+	let symbols = "CCRCSLEC".repeat(9);
+	let (bytes, bits) = pack(&symbols);
+	let mut r = SymbolReader::new(&bytes, bits).unwrap();
+	for symbol in symbols.chars() {
+		let expected = match symbol {
+			'C' => Symbol::Continue,
+			'S' => Symbol::Split,
+			'L' => Symbol::Left,
+			'R' => Symbol::Right,
+			_ => Symbol::End,
+		};
+		assert_eq!(r.read(), Ok(expected));
+	}
+	assert_eq!(r.read(), Err(BitCounterError::NotEnoughBits));
+}

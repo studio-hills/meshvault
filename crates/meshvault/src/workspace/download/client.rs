@@ -150,14 +150,27 @@ fn read_body(response: &mut ureq::http::Response<ureq::Body>) -> Result<Vec<u8>,
 
 /// The CDN sometimes serves gzip without a Content-Encoding header.
 fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, FetchError> {
+	gunzip_limited(bytes, MAX_ASSET_BYTES)
+}
+
+/// [`gunzip_if_needed`] with the most it may decode, `limit` bytes. More
+/// is an error: a cut-short asset would be cached as complete.
+fn gunzip_limited(bytes: Vec<u8>, limit: u64) -> Result<Vec<u8>, FetchError> {
 	if !bytes.starts_with(&[0x1f, 0x8b]) {
 		return Ok(bytes);
 	}
 	let mut out = Vec::new();
+	// one byte over tells a stream at the limit from a longer one; under it,
+	// the decoder reached its end and checked the trailer
 	flate2::read::GzDecoder::new(bytes.as_slice())
-		.take(MAX_ASSET_BYTES)
+		.take(limit.saturating_add(1))
 		.read_to_end(&mut out)
 		.map_err(|e| FetchError::Permanent(format!("Corrupt gzip data: {e}")))?;
+	if out.len() as u64 > limit {
+		return Err(FetchError::Permanent(format!(
+			"The asset is larger than {limit} bytes once unpacked"
+		)));
+	}
 	Ok(out)
 }
 
@@ -505,6 +518,28 @@ mod tests {
 		enc.write_all(b"version 7.00\n").unwrap();
 		let gz = enc.finish().unwrap();
 		assert_eq!(gunzip_if_needed(gz).unwrap(), b"version 7.00\n");
+	}
+
+	/// Decoding past the limit is an error, not a short asset that would be
+	/// cached as complete; exactly the limit is fine.
+	#[test]
+	fn over_limit_gzip_is_an_error() {
+		let gzip = |data: &[u8]| {
+			let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+			enc.write_all(data).unwrap();
+			enc.finish().unwrap()
+		};
+		assert_eq!(gunzip_limited(gzip(b"12345678"), 8).unwrap(), b"12345678");
+		let err = gunzip_limited(gzip(b"123456789"), 8).unwrap_err();
+		assert!(
+			matches!(&err, FetchError::Permanent(m) if m.contains("larger than")),
+			"{err:?}"
+		);
+		// a corrupt trailer is still caught when the data fits
+		let mut bad = gzip(b"12345678");
+		let n = bad.len();
+		bad[n - 8] ^= 0xff;
+		assert!(gunzip_limited(bad, 8).is_err());
 	}
 
 	#[test]

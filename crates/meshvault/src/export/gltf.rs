@@ -692,7 +692,7 @@ impl Gltf {
 		if let Some(&t) = self.by_file.get(path) {
 			return Some(t);
 		}
-		let bytes = std::fs::read(path).ok();
+		let bytes = crate::workspace::read_asset(path).ok();
 		let t = match bytes.as_deref() {
 			Some(b) if b.starts_with(b"\x89PNG") => self.texture_bytes(b, "image/png"),
 			Some(b) if b.starts_with(&[0xFF, 0xD8]) => self.texture_bytes(b, "image/jpeg"),

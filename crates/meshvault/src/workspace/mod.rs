@@ -169,8 +169,17 @@ impl Workspace {
 		}
 		let path = root.join(MANIFEST);
 		let json = crate::studio::export_file::read_text(&path)?;
-		let mut manifest: Manifest = serde_json::from_str(&json)
-			.map_err(|e| format!("{} is not a valid workspace: {e}", path.display()))?;
+		// a manifest's lists are read within the same bounds as an export's
+		let limits = crate::anim::budget::LIMITS;
+		let (parsed, over) = crate::anim::budget::with_budget(&limits, json.len(), || {
+			serde_json::from_str::<Manifest>(&json)
+		});
+		let invalid = |why: String| format!("{} is not a valid workspace: {why}", path.display());
+		let mut manifest = match (parsed, over) {
+			(_, Some(why)) => return Err(invalid(why)),
+			(Err(e), None) => return Err(invalid(e.to_string())),
+			(Ok(manifest), None) => manifest,
+		};
 		if manifest.version > MANIFEST_VERSION {
 			return Err(format!(
 				"{} was made by a newer version of this app (workspace version {})",
@@ -1537,6 +1546,31 @@ mod tests {
 			"meshes": {"1": mesh_stem}, "parts": 1, "clips": 0, "playable_clips": 0,
 			"images": {"7": {"state": "done", "path": image}},
 		})
+	}
+
+	/// A manifest's lists are read within bounds, as an export's are: a
+	/// folder list far over the cap stops being read at the cap, rather than
+	/// being built whole and checked after.
+	#[test]
+	fn open_stops_reading_a_list_at_its_cap() {
+		let dir = TempDir::new("ws_manifest_budget");
+		let folder = vec!["F"; 10_000];
+		let manifest = serde_json::json!({
+			"version": 3,
+			"name": "Big",
+			"items": [{
+				"name": "A",
+				"folder": folder,
+				"mesh_id": 1,
+				"stem": "Models/A",
+				"mesh": {"state": "pending"},
+			}],
+		});
+		std::fs::write(dir.join(MANIFEST), manifest.to_string()).unwrap();
+		let err = Workspace::open(&dir).err().unwrap();
+		assert!(err.contains("folders in one path"), "{err}");
+		let read = crate::anim::budget::records_read();
+		assert!(read < 200, "read {read} records of a 10,000-folder list");
 	}
 
 	/// A workspace someone hands over is checked when it is opened: every

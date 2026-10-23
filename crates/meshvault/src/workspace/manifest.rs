@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::anim::budget;
 use crate::scene::maps::MapKind;
 use crate::workspace::AssetKind;
 use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, RIGS_DIR, check_folder, check_path};
@@ -48,6 +49,7 @@ pub struct MapRef {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
 	pub name: String,
+	#[serde(deserialize_with = "budget::folders")]
 	pub folder: Vec<String>,
 	pub mesh_id: u64,
 	/// Relative path without extension, unique within the workspace.
@@ -127,6 +129,7 @@ pub struct ModelItem {
 	/// is re-imported.
 	pub path: String,
 	/// Where it shows in the library: its game, then its instance's folder.
+	#[serde(deserialize_with = "budget::folders")]
 	pub folder: Vec<String>,
 	/// The game it was imported from, as for [`Item::game`].
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,8 +205,9 @@ impl Default for ModelVersion {
 pub(super) struct Manifest {
 	pub version: u32,
 	pub name: String,
+	#[serde(deserialize_with = "budget::meshes")]
 	pub items: Vec<Item>,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "budget::models")]
 	pub models: Vec<ModelItem>,
 }
 

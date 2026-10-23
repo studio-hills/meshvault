@@ -46,6 +46,8 @@ pub struct Limits {
 	pub decals: usize,
 	/// Lights of one part.
 	pub lights: usize,
+	/// Folders in one stored path (workspace manifests).
+	pub folders: usize,
 	/// Keyframes, poses and curve keys of one animation, together.
 	pub clip_keys: usize,
 	/// The lists of one document may take this many bytes of memory...
@@ -69,6 +71,9 @@ pub const LIMITS: Limits = Limits {
 	keys: 5_000_000,
 	decals: 1_000,
 	lights: 1_000,
+	// workspace paths are checked to 64 folders when opened; a little more
+	// is read so that check, not this one, says what is wrong
+	folders: 128,
 	clip_keys: 5_000_000,
 	decoded_base: 64 * 1024 * 1024,
 	decoded_per_byte: 8,
@@ -91,6 +96,7 @@ pub enum Kind {
 	Keys,
 	Decals,
 	Lights,
+	Folders,
 }
 
 impl Kind {
@@ -110,6 +116,7 @@ impl Kind {
 			Kind::Keys => limits.keys,
 			Kind::Decals => limits.decals,
 			Kind::Lights => limits.lights,
+			Kind::Folders => limits.folders,
 		}
 	}
 
@@ -130,6 +137,7 @@ impl Kind {
 			Kind::Keys => "keys in one curve",
 			Kind::Decals => "decals on one part",
 			Kind::Lights => "lights on one part",
+			Kind::Folders => "folders in one path",
 		}
 	}
 }
@@ -323,6 +331,7 @@ lists! {
 	keys => Keys,
 	decals => Decals,
 	lights => Lights,
+	folders => Folders,
 }
 
 /// A curve channel's keys, which may be absent or `null`.

@@ -45,14 +45,19 @@ tested or supported yet.
 
 ## Before sending a pull request
 
-Run these checks locally:
+CI (`.github/workflows/ci.yml`) runs these on every pull request, on Windows.
+Run them locally first:
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 cargo deny check            # needs cargo-deny: cargo install cargo-deny
 ```
+
+A failing security advisory check doesn't block a pull request (new advisories
+can appear without any change here); the weekly scheduled run reports them.
 
 - **Tests.** Fixes come with a test that fails without them. Tests live next
   to the code in `#[cfg(test)]` modules, and shared helpers are in

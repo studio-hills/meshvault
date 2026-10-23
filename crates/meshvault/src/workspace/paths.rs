@@ -181,6 +181,19 @@ pub(crate) fn check_no_links(root: &Path, rel: &Path) -> Result<(), String> {
 	Ok(())
 }
 
+/// The file at `rel`, a path saved in the workspace at `root` (by its
+/// manifest or its cache), for reading it or looking at it: refused, with
+/// the reason, if a link is on the way to it (see [`check_no_links`]), so
+/// that neither a read nor a check of whether it is there, or of its size
+/// or time, goes elsewhere, a network share say. Every such use of a saved
+/// path goes through this; a missing file passes, for the caller to find
+/// missing.
+pub(crate) fn saved_file(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf, String> {
+	let rel = rel.as_ref();
+	check_no_links(root, rel)?;
+	Ok(root.join(rel))
+}
+
 /// Whether a name read from a manifest is a device name: the part before
 /// its first dot is one, unless a later part ends with the underscore
 /// older versions added at the end.

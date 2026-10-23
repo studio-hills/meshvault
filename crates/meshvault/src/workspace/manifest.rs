@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::anim::budget;
 use crate::scene::maps::MapKind;
 use crate::workspace::AssetKind;
-use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, RIGS_DIR, check_folder, check_path};
+use crate::workspace::paths::{
+	IMAGES_DIR, MODELS_DIR, RIGS_DIR, check_folder, check_path, saved_file,
+};
 
 /// Manifest format version: 1 had a single texture per item, 2 added
 /// `maps`, 3 added animated models. tools/make_test_workspace.py writes
@@ -258,13 +260,17 @@ impl Manifest {
 
 	/// Brings a manifest read from `root` up to [`MANIFEST_VERSION`], and
 	/// resets downloads whose files are missing, items' and models' images
-	/// alike. Returns whether anything changed.
+	/// alike. One behind a link is not looked for (see [`saved_file`]) and
+	/// is left as it is: whatever would read it refuses it, and it is not
+	/// downloaded again, which could only be written through the link.
+	/// Returns whether anything changed.
 	pub(super) fn upgrade(&mut self, root: &Path) -> bool {
 		let mut dirty = false;
 		// downloads interrupted by closing the app, or files deleted outside
 		// the app, are downloaded again
 		let reset = |state: &mut AssetState| {
-			let missing = matches!(&*state, AssetState::Done { path } if !root.join(path).exists());
+			let missing = matches!(&*state, AssetState::Done { path }
+				if saved_file(root, path).is_ok_and(|file| !file.exists()));
 			if missing {
 				*state = AssetState::Pending;
 			}

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::studio::export_file::read_limited;
 use crate::workspace::paths::{
-	IMAGES_DIR, MODELS_DIR, check_no_links, check_path, replace_file, write_temp,
+	IMAGES_DIR, MODELS_DIR, check_no_links, check_path, replace_file, saved_file, write_temp,
 };
 use crate::workspace::{AssetKind, CACHE_DIR, Job, cache_path};
 
@@ -108,7 +108,7 @@ pub fn upgrade_cache(root: &Path) {
 
 /// The raw download of an asset, if it is cached. An empty file is not
 /// trusted: it is what a write cut short leaves behind. Nor is one read
-/// through a link (see [`check_no_links`]), or one larger than
+/// through a link (see [`saved_file`]), or one larger than
 /// [`MAX_ASSET_BYTES`]: like a missing one, it is downloaded again and
 /// replaced.
 pub fn read_cache(root: &Path, asset_id: u64) -> Option<Vec<u8>> {
@@ -117,8 +117,8 @@ pub fn read_cache(root: &Path, asset_id: u64) -> Option<Vec<u8>> {
 
 /// [`read_cache`], reading at most `limit` bytes.
 fn read_cache_within(root: &Path, asset_id: u64, limit: usize) -> Option<Vec<u8>> {
-	check_no_links(root, &cache_rel(asset_id)).ok()?;
-	read_limited(&cache_path(root, asset_id), limit)
+	let file = saved_file(root, cache_rel(asset_id)).ok()?;
+	read_limited(&file, limit)
 		.ok()
 		.filter(|bytes| !bytes.is_empty())
 }

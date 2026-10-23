@@ -132,8 +132,19 @@ workspace whose `workspace.json`, `Models`, `Rigs`, `Images` or `.cache` (or
 `.cache/thumbnails`, `.cache/facts.json`, `.cache/format`) is a link is refused
 when it is opened, and Meshvault does not write or delete anything through a
 link deeper in it, such as a linked folder inside `Models/`; that download,
-Remove or import says why instead. The workspace folder itself may be a link,
-since it is the one you chose. Every file Meshvault writes in a workspace (the
+Remove or import says why instead. Opening a workspace, the library's
+thumbnails and mesh facts, and loading an animated model also do not read a
+file through such a link, or check whether one is there or how old it is:
+opening does not look for downloaded files behind a link (they are left as
+they are, not downloaded again); an animated model whose rig file is behind
+one does not load and says why, and its meshes behind one are left out with
+the reason; maps and images behind one are left out; facts, cached downloads
+and thumbnails (what they are drawn from, the cached pictures and their lists)
+are not read through one. So a link to a network share in a workspace someone
+sent you is not followed just by opening it and browsing the library. The
+workspace folder itself may be a link, since it is the one you chose. Cloud
+placeholders (OneDrive files not downloaded yet) are not links, and are read as
+usual. Every file Meshvault writes in a workspace (the
 manifest, rig files, cached downloads, thumbnails, facts) is written to a new
 temporary file beside it, made only if no file or link by that name is already
 there, then renamed into place, so a link or a second name (hard link) left at

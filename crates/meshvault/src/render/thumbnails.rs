@@ -21,7 +21,7 @@ use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
 use crate::studio::export_file::read_limited;
 use crate::workspace::view_loader::{item_maps, model_loader};
-use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links, replace_file};
+use crate::workspace::{AssetState, CACHE_DIR, Workspace, replace_file, saved_file};
 
 /// Pixels on each side of a thumbnail.
 const SIZE: u32 = 192;
@@ -168,7 +168,14 @@ impl Thumbnails {
 				continue;
 			}
 			// not downloaded yet: asked for again once it is
-			let Some((source, files)) = source(ws, &subject) else {
+			let Some(found) = source(ws, &subject) else {
+				continue;
+			};
+			let generation = self.generation;
+			// behind a link: not read, so the tile keeps its icon
+			let Ok((source, files)) = found else {
+				let state = State::Failed;
+				self.states.insert(subject, Entry { state, generation });
 				continue;
 			};
 			if loads == LOADS_PER_FRAME {
@@ -177,8 +184,9 @@ impl Thumbnails {
 			}
 			loads += 1;
 			let file = self.file(&subject);
-			let generation = self.generation;
-			if is_fresh(&file, &files) {
+			// nor is a cached thumbnail, or its list, read through a link
+			let cached = unlinked(&self.root, &file) && unlinked(&self.root, &drawn_from(&file));
+			if cached && is_fresh(&file, &files) {
 				// what is shown is still what the cache holds
 				if let Some(entry) = self.states.get_mut(&subject)
 					&& matches!(entry.state, State::Ready(_))
@@ -277,18 +285,21 @@ fn keep(
 	};
 	let mut png = Vec::new();
 	let encoded = image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png);
-	let unlinked = |p: &Path| {
-		p.strip_prefix(root)
-			.is_ok_and(|rel| check_no_links(root, rel).is_ok())
-	};
 	if encoded.is_ok()
-		&& unlinked(&drawn_from(file))
+		&& unlinked(root, &drawn_from(file))
 		&& std::fs::create_dir_all(dir).is_ok()
 		&& save(file, &png)
 	{
 		save(&drawn_from(file), list(files).as_bytes());
 	}
 	Some(image)
+}
+
+/// Whether `file`, a path under the workspace at `root`, can be read or
+/// looked at: it is not behind a link there (see [`saved_file`]).
+fn unlinked(root: &Path, file: &Path) -> bool {
+	file.strip_prefix(root)
+		.is_ok_and(|rel| saved_file(root, rel).is_ok())
 }
 
 /// The file beside the thumbnail `file` listing what it was drawn from.
@@ -312,24 +323,34 @@ fn list(files: &[PathBuf]) -> String {
 }
 
 /// What `subject` is drawn from, and the files whose changes make its
-/// thumbnail stale. `None` while it is not downloaded.
-fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
+/// thumbnail stale. `None` while it is not downloaded. Nothing behind a
+/// link in the workspace is read or looked at (see
+/// [`Workspace::saved_file`]): a mesh there, or a model's rig, is refused
+/// with the reason; a model's mesh there, and maps and images there, are
+/// drawn without, as the viewer shows them.
+fn source(ws: &Workspace, subject: &Subject) -> Option<Result<(Source, Vec<PathBuf>), String>> {
 	match subject {
 		Subject::Item(stem) => {
 			let item = ws.item_by_stem(stem)?;
 			let AssetState::Done { path } = &item.mesh else {
 				return None;
 			};
-			let mesh = ws.root.join(path);
+			let mesh = match ws.saved_file(path) {
+				Ok(mesh) => mesh,
+				Err(e) => return Some(Err(e)),
+			};
 			let maps = item_maps(&ws.root, item);
 			let mut files = vec![mesh.clone()];
 			files.extend(maps.iter().map(|(_, p)| p.clone()));
-			Some((Source::Mesh { mesh, maps }, files))
+			Some(Ok((Source::Mesh { mesh, maps }, files)))
 		}
 		Subject::Model(path) => {
 			let index = ws.models().iter().position(|m| &m.path == path)?;
 			let model = &ws.models()[index];
-			let mut files = vec![ws.root.join(&model.file)];
+			let mut files = match ws.saved_file(&model.file) {
+				Ok(rig) => vec![rig],
+				Err(e) => return Some(Err(e)),
+			};
 			// a mesh many parts use is listed once
 			let mut seen = std::collections::HashSet::new();
 			for stem in model.meshes.values().filter(|s| seen.insert(s.as_str())) {
@@ -340,8 +361,10 @@ fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 				match &item.mesh {
 					AssetState::Pending => return None,
 					AssetState::Done { path } => {
-						files.push(ws.root.join(path));
-						files.extend(item_maps(&ws.root, item).into_iter().map(|(_, p)| p));
+						if let Ok(mesh) = ws.saved_file(path) {
+							files.push(mesh);
+							files.extend(item_maps(&ws.root, item).into_iter().map(|(_, p)| p));
+						}
 					}
 					AssetState::Failed { .. } => {}
 				}
@@ -349,8 +372,8 @@ fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 			// maps and images still downloading are drawn without; the
 			// thumbnail is drawn again once they are here
 			let images = model.images.values().filter_map(AssetState::done_path);
-			files.extend(images.map(|p| ws.root.join(p)));
-			Some((Source::Model(index), files))
+			files.extend(images.filter_map(|p| ws.saved_file(p).ok()));
+			Some(Ok((Source::Model(index), files)))
 		}
 	}
 }
@@ -610,7 +633,9 @@ mod tests {
 	#[test]
 	fn a_model_depends_on_its_meshes_maps_and_images() {
 		let (_dir, ws) = workspace(done("A.mesh"), done("A.png"), done("Images/7.png"));
-		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into())).unwrap();
+		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into()))
+			.unwrap()
+			.unwrap();
 		let expected: Vec<PathBuf> = ["Rigs/M.rig.json", "A.mesh", "A.png", "Images/7.png"]
 			.iter()
 			.map(|f| ws.root.join(f))
@@ -618,7 +643,9 @@ mod tests {
 		assert_eq!(files, expected);
 		// maps and images not downloaded yet are drawn without, not waited for
 		let (_dir, ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
-		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into())).unwrap();
+		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into()))
+			.unwrap()
+			.unwrap();
 		assert_eq!(
 			files,
 			[ws.root.join("Rigs/M.rig.json"), ws.root.join("A.mesh")]
@@ -765,7 +792,9 @@ mod tests {
 		models[0].meshes.insert(2, "A".into());
 		ws.set_contents(items, models);
 		crate::workspace::ITEMS_VISITED.with(|n| n.set(0));
-		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into())).unwrap();
+		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into()))
+			.unwrap()
+			.unwrap();
 		let visited = crate::workspace::ITEMS_VISITED.with(|n| n.get());
 		assert!(visited <= 2 * (N + 1), "{visited} items looked at");
 		assert_eq!(
@@ -817,7 +846,7 @@ mod tests {
 		);
 		let subject = Subject::Item("A".into());
 		let mut thumbnails = Thumbnails::new(&ws.root);
-		let (_, files) = source(&ws, &subject).unwrap();
+		let (_, files) = source(&ws, &subject).unwrap().unwrap();
 		let file = thumbnails.file(&subject);
 		let wide = image::RgbaImage::new(100_000, 1);
 		let right = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
@@ -870,7 +899,7 @@ mod tests {
 		let ctx = egui::Context::default();
 		let subject = Subject::Item("A".into());
 		let mut thumbnails = Thumbnails::new(&ws.root);
-		let (_, files) = source(&ws, &subject).unwrap();
+		let (_, files) = source(&ws, &subject).unwrap().unwrap();
 		let picture = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
 		let cache = thumbnails.dir.clone();
 		keep(
@@ -1007,7 +1036,7 @@ mod tests {
 		// a job started on the rig as it is, and the result it sends
 		let start = |thumbnails: &mut Thumbnails, ws: &Workspace| {
 			let (tx, rx) = std::sync::mpsc::channel();
-			let (_, files) = source(ws, &subject).unwrap();
+			let (_, files) = source(ws, &subject).unwrap().unwrap();
 			thumbnails.job = Some(Job {
 				subject: subject.clone(),
 				file: thumbnails.file(&subject),
@@ -1088,5 +1117,75 @@ mod tests {
 		std::fs::write(&file, "a.mesh\nb.png").unwrap();
 		assert_eq!(read_list(&file, 12).as_deref(), Some("a.mesh\nb.png"));
 		assert_eq!(read_list(&file, 11), None);
+	}
+
+	/// R4-03: a mesh, map, rig or image behind a link below the
+	/// workspace's own folders was looked at and read for its thumbnail.
+	/// Now a mesh's thumbnail is refused, and a model's is drawn without
+	/// what is behind a link, or refused if its rig is.
+	#[test]
+	fn thumbnails_are_not_drawn_from_behind_a_link() {
+		let (dir, mut ws) = workspace(
+			done("Models/External/A.mesh"),
+			done("Models/External/A.png"),
+			done("Images/External/7.png"),
+		);
+		let outside = dir.join("outside");
+		std::fs::create_dir_all(&outside).unwrap();
+		for folder in ["Models", "Rigs", "Images"] {
+			std::fs::create_dir_all(dir.join(folder)).unwrap();
+			if !crate::workspace::junction(&dir.join(folder).join("External"), &outside) {
+				return;
+			}
+		}
+		let Some(Err(error)) = source(&ws, &Subject::Item("A".into())) else {
+			panic!("a mesh behind a link is drawn from");
+		};
+		assert!(
+			error.starts_with("Models/External in the workspace is a link"),
+			"{error}"
+		);
+		let model = Subject::Model("Workspace.M".into());
+		let (_, files) = source(&ws, &model).unwrap().unwrap();
+		assert_eq!(files, [ws.root.join("Rigs/M.rig.json")]);
+		let mut models = ws.models().to_vec();
+		models[0].file = "Rigs/External/M.rig.json".into();
+		ws.set_contents(ws.items().to_vec(), models);
+		assert!(matches!(source(&ws, &model), Some(Err(_))));
+	}
+
+	/// R4-03: a cached thumbnail and its list were read through a link (a
+	/// junction for `.cache/thumbnails` here; Workspace::open refuses that
+	/// one, but not a symbolic link at a thumbnail's own name, which needs
+	/// rights to make that tests may lack). Now it is a miss, here failing
+	/// without a GPU, and nothing behind the link is read.
+	#[test]
+	fn a_cached_thumbnail_behind_a_link_is_not_read() {
+		let (dir, ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		touch(
+			&dir.join("A.mesh"),
+			SystemTime::now() - Duration::from_secs(60),
+		);
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let (_, files) = source(&ws, &subject).unwrap().unwrap();
+		let outside = TempDir::new("thumb_outside");
+		let file = thumbnails.file(&subject);
+		let name = |p: &Path| outside.join(p.file_name().unwrap());
+		let picture = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+		picture.save(name(&file)).unwrap();
+		std::fs::write(name(&drawn_from(&file)), list(&files)).unwrap();
+		let _ = std::fs::remove_dir_all(&thumbnails.dir);
+		if !crate::workspace::junction(&thumbnails.dir, &outside) {
+			return;
+		}
+		assert!(is_fresh(&file, &files), "the cache is not set up as fresh");
+		let ctx = egui::Context::default();
+		thumbnails.get(&subject);
+		thumbnails.update(&ctx, &ws, None);
+		assert!(
+			thumbnails.get(&subject).is_none(),
+			"the thumbnail behind the link was read"
+		);
 	}
 }

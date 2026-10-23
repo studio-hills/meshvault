@@ -37,7 +37,7 @@ use self::manifest::{MANIFEST_VERSION, Manifest};
 pub(crate) use self::paths::junction;
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
 use self::paths::{MODELS_DIR, RIGS_DIR, fit_folder, image_id, image_stem, rig_stem, stem_name};
-pub(crate) use self::paths::{check_no_links, replace_file};
+pub(crate) use self::paths::{check_no_links, replace_file, saved_file};
 #[cfg(test)]
 pub(crate) use self::paths::{file_link, set_temp_tags};
 use self::rig_file::write_rig;
@@ -260,6 +260,13 @@ impl Workspace {
 			index
 		});
 		self.manifest.items.get(*index.get(stem)?)
+	}
+
+	/// The file at `rel`, a path the manifest holds, unless it is reached
+	/// through a link (see [`saved_file`]). Use this, not `root.join`, to
+	/// read a saved path or look at it.
+	pub fn saved_file(&self, rel: &str) -> Result<PathBuf, String> {
+		saved_file(&self.root, rel)
 	}
 
 	/// Notes that items were added, removed or changed where views see
@@ -2095,6 +2102,42 @@ mod tests {
 		ws.set_state("Models/B", AssetKind::Map(MapKind::Normal), done.clone());
 		ws.set_state("Images/5", AssetKind::Image, done);
 		assert!(ws.items()[0].maps.is_empty());
+		assert!(!ws.dirty);
+	}
+
+	/// R4-03: opening a workspace looked for each downloaded file through
+	/// any link below its own folders (a junction at `Models/External` to a
+	/// network share, say), and reset those it did not find there. Now a
+	/// saved path behind a link is not looked at: it is left as it is, and
+	/// whatever would read it refuses it.
+	#[test]
+	fn open_does_not_look_behind_a_link() {
+		let (_parent, dir, outside) = beside_outside("ws_open_linked", "other");
+		for folder in ["Models", "Images"] {
+			std::fs::create_dir_all(dir.join(folder)).unwrap();
+		}
+		write_manifest(
+			&dir,
+			serde_json::json!([done_item("Models/External/A", "Models/External/A.mesh")]),
+			serde_json::json!([done_model(
+				"Rigs/M.rig.json",
+				"Models/External/A",
+				"Images/External/7.png"
+			)]),
+		);
+		if !junction(&dir.join("Models/External"), &outside)
+			|| !junction(&dir.join("Images/External"), &outside)
+		{
+			return;
+		}
+		let ws = Workspace::open(&dir).unwrap();
+		let done = |path: &str| AssetState::Done { path: path.into() };
+		assert_eq!(
+			ws.items()[0].mesh,
+			done("Models/External/A.mesh"),
+			"open looked for the mesh behind the link"
+		);
+		assert_eq!(ws.models()[0].images[&7], done("Images/External/7.png"));
 		assert!(!ws.dirty);
 	}
 }

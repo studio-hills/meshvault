@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::scene::geometry;
 use crate::studio::export_file::read_limited;
 use crate::workspace::paths::replace_file;
-use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
+use crate::workspace::{AssetState, CACHE_DIR, Workspace, saved_file};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MeshFacts {
@@ -55,9 +55,8 @@ impl Facts {
 		let file = root.join(facts_rel());
 		// a file from before facts recorded the asset does not parse, so
 		// every mesh is read again once; nor is one read through a link
-		let known = check_no_links(root, &facts_rel())
-			.ok()
-			.map(|()| read_known(&file, MAX_FACTS_BYTES))
+		let known = saved_file(root, facts_rel())
+			.map(|file| read_known(&file, MAX_FACTS_BYTES))
 			.unwrap_or_default();
 		Self {
 			root: root.to_path_buf(),
@@ -138,7 +137,8 @@ impl Facts {
 		self.left = unread.len();
 		std::thread::spawn(move || {
 			for (path, mesh_id) in unread {
-				let facts = read(&root.join(&path));
+				// one behind a link is not read, and counts as unreadable
+				let facts = saved_file(&root, &path).ok().and_then(|file| read(&file));
 				if tx.send((path, mesh_id, facts)).is_err() {
 					return;
 				}
@@ -376,5 +376,34 @@ mod tests {
 		std::fs::write(&file, text).unwrap();
 		assert_eq!(read_known(&file, text.len()).len(), 1);
 		assert!(read_known(&file, text.len() - 1).is_empty());
+	}
+
+	/// R4-03: a downloaded mesh behind a link below `Models` was read for
+	/// its facts. Now it is not read, and counts as unreadable.
+	#[test]
+	fn facts_are_not_read_behind_a_link() {
+		let parent = TempDir::new("facts_behind_link");
+		let (dir, outside) = (parent.join("ws"), parent.join("outside"));
+		std::fs::create_dir_all(&outside).unwrap();
+		std::fs::copy(
+			Path::new(SAMPLE_MESHES).join("torso.mesh"),
+			outside.join("A.mesh"),
+		)
+		.unwrap();
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		download_a(&mut ws, "torso.mesh", 1);
+		if !crate::workspace::junction(&dir.join("Models/External"), &outside) {
+			return;
+		}
+		let path = "Models/External/A.mesh".to_string();
+		ws.set_state("Models/A", AssetKind::Mesh, AssetState::Done { path });
+		let mut facts = Facts::open(&dir);
+		facts.scan_all(&ws);
+		assert_eq!(
+			facts.get("Models/External/A.mesh", 1),
+			None,
+			"the mesh behind the link was read"
+		);
+		assert_eq!(facts.unreadable.get("Models/External/A.mesh"), Some(&1));
 	}
 }

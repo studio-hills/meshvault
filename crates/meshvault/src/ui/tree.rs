@@ -39,13 +39,28 @@ impl FolderTree {
 		folders
 	}
 
-	/// Every entry index in this folder and below.
+	/// Every entry index in this folder and below, each folder's own before
+	/// its subfolders'. Walked with a list rather than recursion, like
+	/// everything else here, so a tree of any depth fits on the stack.
 	pub fn all_items(&self) -> Vec<usize> {
-		let mut out = self.items.clone();
-		for child in self.folders.values() {
-			out.extend(child.all_items());
+		let mut out = Vec::new();
+		let mut stack = vec![self];
+		while let Some(node) = stack.pop() {
+			out.extend_from_slice(&node.items);
+			stack.extend(node.folders.values().rev());
 		}
 		out
+	}
+}
+
+impl Drop for FolderTree {
+	/// Takes the subfolders apart one level at a time; dropping them
+	/// recursively would overflow the stack on a deep tree.
+	fn drop(&mut self) {
+		let mut stack: Vec<FolderTree> = std::mem::take(&mut self.folders).into_values().collect();
+		while let Some(mut node) = stack.pop() {
+			stack.extend(std::mem::take(&mut node.folders).into_values());
+		}
 	}
 }
 
@@ -111,10 +126,13 @@ pub fn set_open(ctx: &egui::Context, id: Id, open: bool) {
 
 /// Opens or closes every folder below `node`.
 fn set_all(ctx: &egui::Context, scope: &str, node: &FolderTree, prefix: &str, open: bool) {
-	for (name, child) in &node.folders {
-		let path = child_path(prefix, name);
-		set_open(ctx, folder_id(scope, &path), open);
-		set_all(ctx, scope, child, &path, open);
+	let mut stack = vec![(node, prefix.to_owned())];
+	while let Some((node, prefix)) = stack.pop() {
+		for (name, child) in &node.folders {
+			let path = child_path(&prefix, name);
+			set_open(ctx, folder_id(scope, &path), open);
+			stack.push((child, path));
+		}
 	}
 }
 
@@ -251,6 +269,25 @@ mod tests {
 			[0]
 		);
 		assert_eq!(tree.all_items().len(), 3);
+	}
+
+	/// A folder path of tens of thousands of parts is listed, expanded,
+	/// collapsed and dropped without running out of stack.
+	#[test]
+	fn deep_trees_do_not_overflow_the_stack() {
+		let deep: Vec<String> = (0..10_000).map(|i| format!("f{i}")).collect();
+		let worker = std::thread::Builder::new()
+			.stack_size(256 * 1024)
+			.spawn(move || {
+				let tree = FolderTree::build([deep.as_slice(), &deep[..2]]);
+				assert_eq!(tree.all_items(), [1, 0]);
+				let ctx = egui::Context::default();
+				FolderCommand::All(true).apply(&ctx, "t", &tree);
+				FolderCommand::Subtree("f0/f1".into(), false).apply(&ctx, "t", &tree);
+				drop(tree);
+			})
+			.unwrap();
+		worker.join().unwrap();
 	}
 
 	#[test]

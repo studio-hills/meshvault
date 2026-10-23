@@ -24,6 +24,15 @@ use crate::scene::maps::MapKind;
 /// The newest `SchemaVersion` this build understands, and the one it writes.
 pub const SCHEMA_VERSION: u32 = 2;
 
+/// The most folders an entry or model can be inside, its game included.
+/// Real exports are a dozen deep at most; the folder tree is drawn
+/// recursively, so a deeper one could overflow the stack.
+pub const MAX_FOLDER_DEPTH: usize = 64;
+/// The longest folder name, in characters.
+pub const MAX_FOLDER_PART: usize = 200;
+/// The longest folder path, in characters, `/`s included.
+pub const MAX_FOLDER_LEN: usize = 2000;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct RawEntry {
@@ -198,7 +207,7 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 				)),
 			}
 		}
-		let folder = origin
+		let folder: Vec<String> = origin
 			.game
 			.iter()
 			.cloned()
@@ -210,6 +219,10 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 					.map(String::from),
 			)
 			.collect();
+		if let Some(why) = folder_problem(&folder) {
+			skipped.push(format!("{}: {why}", r.name));
+			continue;
+		}
 		entries.push(Entry {
 			name: r.name,
 			folder,
@@ -218,6 +231,25 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 			source_id: r.id,
 		});
 	}
+	// a model shows in the folder holding it (`workspace::model_folder`)
+	let models = models
+		.into_iter()
+		.filter(|m| {
+			let path: Vec<&str> = origin
+				.game
+				.iter()
+				.map(String::as_str)
+				.chain(m.path.split('/').filter(|s| !s.is_empty()))
+				.collect();
+			let why = path
+				.split_last()
+				.and_then(|(_, folder)| folder_problem(folder));
+			if let Some(why) = &why {
+				skipped.push(format!("{}: {why}", m.name));
+			}
+			why.is_none()
+		})
+		.collect();
 	Export {
 		origin,
 		entries,
@@ -225,6 +257,31 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 		skipped,
 		warnings,
 	}
+}
+
+/// Why a folder path cannot be imported: too deep or too long for the
+/// folder tree and for paths on disk.
+fn folder_problem(folder: &[impl AsRef<str>]) -> Option<String> {
+	if folder.len() > MAX_FOLDER_DEPTH {
+		return Some(format!(
+			"its folder is {} levels deep, more than the {MAX_FOLDER_DEPTH} allowed",
+			folder.len()
+		));
+	}
+	// the `/`s between the names
+	let mut len = folder.len().saturating_sub(1);
+	for part in folder {
+		let chars = part.as_ref().chars().count();
+		if chars > MAX_FOLDER_PART {
+			return Some(format!(
+				"a folder name is {chars} characters long, more than the {MAX_FOLDER_PART} allowed"
+			));
+		}
+		len += chars;
+	}
+	(len > MAX_FOLDER_LEN).then(|| {
+		format!("its folder path is {len} characters long, more than the {MAX_FOLDER_LEN} allowed")
+	})
 }
 
 #[cfg(test)]
@@ -381,6 +438,47 @@ mod tests {
 		let older = parse(r#"{"SchemaVersion":1,"Meshes":[{"Id":1,"Name":"B","MeshId":"rbxassetid://1","Folder":"X"}],"Models":[]}"#).unwrap();
 		assert_eq!(older.origin, Origin::default());
 		assert_eq!(older.entries[0].folder, ["X"]);
+	}
+
+	/// A short document can name a folder tens of thousands of levels deep;
+	/// such entries and models are skipped, saying why, and the rest kept.
+	#[test]
+	fn skips_folders_too_deep_or_long() {
+		let deep = "a/".repeat(40_000);
+		let long = "x".repeat(MAX_FOLDER_PART + 1);
+		let wide =
+			vec!["y".repeat(MAX_FOLDER_PART); MAX_FOLDER_LEN / MAX_FOLDER_PART + 1].join("/");
+		let ok = vec!["z"; MAX_FOLDER_DEPTH - 1].join("/");
+		let json = serde_json::json!({
+			"SchemaVersion": 2,
+			"GameName": "G",
+			"Meshes": [
+				{"Id": 1, "Name": "Deep", "MeshId": "rbxassetid://1", "Folder": deep},
+				{"Id": 2, "Name": "Long", "MeshId": "rbxassetid://2", "Folder": long},
+				{"Id": 3, "Name": "Wide", "MeshId": "rbxassetid://3", "Folder": wide},
+				{"Id": 4, "Name": "Fine", "MeshId": "rbxassetid://4", "Folder": ok},
+			],
+			"Models": [
+				{"Name": "DeepRig", "Path": format!("{deep}DeepRig")},
+				{"Name": "Rig", "Path": "Workspace/Rig"},
+			],
+		});
+		let export = parse(&json.to_string()).unwrap();
+		let names: Vec<_> = export.entries.iter().map(|e| e.name.as_str()).collect();
+		assert_eq!(names, ["Fine"]);
+		assert_eq!(
+			export.entries[0].folder.len(),
+			MAX_FOLDER_DEPTH,
+			"the game counts"
+		);
+		assert_eq!(export.models.len(), 1);
+		assert_eq!(export.models[0].name, "Rig");
+		assert_eq!(export.skipped.len(), 4, "{:?}", export.skipped);
+		assert!(
+			export.skipped.iter().all(|s| s.len() < 200),
+			"{:?}",
+			export.skipped
+		);
 	}
 
 	#[test]

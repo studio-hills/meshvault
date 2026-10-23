@@ -347,33 +347,82 @@ impl App {
 	}
 
 	fn shortcuts_dialog(&mut self, ctx: &egui::Context) {
-		if !self.show_shortcuts {
-			return;
-		}
-		let p = palette(ctx);
-		let modal = widgets::modal(ctx, "shortcuts").show(ctx, |ui| {
-			ui.set_width(380.0);
-			widgets::dialog_title(ui, None, "Keyboard shortcuts");
-			ui.add_space(8.0);
-			egui::Grid::new("shortcut_grid")
-				.num_columns(2)
-				.spacing(Vec2::new(16.0, 8.0))
-				.show(ui, |ui| {
-					for (keys, action) in SHORTCUTS {
-						widgets::badge(ui, RichText::new(*keys).monospace(), p.text);
-						ui.label(*action);
-						ui.end_row();
-					}
-				});
-			ui.add_space(10.0);
-			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-				widgets::text_button(ui, "Close").clicked()
-			})
-			.inner
-		});
-		if modal.inner || modal.should_close() {
+		if self.show_shortcuts && show_shortcuts(ctx) {
 			self.show_shortcuts = false;
 		}
+	}
+}
+
+/// Draws the keyboard shortcuts dialog. Returns whether it was closed.
+fn show_shortcuts(ctx: &egui::Context) -> bool {
+	let p = palette(ctx);
+	let window = ctx.content_rect().size();
+	let columns = shortcut_columns(window.x);
+	let modal = widgets::modal(ctx, "shortcuts").show(ctx, |ui| {
+		ui.set_width(columns as f32 * SHORTCUT_COLUMN_WIDTH);
+		widgets::dialog_title(ui, None, "Keyboard shortcuts");
+		ui.add_space(8.0);
+		let section = |ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)]| {
+			ui.vertical(|ui| {
+				ui.set_width(SHORTCUT_COLUMN_WIDTH - 16.0);
+				ui.label(widgets::overline(title).weak());
+				ui.add_space(4.0);
+				egui::Grid::new(("shortcut_grid", title))
+					.num_columns(2)
+					.min_row_height(SHORTCUT_ROW)
+					.spacing(Vec2::new(14.0, 6.0))
+					.show(ui, |ui| {
+						for (keys, action) in rows {
+							widgets::badge(ui, RichText::new(*keys).monospace(), p.text);
+							ui.label(*action);
+							ui.end_row();
+						}
+					});
+			});
+		};
+		// never taller than the window: what does not fit scrolls
+		egui::ScrollArea::vertical()
+			.max_height((window.y - SHORTCUT_DIALOG_CHROME).max(120.0))
+			.show(ui, |ui| {
+				if columns == 2 {
+					ui.horizontal_top(|ui| {
+						for (title, rows) in SHORTCUTS {
+							section(ui, title, rows);
+						}
+					});
+				} else {
+					for (i, (title, rows)) in SHORTCUTS.iter().enumerate() {
+						if i > 0 {
+							ui.add_space(12.0);
+						}
+						section(ui, title, rows);
+					}
+				}
+			});
+		ui.add_space(10.0);
+		ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+			widgets::text_button(ui, "Close").clicked()
+		})
+		.inner
+	});
+	modal.inner || modal.should_close()
+}
+
+/// The width of one column of the shortcuts dialog.
+const SHORTCUT_COLUMN_WIDTH: f32 = 360.0;
+/// The height of a row of the shortcuts dialog, keycap included.
+const SHORTCUT_ROW: f32 = 24.0;
+/// What the shortcuts dialog needs besides its list: title, button, margins
+/// and room around the dialog.
+const SHORTCUT_DIALOG_CHROME: f32 = 190.0;
+
+/// How many columns of shortcuts fit a window `width` wide: the sections
+/// side by side when there is room, one under the other when not.
+fn shortcut_columns(width: f32) -> usize {
+	if width >= 2.0 * SHORTCUT_COLUMN_WIDTH + 120.0 {
+		2
+	} else {
+		1
 	}
 }
 
@@ -411,4 +460,75 @@ fn progress_dialog(
 		});
 	});
 	cancel
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn the_shortcut_sections_sit_side_by_side_only_when_they_fit() {
+		assert_eq!(shortcut_columns(1280.0), 2);
+		assert_eq!(shortcut_columns(960.0), 2);
+		assert_eq!(shortcut_columns(760.0), 1);
+	}
+
+	/// The dialog as laid out in a window of `size`, fonts and theme as in
+	/// the app.
+	fn shortcuts_rect(size: Vec2) -> egui::Rect {
+		let ctx = egui::Context::default();
+		super::super::theme::install_fonts(&ctx);
+		super::super::theme::apply(&ctx, super::super::theme::ThemeMode::Dark);
+		let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+		// a few frames, for the layout to settle
+		for _ in 0..3 {
+			let input = egui::RawInput {
+				screen_rect: Some(screen),
+				..Default::default()
+			};
+			let mut output = ctx.run_ui(input, |ui| {
+				show_shortcuts(ui.ctx());
+			});
+			output.textures_delta.clear();
+		}
+		ctx.memory(|m| m.area_rect(egui::Id::unique("shortcuts")))
+			.expect("the dialog was drawn")
+	}
+
+	/// It was taller than the window and ran off its bottom.
+	#[test]
+	fn the_shortcuts_dialog_fits_the_window() {
+		for size in [
+			Vec2::new(760.0, 480.0),
+			Vec2::new(1280.0, 800.0),
+			Vec2::new(1920.0, 1080.0),
+		] {
+			let rect = shortcuts_rect(size);
+			let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+			assert!(
+				screen.contains_rect(rect),
+				"{rect:?} is outside the {size:?} window"
+			);
+		}
+	}
+
+	/// The dialog and the user docs list the same keys, in the same sections.
+	#[test]
+	fn the_shortcuts_dialog_matches_the_docs() {
+		let docs = include_str!("../../../../docs/shortcuts.md");
+		for (title, rows) in SHORTCUTS {
+			let heading = format!("## {title}\n");
+			let start = docs
+				.find(&heading)
+				.unwrap_or_else(|| panic!("no section {title:?}"));
+			let section = &docs[start + heading.len()..];
+			let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+			for (keys, _) in *rows {
+				assert!(
+					section.contains(&format!("| {keys} |")),
+					"{keys} is not under {title:?} in docs/shortcuts.md"
+				);
+			}
+		}
+	}
 }

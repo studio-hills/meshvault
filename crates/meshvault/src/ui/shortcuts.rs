@@ -98,25 +98,36 @@ impl App {
 	}
 }
 
-/// Keyboard shortcuts, for the help dialog.
-pub(super) const SHORTCUTS: &[(&str, &str)] = &[
-	("Ctrl+O", "Open a file"),
-	("Ctrl+Shift+O", "Open a workspace"),
-	("Ctrl+N", "New workspace"),
-	("Ctrl+I", "Import an export .json"),
-	("Ctrl+D", "Download pending"),
-	("Ctrl+E", "Export for Blender (.glb)"),
-	("Ctrl+Shift+E", "Export as OBJ"),
-	("Ctrl+,", "Roblox access"),
-	("Ctrl+B", "Toggle library"),
-	("Ctrl+Shift+B", "Toggle inspector"),
-	("F", "Frame model"),
-	("Space", "Play or pause the animation"),
-	("1 / 2 / 3", "Solid / solid + wireframe / wireframe"),
-	("M", "Toggle maps"),
-	("G", "Toggle ground grid"),
-	("K / J", "Toggle the skeleton / joints of an animated model"),
-	("L", "Next lighting preset"),
-	("F12", "Save the view as an image"),
-	("?", "Show this list"),
+/// Keyboard shortcuts, for the help dialog, in the sections of
+/// docs/shortcuts.md.
+pub(super) const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
+	(
+		"Files and workspaces",
+		&[
+			("Ctrl+O", "Open a file"),
+			("Ctrl+Shift+O", "Open a workspace"),
+			("Ctrl+N", "New workspace"),
+			("Ctrl+I", "Import an export .json"),
+			("Ctrl+D", "Download pending"),
+			("Ctrl+E", "Export for Blender (.glb)"),
+			("Ctrl+Shift+E", "Export as OBJ"),
+			("Ctrl+,", "Roblox access"),
+		],
+	),
+	(
+		"Panels and view",
+		&[
+			("Ctrl+B", "Toggle library"),
+			("Ctrl+Shift+B", "Toggle inspector"),
+			("F", "Frame model"),
+			("Space", "Play or pause the animation"),
+			("1 / 2 / 3", "Solid / solid + wireframe / wireframe"),
+			("M", "Toggle maps"),
+			("G", "Toggle ground grid"),
+			("K / J", "Toggle the skeleton / joints"),
+			("L", "Next lighting preset"),
+			("F12", "Save the view as an image"),
+			("?", "Show this list"),
+		],
+	),
 ];

@@ -3,6 +3,14 @@ pub mod mesh;
 #[cfg(feature = "mesh")]
 pub use mesh::read_versioned as read_mesh_versioned;
 
+// bounded reads shared by every format
+#[cfg(any(
+	feature = "mesh",
+	feature = "union-graphics",
+	feature = "union-physics"
+))]
+mod read;
+
 // shared code between union formats
 #[cfg(any(feature = "union-graphics", feature = "union-physics"))]
 mod csgk;

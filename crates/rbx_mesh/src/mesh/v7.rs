@@ -33,7 +33,15 @@ mod draco {
 	use core::error::Error;
 
 	use crate::mesh::{CoreMesh6, CoreMeshDraco7, Face2, Vertex2, VertexId2};
-	use draco_core::{DecoderBuffer, GeometryAttributeType, MeshDecoder, PointAttribute};
+	use crate::read::MAX_FACES;
+	use draco_core::{
+		DecodeLimits, DecoderBuffer, ErrorKind, GeometryAttributeType, MeshDecoder, PointAttribute,
+	};
+
+	/// Largest decoded point count accepted, the same as for faces.
+	const MAX_POINTS: usize = MAX_FACES as usize;
+	/// Largest total size of the attribute values Draco decodes.
+	const MAX_DECODED_BYTES: u64 = 256 << 20;
 
 	#[derive(Debug)]
 	pub enum DracoError {
@@ -64,14 +72,28 @@ mod draco {
 		/// Roblox stores normals and tangents as generic attributes, so
 		/// attributes are matched by type and component count:
 		/// position, normal (generic f32 x3), uv, tangent (generic u8 x4), colour.
+		///
+		/// Streams that decode to more than 4,194,304 faces or points, or more
+		/// than 256 MiB of attribute values, fail with a `LimitExceeded` error.
 		pub fn decode(&self) -> Result<CoreMesh6, DracoError> {
-			let mut buffer = DecoderBuffer::new(&self.bitstream);
+			let limits = DecodeLimits::default()
+				.with_max_faces(MAX_FACES.into())
+				.with_max_points(MAX_POINTS as u64)
+				.with_max_decoded_bytes(MAX_DECODED_BYTES);
+			let mut buffer = DecoderBuffer::new(&self.bitstream).with_limits(limits);
 			let mut mesh = draco_core::Mesh::new();
 			MeshDecoder::new()
 				.decode(&mut buffer, &mut mesh)
 				.map_err(DracoError::Decode)?;
 
 			let n = mesh.num_points();
+			// every attribute below is expanded to `n` values
+			if MAX_POINTS < n {
+				return Err(DracoError::Decode(draco_core::DracoError::new(
+					ErrorKind::LimitExceeded,
+					format!("stream decodes {n} points, over the ceiling of {MAX_POINTS}"),
+				)));
+			}
 			let attributes: Vec<&PointAttribute> = (0..mesh.num_attributes())
 				.map(|i| mesh.attribute(i))
 				.collect();

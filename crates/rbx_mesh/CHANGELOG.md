@@ -9,6 +9,11 @@
 
 - `Mesh` has new `V6` and `V7` variants (breaking for exhaustive matches)
 
+### Fixed
+
+- Counts no longer size allocations before the data is checked: mesh v1 (also `3 * face_count` overflow), CSGMDL5 face indices, mesh v5 FACS matrix `x * y` overflow, and Draco decoding (face, point and attribute-byte ceilings)
+- Counted byte fields (bone names, FACS names, Draco bitstreams, HSRAVIS bits, unknown chunk data, CSGMDL5 index data) check the bytes remaining before reserving, instead of reserving up to 4 GiB
+
 ## [0.8.2] - Oct 16th 2026
 
 ### Removed

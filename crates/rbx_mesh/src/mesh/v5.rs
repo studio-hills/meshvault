@@ -26,7 +26,7 @@ pub enum QuantizedMatrix5 {
 	Raw {
 		x: u32,
 		y: u32,
-		#[br(count=x*y)]
+		#[br(count=u64::from(x) * u64::from(y))]
 		matrix: Vec<f32>,
 	},
 	#[brw(magic = 2u16)]
@@ -35,7 +35,7 @@ pub enum QuantizedMatrix5 {
 		y: u32,
 		lerp0: f32,
 		lerp1: f32,
-		#[br(count=x*y)]
+		#[br(count=u64::from(x) * u64::from(y))]
 		matrix: Vec<u16>,
 	},
 }
@@ -46,19 +46,19 @@ impl QuantizedMatrix5 {
 		size_of::<u16>()
 		// enum variant
 		+ match self {
-			QuantizedMatrix5::Raw { x, y, .. } => {
+			QuantizedMatrix5::Raw { matrix, .. } => {
 				// x, y
 				2 * size_of::<u32>()
 				// matrix
-				+ (x * y) as usize * size_of::<f32>()
+				+ matrix.len() * size_of::<f32>()
 			}
-			QuantizedMatrix5::Quantized { x, y, .. } => {
+			QuantizedMatrix5::Quantized { matrix, .. } => {
 				// x, y
 				2 * size_of::<u32>()
 				// lerp0, lerp1
 				+ 2 * size_of::<f32>()
 				// matrix
-				+ (x * y) as usize * size_of::<u16>()
+				+ matrix.len() * size_of::<u16>()
 			}
 		}
 	}
@@ -121,9 +121,9 @@ pub struct Facs5 {
 	#[br(temp)]
 	#[bw(try_calc=(three_pose_correctives.len()*size_of::<ThreePoseCorrective5>()).try_into())]
 	pub three_pose_correctives_len: u32,
-	#[br(count=face_bone_names_len)]
+	#[br(parse_with = crate::read::bytes, args(face_bone_names_len))]
 	pub face_bone_names: Vec<u8>,
-	#[br(count=face_control_names_len)]
+	#[br(parse_with = crate::read::bytes, args(face_control_names_len))]
 	pub face_control_names: Vec<u8>,
 	//is this not a list?
 	pub quantized_transforms: QuantizedTransforms5,
@@ -179,7 +179,7 @@ pub struct Mesh5 {
 	pub lods: Vec<Lod3>,
 	#[br(count=bone_count)]
 	pub bones: Vec<Bone4>,
-	#[br(count=bone_names_len)]
+	#[br(parse_with = crate::read::bytes, args(bone_names_len))]
 	pub bone_names: Vec<u8>,
 	#[br(count=subset_count)]
 	pub subsets: Vec<Subset4>,

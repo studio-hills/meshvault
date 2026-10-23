@@ -88,3 +88,70 @@ where
 	assert_eq!(rbuf, wbuf, "Round trip failed");
 	Ok(mesh)
 }
+
+#[cfg(feature = "mesh")]
+mod hardening;
+
+/// Test allocator that refuses, on the threads that ask for it, any single
+/// allocation larger than a cap. A refused allocation aborts the test binary
+/// ("memory allocation of N bytes failed"), so a parser that reserves from a
+/// declared count fails loudly here instead of reserving gigabytes.
+struct CappedAlloc;
+
+std::thread_local! {
+	static ALLOC_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+fn alloc_cap() -> usize {
+	ALLOC_CAP.try_with(|cap| cap.get()).unwrap_or(usize::MAX)
+}
+
+// SAFETY: every call is forwarded to the system allocator unchanged, or
+// refused with null, which callers must handle.
+unsafe impl std::alloc::GlobalAlloc for CappedAlloc {
+	unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+		if alloc_cap() < layout.size() {
+			return std::ptr::null_mut();
+		}
+		// SAFETY: forwarded with the caller's layout.
+		unsafe { std::alloc::System.alloc(layout) }
+	}
+	unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+		if alloc_cap() < layout.size() {
+			return std::ptr::null_mut();
+		}
+		// SAFETY: forwarded with the caller's layout.
+		unsafe { std::alloc::System.alloc_zeroed(layout) }
+	}
+	unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+		if alloc_cap() < new_size {
+			return std::ptr::null_mut();
+		}
+		// SAFETY: forwarded with the caller's pointer and layout.
+		unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+	}
+	unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+		// SAFETY: forwarded with the caller's pointer and layout.
+		unsafe { std::alloc::System.dealloc(ptr, layout) }
+	}
+}
+
+#[global_allocator]
+static ALLOC: CappedAlloc = CappedAlloc;
+
+/// Runs `f` with single allocations on this thread capped at `cap` bytes.
+#[cfg_attr(
+	not(any(
+		feature = "mesh",
+		feature = "union-graphics",
+		feature = "csgphs-v8-zstd",
+		feature = "csgphs-v8-ruzstd",
+	)),
+	expect(unused)
+)]
+pub fn with_alloc_cap<T>(cap: usize, f: impl FnOnce() -> T) -> T {
+	let previous = ALLOC_CAP.with(|c| c.replace(cap));
+	let value = f();
+	ALLOC_CAP.with(|c| c.set(previous));
+	value
+}

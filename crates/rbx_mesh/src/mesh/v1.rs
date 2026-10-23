@@ -122,9 +122,16 @@ fn from_str(str: &str) -> Result<Mesh1, InnerError> {
 		.parse()
 		.map_err(Error1::ParseIntError)?;
 
+	let vertex_count = face_count.checked_mul(3).ok_or(Error1::VertexCount)?;
+
 	let mut vertices_line = io_error(lines.next())?;
-	let mut vertices = Vec::with_capacity(face_count as usize * 3);
-	for _ in 0..3 * face_count {
+	// the shortest vertex is `[0,0,0][0,0,0][0,0,0]`, so the line bounds the count
+	const MIN_VERTEX_LEN: usize = 21;
+	if vertices_line.len() / MIN_VERTEX_LEN < vertex_count as usize {
+		return Err(Error1::VertexCount.into());
+	}
+	let mut vertices = Vec::with_capacity(vertex_count as usize);
+	for _ in 0..vertex_count {
 		vertices.push(parse_vertex(&mut vertices_line)?);
 	}
 

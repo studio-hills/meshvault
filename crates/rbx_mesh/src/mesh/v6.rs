@@ -72,7 +72,7 @@ pub struct CoreMesh6 {
 pub struct CoreMeshDraco7 {
 	#[br(temp)]
 	bitstream_len: u32,
-	#[br(count = bitstream_len)]
+	#[br(parse_with = crate::read::bytes, args(bitstream_len))]
 	pub bitstream: Vec<u8>,
 }
 
@@ -124,7 +124,7 @@ pub struct Skinning6 {
 	pub bones: Vec<Bone4>,
 	#[br(temp)]
 	bone_names_len: u32,
-	#[br(count = bone_names_len)]
+	#[br(parse_with = crate::read::bytes, args(bone_names_len))]
 	pub bone_names: Vec<u8>,
 	#[br(temp)]
 	subset_count: u32,
@@ -169,7 +169,7 @@ pub struct Facs6 {
 #[derive(Debug, Clone)]
 pub struct HsrAvis6 {
 	pub bit_count: u32,
-	#[br(count = bit_count.div_ceil(8))]
+	#[br(parse_with = crate::read::bytes, args(bit_count.div_ceil(8)))]
 	pub bits: Vec<u8>,
 }
 impl HsrAvis6 {
@@ -199,7 +199,7 @@ pub struct UnsupportedVersion {
 	pub version: u32,
 	#[br(temp)]
 	size: u32,
-	#[br(count = size)]
+	#[br(parse_with = crate::read::bytes, args(size))]
 	pub data: Vec<u8>,
 }
 
@@ -225,7 +225,7 @@ pub struct UnknownChunk {
 	pub version: u32,
 	#[br(temp)]
 	size: u32,
-	#[br(count = size)]
+	#[br(parse_with = crate::read::bytes, args(size))]
 	pub data: Vec<u8>,
 }
 

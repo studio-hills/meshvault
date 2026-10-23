@@ -59,7 +59,7 @@ impl binrw::BinRead for Faces5 {
 		struct Faces5Inner {
 			vertex_count: u32,
 			vertex_data_len: u32,
-			#[br(count=vertex_data_len)]
+			#[br(parse_with = crate::read::bytes, args(vertex_data_len))]
 			vertex_data: Vec<u8>,
 			range_marker_count: u8,
 			#[br(count=range_marker_count)]
@@ -73,6 +73,10 @@ impl binrw::BinRead for Faces5 {
 			data: Vec<u8>,
 			expected_output_count: u32,
 		) -> Result<Vec<u32>, FacesStateMachineError> {
+			// every index takes at least one byte
+			if data.len() < expected_output_count as usize {
+				return Err(FacesStateMachineError::UnexpectedEOF);
+			}
 			let mut indices = Vec::with_capacity(expected_output_count as usize);
 			let mut it = data.into_iter();
 			let mut index_out: u32 = 0;

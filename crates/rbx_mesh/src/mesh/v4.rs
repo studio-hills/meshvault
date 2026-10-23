@@ -128,7 +128,7 @@ pub struct Mesh4 {
 	pub lods: Vec<Lod3>,
 	#[br(count=bone_count)]
 	pub bones: Vec<Bone4>,
-	#[br(count=bone_names_len)]
+	#[br(parse_with = crate::read::bytes, args(bone_names_len))]
 	pub bone_names: Vec<u8>,
 	#[br(count=subset_count)]
 	pub subsets: Vec<Subset4>,

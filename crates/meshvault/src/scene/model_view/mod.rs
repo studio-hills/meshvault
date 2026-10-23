@@ -338,6 +338,16 @@ fn load_warnings(warnings: &mut Vec<String>, counts: &LoadCounts, parts: &[PartV
 
 /// The model's clips, each bound to the rig or with why it cannot play.
 fn clip_slots(model: &AnimatedModel, rig: &Rig, parts: &[PartView]) -> Vec<ClipSlot> {
+	// the same for every clip, so gathered once
+	let mesh_names: HashSet<&str> = parts
+		.iter()
+		.filter_map(|p| p.skin.as_ref())
+		.flat_map(|s| s.drivers.iter())
+		.filter_map(|d| match d {
+			Driver::Mesh { name, .. } => Some(name.as_str()),
+			_ => None,
+		})
+		.collect();
 	model
 		.animations
 		.iter()
@@ -353,15 +363,6 @@ fn clip_slots(model: &AnimatedModel, rig: &Rig, parts: &[PartView]) -> Vec<ClipS
 				})
 			};
 			let binding = clip.as_ref().map(|c| rig.bind(c)).unwrap_or_default();
-			let mesh_names: HashSet<&str> = parts
-				.iter()
-				.filter_map(|p| p.skin.as_ref())
-				.flat_map(|s| s.drivers.iter())
-				.filter_map(|d| match d {
-					Driver::Mesh { name, .. } => Some(name.as_str()),
-					_ => None,
-				})
-				.collect();
 			let (mesh_bones, unmatched): (Vec<String>, Vec<String>) = binding
 				.unmatched
 				.iter()

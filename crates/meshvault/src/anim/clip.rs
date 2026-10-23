@@ -3,6 +3,8 @@
 //! A clip becomes a list of tracks, each driving one named target (a
 //! Motor6D's `Part1` or a Bone) with a local transform over time.
 
+use std::collections::HashMap;
+
 use super::math::{CFrame, euler_axes};
 use super::schema::{
 	AnimationClip, CFrame12, Channels, ClipStatus, CurveData, EasingDirection, EasingStyle,
@@ -218,7 +220,9 @@ impl Clip {
 	}
 
 	fn add_keyframes(&mut self, record: &AnimationClip) {
-		let mut tracks: Vec<(TargetKey, Vec<PoseKey>)> = Vec::new();
+		let mut tracks = Tracks::default();
+		// each face control's place in `self.face`
+		let mut face_index: HashMap<String, usize> = HashMap::new();
 		let mut frames: Vec<_> = record.keyframes.iter().collect();
 		sort_by_time(&mut frames, |f| f.time);
 		for frame in frames {
@@ -241,19 +245,26 @@ impl Clip {
 					style: face.easing_style,
 					direction: face.easing_direction,
 				};
-				match self.face.iter_mut().find(|t| t.control == face.name) {
-					Some(FaceTrack {
-						keys: FaceKeys::Poses(keys),
-						..
-					}) => keys.push(key),
-					_ => self.face.push(FaceTrack {
-						control: face.name.clone(),
-						keys: FaceKeys::Poses(vec![key]),
-					}),
+				// only this function adds to `self.face`, so every track it
+				// finds holds poses
+				match face_index.get(&face.name) {
+					Some(&i) => {
+						if let FaceKeys::Poses(keys) = &mut self.face[i].keys {
+							keys.push(key);
+						}
+					}
+					None => {
+						face_index.insert(face.name.clone(), self.face.len());
+						self.face.push(FaceTrack {
+							control: face.name.clone(),
+							keys: FaceKeys::Poses(vec![key]),
+						});
+					}
 				}
 			}
 		}
 		self.tracks = tracks
+			.list
 			.into_iter()
 			.map(|(target, keys)| Track {
 				target,
@@ -266,6 +277,8 @@ impl Clip {
 		// target, its X/Y/Z position channels, and its rotation
 		type Gathered = (TargetKey, Option<[Vec<CurveKey>; 3]>, Rotation);
 		let mut by_target: Vec<Gathered> = Vec::new();
+		// each target's place in `by_target`
+		let mut index_of: HashMap<TargetKey, usize> = HashMap::new();
 		for track in &record.curves {
 			let name = track
 				.path
@@ -282,9 +295,10 @@ impl Clip {
 				// the folder above the target names its parent pose
 				parent: track.path.rsplit('/').nth(1).map(String::from),
 			};
-			let index = match by_target.iter().position(|(t, ..)| *t == target) {
-				Some(i) => i,
+			let index = match index_of.get(&target) {
+				Some(&i) => i,
 				None => {
+					index_of.insert(target.clone(), by_target.len());
 					by_target.push((target, None, Rotation::None));
 					by_target.len() - 1
 				}
@@ -393,12 +407,27 @@ fn sort_by_time<T>(keys: &mut [T], time: impl Fn(&T) -> f32) {
 	keys.sort_by(|a, b| time(a).total_cmp(&time(b)));
 }
 
-fn walk_poses(
-	poses: &[Pose],
-	parent: Option<&str>,
-	time: f32,
-	tracks: &mut Vec<(TargetKey, Vec<PoseKey>)>,
-) {
+/// Pose keys gathered per target, in the order targets are first seen.
+#[derive(Default)]
+struct Tracks {
+	list: Vec<(TargetKey, Vec<PoseKey>)>,
+	/// Each target's place in `list`.
+	index: HashMap<TargetKey, usize>,
+}
+
+impl Tracks {
+	fn push(&mut self, target: TargetKey, key: PoseKey) {
+		match self.index.get(&target) {
+			Some(&i) => self.list[i].1.push(key),
+			None => {
+				self.index.insert(target.clone(), self.list.len());
+				self.list.push((target, vec![key]));
+			}
+		}
+	}
+}
+
+fn walk_poses(poses: &[Pose], parent: Option<&str>, time: f32, tracks: &mut Tracks) {
 	for pose in poses {
 		// weight 0 marks placeholder poses that only group their children;
 		// treating them as keys would snap the target back to rest
@@ -413,10 +442,7 @@ fn walk_poses(
 				style: pose.easing_style,
 				direction: pose.easing_direction,
 			};
-			match tracks.iter_mut().find(|(t, _)| *t == target) {
-				Some((_, keys)) => keys.push(key),
-				None => tracks.push((target, vec![key])),
-			}
+			tracks.push(target, key);
 		}
 		walk_poses(&pose.children, Some(&pose.name), time, tracks);
 	}
@@ -1126,5 +1152,272 @@ mod tests {
 		face_controls_of(&tree, &mut found);
 		let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
 		assert_eq!(names, ["A", "B", "C", "D"]);
+	}
+
+	/// Enough unique targets that a linear search per target takes seconds.
+	const MANY: usize = 30_000;
+
+	fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
+		let start = std::time::Instant::now();
+		let out = f();
+		let took = start.elapsed();
+		assert!(took.as_secs_f32() < 1.0, "{what} took {took:?}");
+		out
+	}
+
+	/// Each pose finds its track through an index, not a search of every
+	/// track so far, so many unique child poses build quickly.
+	#[test]
+	fn many_unique_poses_build_quickly() {
+		let children = (0..MANY)
+			.map(|i| pose(&format!("P{i}"), 0.0, 1.0, vec![]))
+			.collect();
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![Keyframe {
+				time: 0.0,
+				poses: vec![pose("Root", 0.0, 0.0, children)],
+				markers: vec![],
+			}],
+			..Default::default()
+		};
+		let clip = timed("poses", || Clip::from_record(&record).unwrap());
+		assert_eq!(clip.tracks.len(), MANY);
+		assert_eq!(clip.tracks[MANY - 1].target.name, format!("P{}", MANY - 1));
+	}
+
+	#[test]
+	fn many_unique_curves_build_quickly() {
+		let curves = (0..MANY)
+			.map(|i| CurveTrack {
+				path: format!("Root/P{i}"),
+				name: "Position".into(),
+				curve: CurveData::Vector3Curve {
+					channels: Channels::default(),
+				},
+			})
+			.collect();
+		let record = AnimationClip {
+			status: ClipStatus::CurveAnimation,
+			duration: 1.0,
+			curves,
+			..Default::default()
+		};
+		let clip = timed("curves", || Clip::from_record(&record).unwrap());
+		assert_eq!(clip.tracks.len(), MANY);
+	}
+
+	#[test]
+	fn many_face_controls_build_quickly() {
+		let controls = (0..MANY)
+			.map(|i| FaceControlPose {
+				name: format!("C{i}"),
+				..Default::default()
+			})
+			.collect();
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![Keyframe {
+				time: 0.0,
+				poses: vec![Pose {
+					face_controls: controls,
+					..pose("Head", 0.0, 0.0, vec![])
+				}],
+				markers: vec![],
+			}],
+			..Default::default()
+		};
+		let clip = timed("face controls", || Clip::from_record(&record).unwrap());
+		assert_eq!(clip.face.len(), MANY);
+	}
+
+	/// Poses for one target (name and parent name) share a track, in the
+	/// order targets are first seen; the same name under another parent, or
+	/// at the top, is another track.
+	#[test]
+	fn repeated_pose_targets_share_a_track() {
+		let frame = |time: f32, poses: Vec<Pose>| Keyframe {
+			time,
+			poses,
+			markers: vec![],
+		};
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 2.0,
+			keyframes: vec![
+				// listed out of time order: frames are sorted first
+				frame(
+					1.0,
+					vec![
+						pose(
+							"Root",
+							0.0,
+							0.0,
+							vec![
+								pose("B", 1.0, 1.0, vec![]),
+								pose("A", 1.0, 1.0, vec![]),
+								pose("C", 1.0, 1.0, vec![]),
+							],
+						),
+						pose("Other", 0.0, 0.0, vec![pose("A", 7.0, 1.0, vec![])]),
+					],
+				),
+				frame(
+					0.0,
+					vec![
+						pose(
+							"Root",
+							0.0,
+							0.0,
+							vec![pose("A", 0.0, 1.0, vec![]), pose("B", 0.0, 1.0, vec![])],
+						),
+						pose("A", 5.0, 1.0, vec![]),
+					],
+				),
+				frame(
+					2.0,
+					vec![pose("Root", 0.0, 0.0, vec![pose("A", 3.0, 1.0, vec![])])],
+				),
+			],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&record).unwrap();
+		let targets: Vec<(&str, Option<&str>)> = clip
+			.tracks
+			.iter()
+			.map(|t| (t.target.name.as_str(), t.target.parent.as_deref()))
+			.collect();
+		assert_eq!(
+			targets,
+			[
+				("A", Some("Root")),
+				("B", Some("Root")),
+				("A", None),
+				("C", Some("Root")),
+				("A", Some("Other")),
+			]
+		);
+		let y = |track: usize, time: f32| clip.tracks[track].sample(time).pos[1];
+		// Root/A keys 0, 1 and 3 at times 0, 1 and 2
+		assert!((y(0, 0.5) - 0.5).abs() < 1e-6);
+		assert!((y(0, 1.5) - 2.0).abs() < 1e-6);
+		assert!((y(1, 0.5) - 0.5).abs() < 1e-6);
+		assert_eq!(y(2, 1.0), 5.0);
+		assert_eq!(y(4, 0.0), 7.0);
+	}
+
+	/// Curves for one target combine into one track, in first-seen order;
+	/// a later curve of the same kind replaces an earlier one.
+	#[test]
+	fn repeated_curve_targets_share_a_track() {
+		let position = |path: &str, y: f32| CurveTrack {
+			path: path.into(),
+			name: "Position".into(),
+			curve: CurveData::Vector3Curve {
+				channels: Channels {
+					y: Some(vec![key(0.0, y, "Linear")]),
+					..Default::default()
+				},
+			},
+		};
+		let turn = |path: &str| CurveTrack {
+			path: path.into(),
+			name: "Rotation".into(),
+			curve: CurveData::EulerRotationCurve {
+				rotation_order: "XYZ".into(),
+				channels: Channels {
+					y: Some(vec![key(0.0, std::f32::consts::PI, "Linear")]),
+					..Default::default()
+				},
+			},
+		};
+		let record = AnimationClip {
+			status: ClipStatus::CurveAnimation,
+			duration: 1.0,
+			curves: vec![
+				// a skipped curve still takes its target's place, which the
+				// target keeps when a later curve moves it
+				CurveTrack {
+					path: "R/S".into(),
+					name: "Smile".into(),
+					curve: CurveData::FloatCurve { keys: vec![] },
+				},
+				position("R/X", 1.0),
+				turn("R/Y"),
+				turn("R/X"),
+				position("Q/X", 4.0),
+				position("R/X", 2.0),
+				position("R/S", 6.0),
+				position("X", 5.0),
+			],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&record).unwrap();
+		let targets: Vec<(&str, Option<&str>)> = clip
+			.tracks
+			.iter()
+			.map(|t| (t.target.name.as_str(), t.target.parent.as_deref()))
+			.collect();
+		assert_eq!(
+			targets,
+			[
+				("S", Some("R")),
+				("X", Some("R")),
+				("Y", Some("R")),
+				("X", Some("Q")),
+				("X", None),
+			]
+		);
+		assert_eq!(clip.skipped_curves, 1);
+		let x = clip.tracks[1].sample(0.0);
+		assert!(
+			x.approx_eq(
+				&CFrame {
+					pos: [0.0, 2.0, 0.0],
+					..CFrame::axis_rotation(1, std::f32::consts::PI)
+				},
+				1e-5
+			),
+			"the later position wins, with the rotation"
+		);
+		assert_eq!(clip.tracks[0].sample(0.0).pos[1], 6.0);
+		assert_eq!(clip.tracks[3].sample(0.0).pos[1], 4.0);
+	}
+
+	/// Face control values for one name share a track, in first-seen order.
+	#[test]
+	fn repeated_face_controls_share_a_track() {
+		let control = |name: &str, value: f32| FaceControlPose {
+			name: name.into(),
+			value,
+			..Default::default()
+		};
+		let frame = |time: f32, controls: Vec<FaceControlPose>| Keyframe {
+			time,
+			poses: vec![Pose {
+				face_controls: controls,
+				..pose("Head", 0.0, 0.0, vec![])
+			}],
+			markers: vec![],
+		};
+		let record = AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![
+				frame(0.0, vec![control("B", 0.0), control("A", 0.0)]),
+				frame(
+					1.0,
+					vec![control("C", 1.0), control("A", 1.0), control("B", 0.5)],
+				),
+			],
+			..Default::default()
+		};
+		let clip = Clip::from_record(&record).unwrap();
+		assert_eq!(
+			clip.face_weights(0.5),
+			[("B", 0.25), ("A", 0.5), ("C", 1.0)]
+		);
 	}
 }

@@ -8,7 +8,7 @@
 //! outward from each assembly's root, from whichever end is already
 //! placed; parts no joint reaches stay at their exported CFrame.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::clip::{Clip, TargetKey};
 use super::math::{CFrame, V3, distance};
@@ -94,6 +94,17 @@ pub struct Rig {
 	bone_order: Vec<usize>,
 	/// Problems found while building, for the inspector.
 	pub warnings: Vec<String>,
+	/// What clip tracks bind to, made once when the rig is built.
+	targets: TargetIndex,
+}
+
+/// A rig's clip targets by name, then parent name; see
+/// [`Rig::index_targets`].
+#[derive(Clone, Debug, Default)]
+struct TargetIndex {
+	by_name: HashMap<String, HashMap<String, Target>>,
+	/// Names of the animation root parts, which tracks may name harmlessly.
+	root_names: HashSet<String>,
 }
 
 fn closest<'a>(
@@ -181,6 +192,8 @@ impl Rig {
 		}
 		rig.joint_order = rig.solve_order();
 		rig.bone_order = rig.bone_solve_order();
+		// after the bone order, which may drop looping bones' parents
+		rig.targets = rig.index_targets();
 		rig
 	}
 
@@ -325,20 +338,13 @@ impl Rig {
 	/// the one whose Part0 or parent has that name.
 	pub fn bind(&self, clip: &Clip) -> Binding {
 		let mut binding = Binding::default();
-		let animation_root = self.animation_roots();
 		for track in &clip.tracks {
 			let target = self.find_target(&track.target);
 			// a pose on an animation root has nothing to move; it only groups
 			// the poses below it. Any root part of that name counts, not just
 			// this track's own. A part no joint touches at all is a real miss: a
 			// rig whose joints were not exported would otherwise look fully bound.
-			let is_root_part = || {
-				self.parts
-					.iter()
-					.zip(&animation_root)
-					.any(|(p, &root)| root && p.name == track.target.name)
-			};
-			if target.is_none() && !is_root_part() {
+			if target.is_none() && !self.targets.root_names.contains(&track.target.name) {
 				binding.unmatched.push(track.target.name.clone());
 			}
 			binding.targets.push(target);
@@ -352,37 +358,47 @@ impl Rig {
 	/// at the top of a keyframe, moves nothing, so it is unmatched here too.
 	fn find_target(&self, key: &TargetKey) -> Option<Target> {
 		let parent = key.parent.as_deref()?;
-		let pick = |candidates: Vec<(Target, &str)>| -> Option<Target> {
-			candidates
-				.iter()
-				.find(|(_, p)| *p == parent)
-				.map(|(t, _)| *t)
+		self.targets.by_name.get(&key.name)?.get(parent).copied()
+	}
+
+	/// Indexes what [`Self::find_target`] matches, so binding a track is a
+	/// lookup rather than a search of every joint and bone. The first
+	/// animated joint for a name and parent name wins, then the first bone.
+	fn index_targets(&self) -> TargetIndex {
+		let mut by_name: HashMap<String, HashMap<String, Target>> = HashMap::new();
+		let mut add = |name: &str, parent: &str, target: Target| {
+			by_name
+				.entry(name.to_owned())
+				.or_default()
+				.entry(parent.to_owned())
+				.or_insert(target);
 		};
-		let joints = self
-			.joints
-			.iter()
-			.enumerate()
+		for (i, m) in self.joints.iter().enumerate() {
 			// welds are not animated, even when named like a body part
-			.filter(|(_, m)| m.animated && self.parts[m.part1].name == key.name)
-			.map(|(i, m)| (Target::Joint(i), self.parts[m.part0].name.as_str()))
+			if m.animated {
+				let (part0, part1) = (&self.parts[m.part0].name, &self.parts[m.part1].name);
+				add(part1, part0, Target::Joint(i));
+			}
+		}
+		for (i, b) in self.bones.iter().enumerate() {
+			let parent = match b.parent {
+				BoneParent::Part(p) => self.parts[p].name.as_str(),
+				BoneParent::Bone(p) => self.bones[p].name.as_str(),
+				BoneParent::None => "",
+			};
+			add(&b.name, parent, Target::Bone(i));
+		}
+		let root_names = self
+			.parts
+			.iter()
+			.zip(self.animation_roots())
+			.filter(|(_, root)| *root)
+			.map(|(p, _)| p.name.clone())
 			.collect();
-		pick(joints).or_else(|| {
-			let bones = self
-				.bones
-				.iter()
-				.enumerate()
-				.filter(|(_, b)| b.name == key.name)
-				.map(|(i, b)| {
-					let parent = match b.parent {
-						BoneParent::Part(p) => self.parts[p].name.as_str(),
-						BoneParent::Bone(p) => self.bones[p].name.as_str(),
-						BoneParent::None => "",
-					};
-					(Target::Bone(i), parent)
-				})
-				.collect();
-			pick(bones)
-		})
+		TargetIndex {
+			by_name,
+			root_names,
+		}
 	}
 
 	/// Each part's parent in the joint tree: the part a joint places it
@@ -869,5 +885,163 @@ mod tests {
 		// a bone its own parent is a root too
 		let rig = Rig::build(&bones(|_| "B0".into(), 1));
 		assert_eq!(rig.bones[0].parent, BoneParent::None);
+	}
+
+	fn joint(name: &str, part0: &str, part1: &str, kind: Option<&str>) -> JointInfo {
+		JointInfo {
+			name: name.into(),
+			path: format!("{part0}/{name}"),
+			part0: part0.into(),
+			part1: part1.into(),
+			c0: IDENT,
+			c1: IDENT,
+			transform: None,
+			kind: kind.map(String::from),
+		}
+	}
+
+	fn bone(name: &str, path: &str, parent_path: &str) -> BoneInfo {
+		BoneInfo {
+			name: name.into(),
+			path: path.into(),
+			parent_path: parent_path.into(),
+			cframe: IDENT,
+		}
+	}
+
+	fn keyframe_clip(poses: Vec<Pose>) -> Clip {
+		Clip::from_record(&AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration: 1.0,
+			keyframes: vec![Keyframe {
+				time: 0.0,
+				poses,
+				markers: vec![],
+			}],
+			..Default::default()
+		})
+		.unwrap()
+	}
+
+	/// Tracks find their joint or bone through an index made once per rig,
+	/// not a search of every joint and bone per track: many tracks against a
+	/// big rig bind quickly.
+	#[test]
+	fn many_tracks_bind_to_a_big_rig_quickly() {
+		const N: usize = 10_000;
+		let mut m = AnimatedModel {
+			parts: vec![part("Root", "Root", IDENT)],
+			..Default::default()
+		};
+		for i in 0..N {
+			m.parts
+				.push(part(&format!("P{i}"), &format!("P{i}"), IDENT));
+			m.joints
+				.push(joint(&format!("J{i}"), "Root", &format!("P{i}"), None));
+			m.bones
+				.push(bone(&format!("B{i}"), &format!("Root/B{i}"), "Root"));
+		}
+		let rig = Rig::build(&m);
+		// a track for each joint, each bone, and as many that miss
+		let poses = (0..N)
+			.flat_map(|i| {
+				[
+					rotate_pose(&format!("P{i}"), 0.0),
+					rotate_pose(&format!("B{i}"), 0.0),
+					rotate_pose(&format!("Missing{i}"), 0.0),
+				]
+			})
+			.collect();
+		let clip = keyframe_clip(vec![under("Root", poses)]);
+		let start = std::time::Instant::now();
+		let binding = rig.bind(&clip);
+		let took = start.elapsed();
+		assert!(took.as_secs_f32() < 1.0, "binding took {took:?}");
+		assert_eq!(binding.matched(), 2 * N);
+		assert_eq!(binding.unmatched.len(), N);
+		assert_eq!(binding.targets[3 * 7], Some(Target::Joint(7)));
+		assert_eq!(binding.targets[3 * 7 + 1], Some(Target::Bone(7)));
+	}
+
+	/// When several joints or bones fit a track, the first animated joint
+	/// wins, then the first bone; welds and wrong parents never match.
+	#[test]
+	fn the_first_matching_target_wins() {
+		let m = AnimatedModel {
+			parts: vec![
+				part("Root", "Root", IDENT),
+				part("A1", "Arm", IDENT),
+				part("A2", "Arm", IDENT),
+				part("Other", "Other", IDENT),
+				part("A3", "Arm", IDENT),
+				part("Leg", "Leg", IDENT),
+			],
+			joints: vec![
+				// a weld first: not animated, so never a target
+				joint("W", "Root", "A1", Some("Weld")),
+				joint("J1", "Other", "A3", None),
+				joint("J2", "Root", "A1", Some("Motor6D")),
+				joint("J3", "Root", "A2", Some("AnimationConstraint")),
+				joint("L", "Root", "Leg", None),
+			],
+			bones: vec![
+				// a bone named like a jointed part, under the same parent
+				bone("Arm", "Root/Arm", "Root"),
+				bone("Leg", "Other/Leg", "Other"),
+				bone("Leg", "Other/Leg2", "Other"),
+				bone("Tip", "Root/Arm/Tip", "Root/Arm"),
+				// outside the export: its parent name is empty
+				bone("Loose", "Gone/Loose", "Gone"),
+				bone("Loose", "Gone/Loose2", "Gone"),
+			],
+			..Default::default()
+		};
+		let rig = Rig::build(&m);
+		let clip = keyframe_clip(vec![
+			under(
+				"Root",
+				vec![
+					rotate_pose("Arm", 0.0),
+					under("Arm", vec![rotate_pose("Tip", 0.0)]),
+					rotate_pose("Leg", 0.0),
+				],
+			),
+			under(
+				"Other",
+				vec![rotate_pose("Arm", 0.0), rotate_pose("Leg", 0.0)],
+			),
+			under("", vec![rotate_pose("Loose", 0.0)]),
+			// at the top: no parent name, so nothing
+			rotate_pose("Arm", 0.0),
+		]);
+		let names: Vec<_> = clip
+			.tracks
+			.iter()
+			.map(|t| (t.target.parent.as_deref(), t.target.name.as_str()))
+			.collect();
+		assert_eq!(
+			names,
+			[
+				(Some("Root"), "Arm"),
+				(Some("Arm"), "Tip"),
+				(Some("Root"), "Leg"),
+				(Some("Other"), "Arm"),
+				(Some("Other"), "Leg"),
+				(Some(""), "Loose"),
+				(None, "Arm"),
+			]
+		);
+		assert_eq!(
+			rig.bind(&clip).targets,
+			[
+				Some(Target::Joint(2)),
+				Some(Target::Bone(3)),
+				Some(Target::Joint(4)),
+				Some(Target::Joint(1)),
+				Some(Target::Bone(1)),
+				Some(Target::Bone(4)),
+				None,
+			]
+		);
 	}
 }

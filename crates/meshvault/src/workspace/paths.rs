@@ -260,11 +260,19 @@ const TEMP_TRIES: usize = 64;
 /// Nor is there a link on the way to it (see [`check_no_links`]).
 pub(crate) fn create_temp(root: &Path, rel: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
 	let name = rel.file_name().unwrap_or_default().to_string_lossy();
+	// the folders on the way must not be links; a taken name, link or not,
+	// only means trying another
+	let folder = rel.parent().unwrap_or(Path::new(""));
+	check_no_links(root, folder).map_err(std::io::Error::other)?;
 	for _ in 0..TEMP_TRIES {
 		let Some(tag) = temp_tag() else { break };
 		let tmp_rel = rel.with_file_name(format!("{name}.{tag}.tmp"));
-		check_no_links(root, &tmp_rel).map_err(std::io::Error::other)?;
 		let tmp = root.join(&tmp_rel);
+		// anything already there, even a link to nothing, which creating
+		// the file through could make its target
+		if std::fs::symlink_metadata(&tmp).is_ok() {
+			continue;
+		}
 		match std::fs::OpenOptions::new()
 			.write(true)
 			.create_new(true)

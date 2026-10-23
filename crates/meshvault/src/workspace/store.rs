@@ -296,9 +296,14 @@ mod tests {
 		let outside = parent.join("outside.txt");
 		std::fs::write(&outside, b"keep me").unwrap();
 		let kind = file_link(&dir.join(CACHE_DIR).join("8.a.tmp"), &outside);
+		// a link of any kind at a temporary name is only a taken name: once,
+		// a symbolic link there refused the whole write instead
+		let elsewhere = parent.join("elsewhere");
+		std::fs::create_dir_all(&elsewhere).unwrap();
+		crate::workspace::paths::junction(&dir.join(CACHE_DIR).join("8.b.tmp"), &elsewhere);
 		file_link(&dir.join(CACHE_DIR).join("8.c.tmp"), &outside);
 
-		set_temp_tags(Some(&["a", "b", "c", "d"]));
+		set_temp_tags(Some(&["a", "b", "c", "d", "e"]));
 		write_cache(&dir, 8, b"version 4.00\n");
 		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
 		assert_eq!(read_cache(&dir, 8).as_deref(), Some(&b"version 4.00\n"[..]));

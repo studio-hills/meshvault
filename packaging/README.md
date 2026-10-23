@@ -9,7 +9,9 @@ Releases are built by `.github/workflows/release.yml` when a version tag is push
    section; the workflow refuses a version still marked Unreleased.
 3. Commit, push, and wait for CI to pass.
 4. Tag and push the tag: `git tag v0.1.0 && git push origin v0.1.0`.
-5. The workflow tests, builds and packages the app, then opens a **draft** release with
+5. The workflow checks the dependencies (`cargo deny`, including security advisories: a
+   release is refused while one is open), tests, builds and packages the app, then opens a
+   **draft** release with
    `Meshvault-<version>-windows-x64.zip` and `SHA256SUMS.txt`. Check the draft, then publish it.
 
 Running the workflow by hand (Actions → Release → Run workflow) builds and packages

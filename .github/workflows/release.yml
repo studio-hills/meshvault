@@ -32,6 +32,12 @@ jobs:
           if ("v$($Matches[1])" -ne $env:GITHUB_REF_NAME) {
             throw "tag $env:GITHUB_REF_NAME does not match the app's version $($Matches[1])"
           }
+      # unlike CI on pushes, a release is refused while a dependency has a known advisory
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Dependency policy and advisories
+        run: cargo deny --locked check
       - name: Test
         run: cargo test --workspace --locked
       - name: Build

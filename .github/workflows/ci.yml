@@ -42,8 +42,7 @@ jobs:
         run: cargo doc --workspace --no-deps --document-private-items --locked
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Release build
-        run: cargo build --release -p meshvault --locked
+      # the release build is left to the release workflow, which builds on every tag
 
   deny:
     name: Dependency policy

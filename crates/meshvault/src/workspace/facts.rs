@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scene::geometry;
 use crate::studio::export_file::read_limited;
+use crate::workspace::paths::replace_file;
 use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -166,15 +167,13 @@ impl Facts {
 		}
 		self.dirty = false;
 		// facts.json is a cache that can be rebuilt, so failing to write it
-		// is not worth reporting; nor is one written through a link
-		if check_no_links(&self.root, &facts_rel()).is_err() {
-			return;
-		}
+		// is not worth reporting; nor is one written through a link (see
+		// [`replace_file`])
 		if let Some(dir) = self.file.parent() {
 			let _ = std::fs::create_dir_all(dir);
 		}
 		if let Ok(text) = serde_json::to_string(&self.known) {
-			let _ = std::fs::write(&self.file, text);
+			let _ = replace_file(&self.root, &facts_rel(), text.as_bytes());
 		}
 	}
 }
@@ -342,6 +341,31 @@ mod tests {
 		drop(facts);
 		assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 	}
+	/// R3-01: facts are saved under a fresh temporary name and renamed into
+	/// place, so a link at either name is never written through.
+	#[test]
+	fn facts_are_never_saved_through_a_file_link() {
+		use crate::workspace::paths::{file_link, set_temp_tags};
+		let parent = TempDir::new("facts_file_link");
+		let dir = parent.join("ws");
+		let outside = parent.join("outside.txt");
+		std::fs::write(&outside, b"keep me").unwrap();
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		download_a(&mut ws, "torso.mesh", 1);
+		let kind = file_link(&dir.join(".cache/facts.json"), &outside);
+		file_link(&dir.join(".cache/facts.json.a.tmp"), &outside);
+		let mut facts = Facts::open(&dir);
+		facts.scan_all(&ws);
+		set_temp_tags(Some(&["a", "b"]));
+		drop(facts);
+		set_temp_tags(None);
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
+		if kind == "hard link" {
+			// saved in place of the link
+			assert!(Facts::open(&dir).get("Models/A.mesh", 1).is_some());
+		}
+	}
+
 	/// N02: a facts file longer than its limit is not read, so every mesh
 	/// is read again.
 	#[test]

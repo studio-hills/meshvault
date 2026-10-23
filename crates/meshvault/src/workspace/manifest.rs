@@ -139,14 +139,21 @@ pub struct ModelItem {
 	pub place_id: Option<u64>,
 	/// The stored model record, relative to the workspace root.
 	pub file: String,
-	/// `Parts[].MeshRef` to the stem of the item holding that mesh.
+	/// `Parts[].MeshRef` to the stem of the item holding that mesh. No more
+	/// are read than a model may have parts.
+	#[serde(deserialize_with = "mesh_refs")]
 	pub meshes: BTreeMap<u32, String>,
 	pub parts: usize,
 	pub clips: usize,
 	pub playable_clips: usize,
 	/// Images the model's parts use directly (decals), by asset id, stored
-	/// once each under `Images/`.
-	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	/// once each under `Images/`. No more are read than an export may have
+	/// meshes.
+	#[serde(
+		default,
+		skip_serializing_if = "BTreeMap::is_empty",
+		deserialize_with = "model_images"
+	)]
 	pub images: BTreeMap<u64, AssetState>,
 	/// Which model this is and which import of it, while the app runs.
 	#[serde(skip)]
@@ -286,5 +293,96 @@ impl Manifest {
 			dirty = true;
 		}
 		dirty
+	}
+}
+
+/// Reads a map of at most `cap` entries, stopping at the next one rather
+/// than reading the rest: a model's mesh refs are each looked up when it is
+/// shown, so a manifest from someone else could otherwise make that take
+/// as long as it likes. `what` names the entries, as in "more than 10
+/// {what}".
+fn bounded_map<'de, D, K, V>(
+	d: D,
+	cap: usize,
+	what: &'static str,
+) -> Result<BTreeMap<K, V>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	K: Deserialize<'de> + Ord,
+	V: Deserialize<'de>,
+{
+	struct Bounded<K, V> {
+		cap: usize,
+		what: &'static str,
+		kv: std::marker::PhantomData<(K, V)>,
+	}
+	impl<'de, K: Deserialize<'de> + Ord, V: Deserialize<'de>> serde::de::Visitor<'de>
+		for Bounded<K, V>
+	{
+		type Value = BTreeMap<K, V>;
+
+		fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+			f.write_str("a map")
+		}
+
+		fn visit_map<A: serde::de::MapAccess<'de>>(
+			self,
+			mut map: A,
+		) -> Result<Self::Value, A::Error> {
+			let mut out = BTreeMap::new();
+			// counted as read, so a key given again counts too
+			let mut read = 0;
+			while let Some(key) = map.next_key()? {
+				if read == self.cap {
+					return Err(serde::de::Error::custom(format!(
+						"more than {} {}",
+						self.cap, self.what
+					)));
+				}
+				read += 1;
+				out.insert(key, map.next_value()?);
+			}
+			Ok(out)
+		}
+	}
+	d.deserialize_map(Bounded {
+		cap,
+		what,
+		kv: std::marker::PhantomData,
+	})
+}
+
+/// The most mesh refs one model may have: one for each part it may have.
+pub(super) const MAX_MESH_REFS: usize = budget::LIMITS.parts;
+/// The most images one model may use directly: as many as an export may
+/// have meshes.
+pub(super) const MAX_MODEL_IMAGES: usize = budget::LIMITS.meshes;
+
+fn mesh_refs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<u32, String>, D::Error> {
+	bounded_map(d, MAX_MESH_REFS, "mesh refs in one model")
+}
+
+fn model_images<'de, D: serde::Deserializer<'de>>(
+	d: D,
+) -> Result<BTreeMap<u64, AssetState>, D::Error> {
+	bounded_map(d, MAX_MODEL_IMAGES, "images in one model")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// R3-04: a map is read up to its cap, counting a key given twice, and
+	/// refused at the next entry.
+	#[test]
+	fn bounded_maps_stop_at_their_cap() {
+		let read = |json: &str| {
+			let mut d = serde_json::Deserializer::from_str(json);
+			bounded_map::<_, u32, String>(&mut d, 2, "refs")
+		};
+		assert_eq!(read(r#"{"1": "a", "2": "b"}"#).unwrap().len(), 2);
+		let over = read(r#"{"1": "a", "2": "b", "3": "c"}"#).unwrap_err();
+		assert!(over.to_string().contains("more than 2 refs"), "{over}");
+		assert!(read(r#"{"1": "a", "1": "b", "1": "c"}"#).is_err());
 	}
 }

@@ -223,6 +223,113 @@ pub fn sanitize(name: &str) -> String {
 	}
 }
 
+/// What marks one temporary file's name apart from the next: this app's
+/// process id and a count. Tests can set the tags instead (see
+/// `set_temp_tags`); `None` once those run out.
+pub(crate) fn temp_tag() -> Option<String> {
+	#[cfg(test)]
+	if let Some(tag) = TEMP_TAGS.with(|t| t.borrow_mut().as_mut().map(|t| t.pop_front())) {
+		return tag;
+	}
+	static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	Some(format!("{}-{n}", std::process::id()))
+}
+
+/// Names tried for one temporary file before giving up: only a name left
+/// behind (or planted) can be taken, and each try takes a new tag.
+const TEMP_TRIES: usize = 64;
+
+/// Creates a new file beside `rel`, a path inside the workspace at `root`,
+/// named `<name>.<tag>.tmp`, and returns its path and the open file. The
+/// name is made only if nothing has it yet: a file, or a link to one
+/// elsewhere, already there is never opened, and another name is tried.
+/// Nor is there a link on the way to it (see [`check_no_links`]).
+pub(crate) fn create_temp(root: &Path, rel: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+	let name = rel.file_name().unwrap_or_default().to_string_lossy();
+	for _ in 0..TEMP_TRIES {
+		let Some(tag) = temp_tag() else { break };
+		let tmp_rel = rel.with_file_name(format!("{name}.{tag}.tmp"));
+		check_no_links(root, &tmp_rel).map_err(std::io::Error::other)?;
+		let tmp = root.join(&tmp_rel);
+		match std::fs::OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(&tmp)
+		{
+			Ok(file) => return Ok((tmp, file)),
+			Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+			Err(e) => return Err(e),
+		}
+	}
+	Err(std::io::Error::other(format!(
+		"no free name for a temporary file beside {}",
+		rel.display()
+	)))
+}
+
+/// Writes `bytes` to a new temporary file beside `rel` (see
+/// [`create_temp`]), returning its path. Nothing is left if it fails.
+pub(crate) fn write_temp(root: &Path, rel: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+	use std::io::Write;
+	let (tmp, mut file) = create_temp(root, rel)?;
+	let written = file.write_all(bytes);
+	drop(file);
+	match written {
+		Ok(()) => Ok(tmp),
+		Err(e) => {
+			let _ = std::fs::remove_file(&tmp);
+			Err(e)
+		}
+	}
+}
+
+/// Replaces the file at `rel` inside the workspace at `root` with `bytes`,
+/// whole: written to a new temporary file and renamed over it, so a crash
+/// never leaves part of one, and a link (or a second name for a file
+/// elsewhere) at either name is never written through. Refused if there
+/// is a link on the way to `rel` (see [`check_no_links`]). Its folder must
+/// exist.
+pub(crate) fn replace_file(root: &Path, rel: &Path, bytes: &[u8]) -> std::io::Result<()> {
+	check_no_links(root, rel).map_err(std::io::Error::other)?;
+	let tmp = write_temp(root, rel, bytes)?;
+	std::fs::rename(&tmp, root.join(rel)).inspect_err(|_| {
+		let _ = std::fs::remove_file(&tmp);
+	})
+}
+
+#[cfg(test)]
+thread_local! {
+	static TEMP_TAGS: std::cell::RefCell<Option<std::collections::VecDeque<String>>> =
+		const { std::cell::RefCell::new(None) };
+}
+
+/// Makes the temporary files written on this thread take just these tags,
+/// in order, for tests: a name can then be known, and a link planted at it,
+/// beforehand. `None` goes back to the usual tags.
+#[cfg(test)]
+pub(crate) fn set_temp_tags(tags: Option<&[&str]>) {
+	let tags = tags.map(|t| t.iter().map(|s| s.to_string()).collect());
+	TEMP_TAGS.with(|t| *t.borrow_mut() = tags);
+}
+
+/// Makes `link` a second name for the file `target`, for tests: a symbolic
+/// link where this machine allows one (Windows needs developer mode or
+/// admin rights), otherwise a hard link. A write that follows either
+/// changes `target`. Returns which it made.
+#[cfg(test)]
+pub(crate) fn file_link(link: &Path, target: &Path) -> &'static str {
+	#[cfg(windows)]
+	let symbolic = std::os::windows::fs::symlink_file(target, link).is_ok();
+	#[cfg(not(windows))]
+	let symbolic = std::os::unix::fs::symlink(target, link).is_ok();
+	if symbolic {
+		return "symbolic link";
+	}
+	std::fs::hard_link(target, link).unwrap();
+	"hard link"
+}
+
 /// Makes `link` a directory junction (a symbolic link elsewhere) to
 /// `target`, for tests. Junctions need no admin rights, but some machines
 /// still refuse them: then this prints a note and returns false, and the

@@ -24,6 +24,7 @@ pub mod view_loader;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::anim::schema::AnimatedModel;
 use crate::content_id::parse_asset_id;
@@ -32,11 +33,13 @@ use crate::studio::export_file::{Entry, Origin};
 
 pub use self::manifest::{AssetState, Item, MapRef, ModelItem, ModelVersion};
 use self::manifest::{MANIFEST_VERSION, Manifest};
-pub(crate) use self::paths::check_no_links;
 #[cfg(test)]
 pub(crate) use self::paths::junction;
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
 use self::paths::{MODELS_DIR, RIGS_DIR, fit_folder, image_id, image_stem, rig_stem, stem_name};
+pub(crate) use self::paths::{check_no_links, replace_file};
+#[cfg(test)]
+pub(crate) use self::paths::{file_link, set_temp_tags};
 use self::rig_file::write_rig;
 pub use self::store::read_asset;
 
@@ -109,6 +112,12 @@ fn same_place(
 	}
 }
 
+// items looked at to find one by its stem, for tests to count
+#[cfg(test)]
+thread_local! {
+	pub(crate) static ITEMS_VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct Workspace {
 	pub root: PathBuf,
 	manifest: Manifest,
@@ -117,6 +126,9 @@ pub struct Workspace {
 	dirty: bool,
 	/// Bumped whenever items are added or removed, so views can cache.
 	generation: u64,
+	/// Each item's index by its stem, built when first wanted after a
+	/// change (see [`Self::changed`]).
+	stem_index: OnceLock<HashMap<String, usize>>,
 }
 
 /// Every image a model uses directly, by asset id: its parts' decals and
@@ -154,6 +166,7 @@ impl Workspace {
 			stems: HashSet::new(),
 			dirty: true,
 			generation: 0,
+			stem_index: OnceLock::new(),
 		};
 		ws.write()?;
 		store::upgrade_cache(root);
@@ -210,6 +223,7 @@ impl Workspace {
 			stems,
 			dirty,
 			generation: 0,
+			stem_index: OnceLock::new(),
 		})
 	}
 
@@ -229,17 +243,37 @@ impl Workspace {
 		self.generation
 	}
 
+	/// The item at `stem`, if it is in the workspace. Found through an index
+	/// of the stems, built once for each generation, so finding all of a
+	/// model's meshes takes as long as there are items and meshes, not the
+	/// two multiplied.
+	pub fn item_by_stem(&self, stem: &str) -> Option<&Item> {
+		let index = self.stem_index.get_or_init(|| {
+			let items = self.manifest.items.iter().enumerate();
+			#[cfg(test)]
+			ITEMS_VISITED.with(|n| n.set(n.get() + self.manifest.items.len()));
+			// the first of two items with one stem, as a search would find
+			let mut index = HashMap::new();
+			for (i, item) in items.rev() {
+				index.insert(item.stem.clone(), i);
+			}
+			index
+		});
+		self.manifest.items.get(*index.get(stem)?)
+	}
+
+	/// Notes that items were added, removed or changed where views see
+	/// them: a new generation, and the stem index built again.
+	fn changed(&mut self) {
+		self.generation += 1;
+		self.stem_index = OnceLock::new();
+	}
+
 	fn write(&self) -> Result<(), String> {
 		let json = serde_json::to_string_pretty(&self.manifest).map_err(|e| e.to_string())?;
-		// write then rename so a crash never leaves a half-written manifest
-		let tmp_name = format!("{MANIFEST}.tmp");
-		for name in [MANIFEST, &tmp_name] {
-			check_no_links(&self.root, Path::new(name))
-				.map_err(|e| format!("Could not save workspace: {e}"))?;
-		}
-		let tmp = self.root.join(tmp_name);
-		std::fs::write(&tmp, json).map_err(|e| format!("Could not save workspace: {e}"))?;
-		std::fs::rename(&tmp, self.root.join(MANIFEST))
+		// written whole then renamed, so a crash never leaves a half-written
+		// manifest, and never through a link
+		paths::replace_file(&self.root, Path::new(MANIFEST), json.as_bytes())
 			.map_err(|e| format!("Could not save workspace: {e}"))
 	}
 
@@ -295,7 +329,7 @@ impl Workspace {
 			.into_iter()
 			.filter(|e| self.add_entry(e, &Origin::default()).1)
 			.count();
-		self.generation += 1;
+		self.changed();
 		added
 	}
 
@@ -305,6 +339,7 @@ impl Workspace {
 	pub(crate) fn set_contents(&mut self, items: Vec<Item>, models: Vec<ModelItem>) {
 		self.manifest.items = items;
 		self.manifest.models = models;
+		self.stem_index = OnceLock::new();
 	}
 
 	/// Adds one export entry; its `maps` should already be filtered to the
@@ -334,6 +369,7 @@ impl Workspace {
 				item.game = origin.game.clone();
 				item.folder = fit_folder(&entry.folder);
 				self.dirty = true;
+				// its stem stays, so the stem index does too
 				self.generation += 1;
 			}
 			if origin.place_id.is_some() && item.place_id != origin.place_id {
@@ -361,7 +397,7 @@ impl Workspace {
 		item.place_id = origin.place_id;
 		self.manifest.items.push(item);
 		self.dirty = true;
-		self.generation += 1;
+		self.changed();
 		(stem, true)
 	}
 
@@ -452,7 +488,7 @@ impl Workspace {
 			version,
 		};
 		self.dirty = true;
-		self.generation += 1;
+		self.changed();
 		match existing {
 			Some(i) => {
 				self.manifest.models[i] = item;
@@ -484,7 +520,7 @@ impl Workspace {
 			self.stems.remove(&rig_stem(&model.file).to_lowercase());
 		}
 		self.dirty = true;
-		self.generation += 1;
+		self.changed();
 		deletion_result(errors)
 	}
 
@@ -754,7 +790,7 @@ impl Workspace {
 			}
 		}
 		self.dirty = true;
-		self.generation += 1;
+		self.changed();
 		deletion_result(errors)
 	}
 }
@@ -1147,13 +1183,14 @@ mod tests {
 		let new = export_file::parse(&std::fs::read_to_string(&rig).unwrap()).unwrap();
 		assert_eq!(new.models[0].parts.len(), 2);
 
-		// when the new file cannot be written, the old one and its record stay
-		std::fs::create_dir(dir.join("Rigs/Workspace/Wolf.rig.json.tmp")).unwrap();
+		// when the new file cannot be written (here, its only temporary name
+		// is taken), the old one and its record stay
+		std::fs::create_dir(dir.join("Rigs/Workspace/Wolf.rig.json.x.tmp")).unwrap();
 		let written = std::fs::read_to_string(&rig).unwrap();
-		assert!(
-			ws.add_model(&rig_model("Wolf", 3), &[], &Origin::default())
-				.is_err()
-		);
+		self::paths::set_temp_tags(Some(&["x"]));
+		let added = ws.add_model(&rig_model("Wolf", 3), &[], &Origin::default());
+		self::paths::set_temp_tags(None);
+		assert!(added.is_err());
 		assert_eq!(std::fs::read_to_string(&rig).unwrap(), written);
 		assert_eq!(ws.models()[0].parts, 2);
 	}
@@ -1548,6 +1585,30 @@ mod tests {
 		})
 	}
 
+	/// R3-04: a model's mesh refs and images are read within bounds too: no
+	/// more mesh refs than a model may have parts, nor images than an export
+	/// may have meshes. Within them it opens.
+	#[test]
+	fn open_refuses_a_model_with_too_many_mesh_refs() {
+		let dir = TempDir::new("ws_manifest_refs");
+		let cap = crate::anim::budget::LIMITS.parts;
+		for (refs, ok) in [(cap, true), (cap + 1, false)] {
+			let meshes: serde_json::Map<_, _> = (0..refs)
+				.map(|i| (i.to_string(), "Models/Missing".into()))
+				.collect();
+			let model = serde_json::json!({
+				"name": "M", "path": "Workspace/M", "folder": [], "file": "Rigs/M.rig.json",
+				"meshes": meshes, "parts": refs, "clips": 0, "playable_clips": 0,
+			});
+			write_manifest(&dir, serde_json::json!([]), serde_json::json!([model]));
+			let opened = Workspace::open(&dir);
+			assert_eq!(opened.is_ok(), ok, "{refs} refs");
+			if let Err(e) = opened {
+				assert!(e.contains("more than"), "{e}");
+			}
+		}
+	}
+
 	/// A manifest's lists are read within bounds, as an export's are: a
 	/// folder list far over the cap stops being read at the cap, rather than
 	/// being built whole and checked after.
@@ -1825,6 +1886,43 @@ mod tests {
 				.is_err()
 		);
 		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me");
+	}
+
+	/// R3-01: the manifest, a rig file and the cache's format marker are
+	/// written under temporary names; a link already at one (the old fixed
+	/// `.tmp` name, or the name this write picks), or at the file itself,
+	/// is never written through.
+	#[test]
+	fn workspace_files_are_never_written_through_a_link() {
+		use self::paths::{file_link, set_temp_tags};
+		let (parent, dir, _) = beside_outside("ws_temp_link", "unused");
+		let outside = parent.join("outside.txt");
+		std::fs::write(&outside, b"keep me").unwrap();
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		std::fs::create_dir_all(dir.join("Rigs/Workspace")).unwrap();
+		let kind = file_link(&dir.join("workspace.json.tmp"), &outside);
+		for name in [
+			"workspace.json.a.tmp",
+			"Rigs/Workspace/Wolf.rig.json.tmp",
+			"Rigs/Workspace/Wolf.rig.json.c.tmp",
+			".cache/format.e.tmp",
+		] {
+			file_link(&dir.join(name), &outside);
+		}
+		let _ = std::fs::remove_file(dir.join(".cache/format"));
+		file_link(&dir.join(".cache/format"), &outside);
+
+		set_temp_tags(Some(&["a", "b", "c", "d", "e", "f"]));
+		let saved = ws.write();
+		let added = ws.add_model(&rig_model("Wolf", 1), &[], &Origin::default());
+		store::upgrade_cache(&dir);
+		set_temp_tags(None);
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
+		saved.unwrap();
+		assert!(added.unwrap());
+		Workspace::open(&dir).unwrap();
+		let rig = std::fs::read_to_string(dir.join("Rigs/Workspace/Wolf.rig.json")).unwrap();
+		assert_eq!(export_file::parse(&rig).unwrap().models.len(), 1);
 	}
 
 	/// A folder `outside` beside the workspace folder `ws` in a new

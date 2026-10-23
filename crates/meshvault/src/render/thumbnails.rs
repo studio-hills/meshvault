@@ -21,7 +21,7 @@ use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
 use crate::studio::export_file::read_limited;
 use crate::workspace::view_loader::{item_maps, model_loader};
-use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
+use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links, replace_file};
 
 /// Pixels on each side of a thumbnail.
 const SIZE: u32 = 192;
@@ -260,7 +260,7 @@ impl Thumbnails {
 /// runs, with the list of `files` beside it. One the GPU could not hand
 /// back is neither saved nor shown, so it is drawn again rather than kept
 /// as a black square. Nothing is saved through a link in the workspace
-/// at `root` (see [`check_no_links`]).
+/// at `root` (see [`replace_file`]).
 fn keep(
 	root: &Path,
 	dir: &Path,
@@ -271,16 +271,22 @@ fn keep(
 	let image = drawn.ok()?;
 	// a thumbnail that cannot be saved is still shown (and drawn again
 	// next time); one whose list cannot be saved is drawn again next run
+	let save = |p: &Path, bytes: &[u8]| {
+		p.strip_prefix(root)
+			.is_ok_and(|rel| replace_file(root, rel, bytes).is_ok())
+	};
+	let mut png = Vec::new();
+	let encoded = image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png);
 	let unlinked = |p: &Path| {
 		p.strip_prefix(root)
 			.is_ok_and(|rel| check_no_links(root, rel).is_ok())
 	};
-	if unlinked(file)
+	if encoded.is_ok()
 		&& unlinked(&drawn_from(file))
 		&& std::fs::create_dir_all(dir).is_ok()
-		&& image.save(file).is_ok()
+		&& save(file, &png)
 	{
-		let _ = std::fs::write(drawn_from(file), list(files));
+		save(&drawn_from(file), list(files).as_bytes());
 	}
 	Some(image)
 }
@@ -310,7 +316,7 @@ fn list(files: &[PathBuf]) -> String {
 fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 	match subject {
 		Subject::Item(stem) => {
-			let item = ws.items().iter().find(|i| &i.stem == stem)?;
+			let item = ws.item_by_stem(stem)?;
 			let AssetState::Done { path } = &item.mesh else {
 				return None;
 			};
@@ -324,9 +330,11 @@ fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 			let index = ws.models().iter().position(|m| &m.path == path)?;
 			let model = &ws.models()[index];
 			let mut files = vec![ws.root.join(&model.file)];
-			for stem in model.meshes.values() {
+			// a mesh many parts use is listed once
+			let mut seen = std::collections::HashSet::new();
+			for stem in model.meshes.values().filter(|s| seen.insert(s.as_str())) {
 				// a mesh removed from the workspace, or failed, is drawn without
-				let Some(item) = ws.items().iter().find(|i| &i.stem == stem) else {
+				let Some(item) = ws.item_by_stem(stem) else {
 					continue;
 				};
 				match &item.mesh {
@@ -364,8 +372,32 @@ fn is_fresh(file: &Path, files: &[PathBuf]) -> bool {
 }
 
 fn load_png(ctx: &egui::Context, file: &Path, subject: &Subject) -> Option<egui::TextureHandle> {
-	let image = image::open(file).ok()?.to_rgba8();
+	let image = read_thumbnail(file)?;
 	Some(texture(ctx, subject, &image))
+}
+
+/// The longest cached thumbnail read. One is a [`SIZE`]-pixel square PNG,
+/// a fraction of this.
+const MAX_PNG_BYTES: usize = 1024 * 1024;
+
+/// The cached thumbnail in `file`, if it is a PNG of just the size the app
+/// draws them. The cache can come with a shared workspace, so anything
+/// else (a picture wider than the GPU takes, say) is a miss and is drawn
+/// again; it is refused by its header, before its pixels are decoded.
+fn read_thumbnail(file: &Path) -> Option<image::RgbaImage> {
+	let bytes = read_limited(file, MAX_PNG_BYTES).ok()?;
+	let mut reader =
+		image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+	let mut limits = image::Limits::default();
+	limits.max_image_width = Some(SIZE);
+	limits.max_image_height = Some(SIZE);
+	limits.max_alloc = Some(4 * u64::from(SIZE * SIZE) * 4);
+	reader.limits(limits);
+	let image = reader.decode().ok()?;
+	if image.width() != SIZE || image.height() != SIZE {
+		return None;
+	}
+	Some(image.to_rgba8())
 }
 
 fn texture(
@@ -687,7 +719,7 @@ mod tests {
 		let files = [dir.join("a.mesh")];
 		assert_eq!(keep(&dir, &cache, &file, &files, Err("lost".into())), None);
 		assert!(!file.exists() && !drawn_from(&file).exists());
-		let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
 		assert_eq!(
 			keep(&dir, &cache, &file, &files, Ok(image.clone())),
 			Some(image.clone())
@@ -708,10 +740,102 @@ mod tests {
 		if !crate::workspace::junction(&cache, &outside) {
 			return;
 		}
-		let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
 		let kept = keep(&root, &cache, &cache.join("t.png"), &[], Ok(image.clone()));
 		assert_eq!(kept, Some(image));
 		assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+	}
+
+	/// R3-04: what a model's thumbnail is drawn from is found through the
+	/// workspace's stem index, not by looking through every item for each
+	/// mesh ref (on the UI thread, every frame it is wanted); a mesh used by
+	/// many refs is read and listed once.
+	#[test]
+	fn a_models_sources_are_found_with_linear_work() {
+		let (_dir, mut ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		const N: usize = 5_000;
+		let mut items = ws.items().to_vec();
+		let mut models = ws.models().to_vec();
+		for i in 0..N {
+			let mut item = items[0].clone();
+			item.stem = format!("I{i}");
+			items.push(item);
+			models[0].meshes.insert(i as u32 + 10, "Missing".into());
+		}
+		models[0].meshes.insert(2, "A".into());
+		ws.set_contents(items, models);
+		crate::workspace::ITEMS_VISITED.with(|n| n.set(0));
+		let (_, files) = source(&ws, &Subject::Model("Workspace.M".into())).unwrap();
+		let visited = crate::workspace::ITEMS_VISITED.with(|n| n.get());
+		assert!(visited <= 2 * (N + 1), "{visited} items looked at");
+		assert_eq!(
+			files,
+			[ws.root.join("Rigs/M.rig.json"), ws.root.join("A.mesh")]
+		);
+	}
+
+	/// R3-01: a thumbnail and its list are saved under fresh temporary
+	/// names and renamed into place, so a link at any of those names is
+	/// never written through.
+	#[test]
+	fn thumbnails_are_never_saved_through_a_file_link() {
+		use crate::workspace::{file_link, set_temp_tags};
+		let dir = TempDir::new("thumb_file_link");
+		let root = dir.join("ws");
+		let cache = root.join(CACHE_DIR).join("thumbnails");
+		std::fs::create_dir_all(&cache).unwrap();
+		let outside = dir.join("outside.txt");
+		std::fs::write(&outside, b"keep me").unwrap();
+		let file = cache.join("t.png");
+		let kind = file_link(&file, &outside);
+		for name in ["t.from", "t.png.a.tmp", "t.from.c.tmp"] {
+			file_link(&cache.join(name), &outside);
+		}
+		let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+		set_temp_tags(Some(&["a", "b", "c", "d"]));
+		let kept = keep(&root, &cache, &file, &[], Ok(image.clone()));
+		set_temp_tags(None);
+		assert_eq!(kept, Some(image.clone()));
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
+		if kind == "hard link" {
+			assert_eq!(read_thumbnail(&file), Some(image));
+			assert!(is_fresh(&file, &[]));
+		}
+	}
+
+	/// R3-02: a cached thumbnail is read only at the size the app draws
+	/// them. A very wide one (here 100,000 by 1, a few hundred bytes) was
+	/// handed to the GPU as it was, larger than any texture it allows; now
+	/// it is a cache miss and drawn again. One of the right size still
+	/// loads.
+	#[test]
+	fn a_cached_thumbnail_of_another_size_is_not_loaded() {
+		let (dir, ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		touch(
+			&dir.join("A.mesh"),
+			SystemTime::now() - Duration::from_secs(60),
+		);
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let (_, files) = source(&ws, &subject).unwrap();
+		let file = thumbnails.file(&subject);
+		let wide = image::RgbaImage::new(100_000, 1);
+		let right = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+		keep(&dir, &thumbnails.dir, &file, &files, Ok(wide));
+		assert!(is_fresh(&file, &files));
+		assert!(std::fs::metadata(&file).unwrap().len() < 4096);
+		assert_eq!(read_thumbnail(&file), None);
+		let ctx = egui::Context::default();
+		thumbnails.get(&subject);
+		thumbnails.update(&ctx, &ws, None);
+		assert!(thumbnails.get(&subject).is_none());
+
+		keep(&dir, &thumbnails.dir, &file, &files, Ok(right.clone()));
+		assert_eq!(read_thumbnail(&file), Some(right));
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		thumbnails.get(&subject);
+		thumbnails.update(&ctx, &ws, None);
+		assert!(thumbnails.get(&subject).is_some());
 	}
 
 	/// A thumbnail drawn before a map or image arrived (or after one went)
@@ -747,7 +871,7 @@ mod tests {
 		let subject = Subject::Item("A".into());
 		let mut thumbnails = Thumbnails::new(&ws.root);
 		let (_, files) = source(&ws, &subject).unwrap();
-		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let picture = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
 		let cache = thumbnails.dir.clone();
 		keep(
 			&dir,
@@ -792,7 +916,7 @@ mod tests {
 		let now = SystemTime::now();
 		let ctx = egui::Context::default();
 		let subject = Subject::Model("Workspace.M".into());
-		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let picture = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
 		let prepared = || {
 			let geometry = geometry();
 			let groups = geometry.default_groups();
@@ -877,7 +1001,7 @@ mod tests {
 		set_modified();
 		let ctx = egui::Context::default();
 		let subject = Subject::Model("Workspace/M".into());
-		let picture = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+		let picture = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
 		let mut thumbnails = Thumbnails::new(&ws.root);
 		let file = thumbnails.file(&subject);
 		// a job started on the rig as it is, and the result it sends

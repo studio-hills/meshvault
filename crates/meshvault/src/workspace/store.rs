@@ -4,10 +4,11 @@
 //! then moved into place by the workspace).
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::studio::export_file::read_limited;
-use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, check_no_links, check_path};
+use crate::workspace::paths::{
+	IMAGES_DIR, MODELS_DIR, check_no_links, check_path, replace_file, write_temp,
+};
 use crate::workspace::{AssetKind, CACHE_DIR, Job, cache_path};
 
 /// Picks a file extension from the content.
@@ -34,15 +35,6 @@ pub fn sniff_extension(bytes: &[u8], kind: AssetKind) -> &'static str {
 /// [`cache_path`] relative to the workspace's root.
 fn cache_rel(asset_id: u64) -> PathBuf {
 	Path::new(CACHE_DIR).join(asset_id.to_string())
-}
-
-/// A name beside `path` for a file being written, unique within this run of
-/// the app and across apps (by process id), so writers never share one.
-fn temp_beside(path: &Path) -> PathBuf {
-	static NEXT: AtomicU64 = AtomicU64::new(0);
-	let n = NEXT.fetch_add(1, Ordering::Relaxed);
-	let name = path.file_name().unwrap_or_default().to_string_lossy();
-	path.with_file_name(format!("{name}.{}-{n}.tmp", std::process::id()))
 }
 
 /// The cache's format, kept in [`FORMAT_FILE`]: 2 since entries are written
@@ -106,7 +98,11 @@ pub fn upgrade_cache(root: &Path) {
 	}
 	if cleared {
 		let _ = std::fs::create_dir_all(&dir);
-		let _ = std::fs::write(&marker, CACHE_FORMAT);
+		let _ = replace_file(
+			root,
+			&Path::new(CACHE_DIR).join(FORMAT_FILE),
+			CACHE_FORMAT.as_bytes(),
+		);
 	}
 }
 
@@ -130,22 +126,17 @@ fn read_cache_within(root: &Path, asset_id: u64, limit: usize) -> Option<Vec<u8>
 /// Caches the raw download of an asset, best effort: the organised files
 /// are written from the bytes in hand, so a failed cache write only means
 /// downloading again next time. The file is written under a temporary name
-/// and renamed, so the cache never holds part of an asset.
+/// and renamed, so the cache never holds part of an asset, and nothing is
+/// written through a link (see [`replace_file`]).
 pub fn write_cache(root: &Path, asset_id: u64, bytes: &[u8]) {
+	// before making any folder
 	if check_no_links(root, &cache_rel(asset_id)).is_err() {
 		return;
 	}
-	let cache = cache_path(root, asset_id);
-	if let Some(dir) = cache.parent() {
+	if let Some(dir) = cache_path(root, asset_id).parent() {
 		let _ = std::fs::create_dir_all(dir);
 	}
-	let tmp = temp_beside(&cache);
-	if std::fs::write(&tmp, bytes)
-		.and_then(|()| std::fs::rename(&tmp, &cache))
-		.is_err()
-	{
-		let _ = std::fs::remove_file(&tmp);
-	}
+	let _ = replace_file(root, &cache_rel(asset_id), bytes);
 }
 
 /// One file written for a job, not yet in place: which item and use it is
@@ -159,7 +150,9 @@ pub struct Stored {
 	pub kind: AssetKind,
 	/// Relative to the workspace root.
 	pub path: String,
-	/// The written file, under the workspace's cache folder.
+	/// The written file, under the workspace's cache folder: relative to
+	/// the root, and in full.
+	staged_rel: PathBuf,
 	staged: PathBuf,
 	published: bool,
 }
@@ -177,6 +170,9 @@ impl Stored {
 		};
 		check_path(&self.path, top).map_err(|e| format!("Could not write {:?}: {e}", self.path))?;
 		check_no_links(root, Path::new(&self.path))
+			.map_err(|e| format!("Could not write {}: {e}", self.path))?;
+		// nor from one: the staged file is this job's own, made new
+		check_no_links(root, &self.staged_rel)
 			.map_err(|e| format!("Could not write {}: {e}", self.path))?;
 		let path = root.join(&self.path);
 		if let Some(parent) = path.parent() {
@@ -215,19 +211,16 @@ pub fn stage(root: &Path, job: &Job, bytes: &[u8]) -> Result<Vec<Stored>, String
 	let mut written: Vec<Stored> = Vec::new();
 	for (stem, kind) in &job.targets {
 		let ext = sniff_extension(bytes, *kind);
-		let staged = temp_beside(&cache_path(root, job.asset_id));
-		let result = staged
-			.parent()
-			.map_or(Ok(()), std::fs::create_dir_all)
-			.and_then(|()| std::fs::write(&staged, bytes));
-		if let Err(e) = result {
-			let _ = std::fs::remove_file(&staged);
-			return Err(format!("Could not write {}: {e}", staged.display()));
-		}
+		let beside = cache_rel(job.asset_id);
+		let staged = std::fs::create_dir_all(root.join(CACHE_DIR))
+			.and_then(|()| write_temp(root, &beside, bytes))
+			.map_err(|e| format!("Could not write {}: {e}", root.join(&beside).display()))?;
+		let staged_rel = staged.strip_prefix(root).unwrap_or(&staged).to_path_buf();
 		written.push(Stored {
 			stem: stem.clone(),
 			kind: *kind,
 			path: format!("{stem}{}.{ext}", kind.file_suffix()),
+			staged_rel,
 			staged,
 			published: false,
 		});
@@ -290,6 +283,41 @@ mod tests {
 			.collect();
 		assert_eq!(names, ["8"]);
 	}
+	/// R3-01: a link already at the temporary name a cache entry or a
+	/// staged download is written under is never written through: the file
+	/// it points to outside the workspace is left alone, and the asset is
+	/// still written (under a fresh name).
+	#[test]
+	fn temporary_files_are_never_written_through_a_link() {
+		use crate::workspace::paths::{file_link, set_temp_tags};
+		let parent = crate::test_support::TempDir::new("store_temp_link");
+		let dir = parent.join("ws");
+		std::fs::create_dir_all(dir.join(CACHE_DIR)).unwrap();
+		let outside = parent.join("outside.txt");
+		std::fs::write(&outside, b"keep me").unwrap();
+		let kind = file_link(&dir.join(CACHE_DIR).join("8.a.tmp"), &outside);
+		file_link(&dir.join(CACHE_DIR).join("8.c.tmp"), &outside);
+
+		set_temp_tags(Some(&["a", "b", "c", "d"]));
+		write_cache(&dir, 8, b"version 4.00\n");
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
+		assert_eq!(read_cache(&dir, 8).as_deref(), Some(&b"version 4.00\n"[..]));
+
+		let job = Job {
+			asset_id: 8,
+			targets: vec![("Models/A".into(), AssetKind::Mesh)],
+			place_id: None,
+		};
+		let staged = stage(&dir, &job, b"version 4.00\n");
+		set_temp_tags(None);
+		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
+		staged.unwrap()[0].publish(&dir).unwrap();
+		assert_eq!(
+			std::fs::read(dir.join("Models/A.mesh")).unwrap(),
+			b"version 4.00\n"
+		);
+	}
+
 	/// N02: a cache entry or format marker longer than its limit is not
 	/// read: the entry is a miss, so it is downloaded again, and the marker
 	/// is not current, so the cache is upgraded.

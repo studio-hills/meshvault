@@ -1,11 +1,11 @@
 //! Rig files: an animated model written as an export of its own.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::anim::schema::AnimatedModel;
 use crate::scene::maps::MapKind;
 use crate::studio::export_file::{self, Entry};
-use crate::workspace::paths::{RIGS_DIR, check_no_links, check_path};
+use crate::workspace::paths::{RIGS_DIR, check_no_links, check_path, replace_file};
 
 /// Writes a model as an export in the current schema
 /// ([`export_file::SCHEMA_VERSION`]) holding just that model and the meshes
@@ -24,11 +24,8 @@ pub(super) fn write_rig(
 	meshes: &[(&Entry, String)],
 ) -> Result<(), String> {
 	check_path(file, RIGS_DIR).map_err(|e| format!("Could not write {file:?}: {e}"))?;
-	// nor through a link, to the file or the temporary one beside it
-	let tmp_name = format!("{file}.tmp");
-	for rel in [file, &tmp_name] {
-		check_no_links(root, Path::new(rel)).map_err(|e| format!("Could not write {file}: {e}"))?;
-	}
+	// nor through a link
+	check_no_links(root, Path::new(file)).map_err(|e| format!("Could not write {file}: {e}"))?;
 	let path = &root.join(file);
 	let meshes: Vec<serde_json::Value> = meshes
 		.iter()
@@ -62,15 +59,8 @@ pub(super) fn write_rig(
 			.map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
 	}
 	let json = serde_json::to_string(&doc).map_err(|e| e.to_string())?;
-	// write then rename, so a failed write never damages the rig file a
-	// model being imported again already has
-	let mut tmp = path.as_os_str().to_owned();
-	tmp.push(".tmp");
-	let tmp = PathBuf::from(tmp);
-	let result = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path));
-	if let Err(e) = result {
-		let _ = std::fs::remove_file(&tmp);
-		return Err(format!("Could not write {}: {e}", path.display()));
-	}
-	Ok(())
+	// written whole then renamed, so a failed write never damages the rig
+	// file a model being imported again already has
+	replace_file(root, Path::new(file), json.as_bytes())
+		.map_err(|e| format!("Could not write {}: {e}", path.display()))
 }

@@ -133,8 +133,18 @@ workspace whose `workspace.json`, `Models`, `Rigs`, `Images` or `.cache` (or
 when it is opened, and Meshvault does not write or delete anything through a
 link deeper in it, such as a linked folder inside `Models/`; that download,
 Remove or import says why instead. The workspace folder itself may be a link,
-since it is the one you chose. Meshvault checks the folders as they are when it
-writes; a link someone swaps in at that very moment is not caught.
+since it is the one you chose. Every file Meshvault writes in a workspace (the
+manifest, rig files, cached downloads, thumbnails, facts) is written to a new
+temporary file beside it, made only if no file or link by that name is already
+there, then renamed into place, so a link or a second name (hard link) left at
+either name is replaced rather than written through. Meshvault checks the
+folders as they are when it writes; a link someone swaps in at that very moment
+is not caught.
+
+A model in a manifest may have no more mesh references than a model may have
+parts (100,000), and no more images than an export may have meshes
+(1,000,000). Cached thumbnails are used only if they are PNGs of the size
+Meshvault draws them (192 by 192 pixels); any other is drawn again.
 
 ## Settings
 

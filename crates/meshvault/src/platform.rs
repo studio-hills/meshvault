@@ -14,7 +14,7 @@ pub fn reveal(path: &Path) -> io::Result<()> {
 		if path.is_file() {
 			cmd.raw_arg(select_arg(path));
 		} else {
-			cmd.arg(path);
+			cmd.arg(native(path));
 		}
 		cmd
 	};
@@ -38,6 +38,14 @@ pub fn reveal(path: &Path) -> io::Result<()> {
 	cmd.spawn().map(drop)
 }
 
+/// `path` with the platform's own separators. Workspaces store their files'
+/// paths with `/`, which Explorer does not understand: given one it opens
+/// Documents instead.
+#[cfg(any(target_os = "windows", test))]
+fn native(path: &Path) -> std::path::PathBuf {
+	path.components().collect()
+}
+
 /// Explorer's argument to open a file's folder with it selected:
 /// `/select,"<path>"`. It goes on the command line as it is, because
 /// Explorer reads its own command line and only knows `/select,` when it
@@ -47,7 +55,7 @@ pub fn reveal(path: &Path) -> io::Result<()> {
 #[cfg(any(target_os = "windows", test))]
 fn select_arg(path: &Path) -> std::ffi::OsString {
 	let mut arg = std::ffi::OsString::from("/select,\"");
-	arg.push(path);
+	arg.push(native(path));
 	arg.push("\"");
 	arg
 }
@@ -61,6 +69,19 @@ mod tests {
 		assert_eq!(
 			select_arg(Path::new(r"C:\My workspace\Models\a, b.mesh")),
 			r#"/select,"C:\My workspace\Models\a, b.mesh""#
+		);
+	}
+
+	/// Workspaces store their files' paths with `/`, which Explorer does
+	/// not understand: given one, it opened Documents instead.
+	#[cfg(windows)]
+	#[test]
+	fn explorer_gets_backslashes_only() {
+		let rig = Path::new(r"C:\Users\me\Meshvault\testing")
+			.join("Rigs/ReplicatedStorage/Animals/Bat.rig.json");
+		assert_eq!(
+			select_arg(&rig),
+			r#"/select,"C:\Users\me\Meshvault\testing\Rigs\ReplicatedStorage\Animals\Bat.rig.json""#
 		);
 	}
 }

@@ -214,7 +214,7 @@ fn export_mesh_glb(
 	name: &str,
 	job: &MeshJob,
 ) -> Result<(), String> {
-	let bytes = std::fs::read(&job.mesh).map_err(|e| e.to_string())?;
+	let bytes = crate::workspace::read_asset(&job.mesh).map_err(|e| e.to_string())?;
 	let geometry = geometry::load(&bytes)?.geometry;
 	let material = if geometry.uvs.is_some() {
 		texture::load_maps(ctx, &job.maps)

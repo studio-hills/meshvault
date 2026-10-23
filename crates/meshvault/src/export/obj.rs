@@ -22,7 +22,7 @@ pub(super) fn export_mesh(
 	job: &MeshJob,
 	names: &mut Names,
 ) -> Result<(), String> {
-	let bytes = std::fs::read(&job.mesh).map_err(|e| e.to_string())?;
+	let bytes = crate::workspace::read_asset(&job.mesh).map_err(|e| e.to_string())?;
 	let geometry = geometry::load(&bytes)?.geometry;
 	if geometry.triangles.is_empty() {
 		return Err("the mesh has no triangles".into());

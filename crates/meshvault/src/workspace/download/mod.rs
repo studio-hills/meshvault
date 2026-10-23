@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub(crate) use self::client::MAX_ASSET_BYTES;
 pub use self::client::{AuthMethod, Client, Credentials, Endpoints, FetchError};
 pub use crate::workspace::store::{Stored, sniff_extension};
 use crate::workspace::{Job, Workspace, store};

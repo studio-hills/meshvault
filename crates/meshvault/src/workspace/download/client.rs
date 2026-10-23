@@ -88,7 +88,7 @@ pub struct Client {
 
 const USER_AGENT: &str = concat!("Meshvault/", env!("CARGO_PKG_VERSION"));
 /// Largest asset accepted; Roblox meshes and textures are far smaller.
-const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 /// Time allowed for a whole request to the asset delivery APIs.
 const API_TIMEOUT: Duration = Duration::from_secs(60);
 /// Time allowed for a whole download from the CDN.

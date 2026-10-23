@@ -19,6 +19,7 @@ use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
 use crate::scene::surface::{PART_COLOUR, Surface};
 use crate::scene::texture::{self, Material};
+use crate::studio::export_file::read_limited;
 use crate::workspace::view_loader::{item_maps, model_loader};
 use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
 
@@ -289,6 +290,16 @@ fn drawn_from(file: &Path) -> PathBuf {
 	file.with_extension("from")
 }
 
+/// The longest list of what a thumbnail was drawn from that is read: a
+/// model's meshes, maps and images, each a path.
+const MAX_LIST_BYTES: usize = 4 * 1024 * 1024;
+
+/// The list saved in `file`, if it is no longer than `limit` bytes.
+fn read_list(file: &Path, limit: usize) -> Option<String> {
+	let bytes = read_limited(file, limit).ok()?;
+	String::from_utf8(bytes).ok()
+}
+
 fn list(files: &[PathBuf]) -> String {
 	let lines: Vec<_> = files.iter().map(|f| f.to_string_lossy()).collect();
 	lines.join("\n")
@@ -339,7 +350,7 @@ fn source(ws: &Workspace, subject: &Subject) -> Option<(Source, Vec<PathBuf>)> {
 /// Whether the thumbnail at `file` was drawn from just these `files` and
 /// is newer than each of them.
 fn is_fresh(file: &Path, files: &[PathBuf]) -> bool {
-	if std::fs::read_to_string(drawn_from(file)).ok() != Some(list(files)) {
+	if read_list(&drawn_from(file), MAX_LIST_BYTES) != Some(list(files)) {
 		return false;
 	}
 	let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -399,7 +410,7 @@ fn read_mesh(
 	mesh: &Path,
 	maps: &[(Slot, PathBuf)],
 ) -> Result<Prepared, String> {
-	let bytes = std::fs::read(mesh).map_err(|e| e.to_string())?;
+	let bytes = crate::workspace::read_asset(mesh).map_err(|e| e.to_string())?;
 	let geometry = geometry::load(&bytes)?.geometry;
 	let groups = geometry.default_groups();
 	let material = if geometry.uvs.is_some() {
@@ -943,5 +954,15 @@ mod tests {
 		let files = [dir.join("gone.mesh")];
 		std::fs::write(drawn_from(&thumb), list(&files)).unwrap();
 		assert!(is_fresh(&thumb, &files));
+	}
+	/// N02: a list of what a thumbnail was drawn from that is longer than
+	/// its limit is not read, so the thumbnail is drawn again.
+	#[test]
+	fn an_oversized_list_is_not_read() {
+		let dir = TempDir::new("thumb_list_limit");
+		let file = dir.join("t.from");
+		std::fs::write(&file, "a.mesh\nb.png").unwrap();
+		assert_eq!(read_list(&file, 12).as_deref(), Some("a.mesh\nb.png"));
+		assert_eq!(read_list(&file, 11), None);
 	}
 }

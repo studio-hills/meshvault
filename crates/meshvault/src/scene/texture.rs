@@ -54,9 +54,10 @@ pub fn is_image(path: &Path) -> bool {
 		.is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// Reads and decodes an image file. A read error is the OS's message.
+/// Reads (see [`crate::workspace::read_asset`]) and decodes an image file.
+/// A read error is the OS's message, or says the file is too large.
 pub fn load_file(ctx: &egui::Context, path: &Path) -> Result<Texture, String> {
-	std::fs::read(path)
+	crate::workspace::read_asset(path)
 		.map_err(|e| e.to_string())
 		.and_then(|bytes| load(ctx, path, &bytes))
 }

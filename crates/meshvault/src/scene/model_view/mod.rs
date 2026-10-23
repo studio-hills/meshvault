@@ -146,8 +146,8 @@ pub struct ModelView {
 
 fn load_asset(ctx: &egui::Context, source: &MeshSource) -> Result<MeshAsset, String> {
 	let path = source.mesh.as_ref().map_err(Clone::clone)?;
-	let bytes =
-		std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+	let bytes = crate::workspace::read_asset(path)
+		.map_err(|e| format!("could not read {}: {e}", path.display()))?;
 	let (loaded, skin) = geometry::load_with_skin(&bytes)?;
 	let geometry = loaded.geometry;
 	if geometry.triangles.is_empty() {

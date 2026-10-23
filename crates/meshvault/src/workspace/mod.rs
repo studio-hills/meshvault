@@ -38,6 +38,7 @@ pub(crate) use self::paths::junction;
 pub use self::paths::{CACHE_DIR, MANIFEST, cache_path, sanitize};
 use self::paths::{MODELS_DIR, RIGS_DIR, fit_folder, image_id, image_stem, rig_stem, stem_name};
 use self::rig_file::write_rig;
+pub use self::store::read_asset;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AssetKind {

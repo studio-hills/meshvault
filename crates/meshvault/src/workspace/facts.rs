@@ -10,6 +10,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::scene::geometry;
+use crate::studio::export_file::read_limited;
 use crate::workspace::{AssetState, CACHE_DIR, Workspace, check_no_links};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -55,8 +56,7 @@ impl Facts {
 		// every mesh is read again once; nor is one read through a link
 		let known = check_no_links(root, &facts_rel())
 			.ok()
-			.and_then(|()| std::fs::read_to_string(&file).ok())
-			.and_then(|text| serde_json::from_str(&text).ok())
+			.map(|()| read_known(&file, MAX_FACTS_BYTES))
 			.unwrap_or_default();
 		Self {
 			root: root.to_path_buf(),
@@ -185,6 +185,19 @@ impl Drop for Facts {
 	}
 }
 
+/// The facts in `file`, or none if it does not parse or is longer than
+/// `limit` bytes: the facts are then read again from the meshes.
+fn read_known(file: &Path, limit: usize) -> HashMap<String, Known> {
+	read_limited(file, limit)
+		.ok()
+		.and_then(|bytes| serde_json::from_slice(&bytes).ok())
+		.unwrap_or_default()
+}
+
+/// The largest facts.json read. Each mesh takes some hundred bytes, so
+/// this is room for several hundred thousand.
+const MAX_FACTS_BYTES: usize = 64 * 1024 * 1024;
+
 /// Where the facts are kept, under the workspace's root.
 fn facts_rel() -> PathBuf {
 	Path::new(CACHE_DIR).join("facts.json")
@@ -194,7 +207,7 @@ fn facts_rel() -> PathBuf {
 /// does not decode counts as an empty, unskinned mesh, so it is not read
 /// again.
 fn read(path: &Path) -> Option<MeshFacts> {
-	let bytes = std::fs::read(path).ok()?;
+	let bytes = crate::workspace::read_asset(path).ok()?;
 	let Ok((loaded, skin)) = geometry::load_with_skin(&bytes) else {
 		return Some(MeshFacts::default());
 	};
@@ -328,5 +341,16 @@ mod tests {
 		assert!(facts.get("Models/A.mesh", 1).is_some());
 		drop(facts);
 		assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+	}
+	/// N02: a facts file longer than its limit is not read, so every mesh
+	/// is read again.
+	#[test]
+	fn an_oversized_facts_file_is_not_read() {
+		let dir = TempDir::new("facts_limit");
+		let file = dir.join("facts.json");
+		let text = r#"{"Models/A.mesh":{"mesh_id":1,"skinned":false,"triangles":3}}"#;
+		std::fs::write(&file, text).unwrap();
+		assert_eq!(read_known(&file, text.len()).len(), 1);
+		assert!(read_known(&file, text.len() - 1).is_empty());
 	}
 }

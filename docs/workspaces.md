@@ -69,7 +69,9 @@ run at once, from 1 to 8 (4 by default).
 - Each asset id is downloaded once, even when several models or maps use it.
 - Decal ids are resolved to their image.
 - A download over 256 MB, or one that unpacks to more, fails rather than
-  being saved cut short.
+  being saved cut short. Meshvault reads no mesh, texture or cached download
+  over 256 MB either: such a mesh or texture fails to open or export, and such
+  a cached copy is downloaded again.
 - Progress is kept when the app is closed. Downloads don't start again by
   themselves: after reopening a workspace, click Download in the top bar
   (Ctrl+D) to carry on. Files deleted outside the app are fetched again then,

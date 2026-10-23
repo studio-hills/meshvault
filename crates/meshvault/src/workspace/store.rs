@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::studio::export_file::read_limited;
 use crate::workspace::paths::{IMAGES_DIR, MODELS_DIR, check_no_links, check_path};
 use crate::workspace::{AssetKind, CACHE_DIR, Job, cache_path};
 
@@ -49,6 +50,24 @@ fn temp_beside(path: &Path) -> PathBuf {
 /// crash could hold only the start of its asset, and was used as it was.
 const CACHE_FORMAT: &str = "2";
 const FORMAT_FILE: &str = "format";
+/// The longest marker read: it only ever holds [`CACHE_FORMAT`].
+const MAX_FORMAT_BYTES: usize = 16;
+
+/// The largest asset read from a workspace, its cache or a file opened in
+/// the viewer: the largest download accepted.
+pub const MAX_ASSET_BYTES: usize = crate::workspace::download::MAX_ASSET_BYTES as usize;
+
+/// Reads an asset (a cached download, a mesh or a texture) whole, unless it
+/// is larger than [`MAX_ASSET_BYTES`].
+pub fn read_asset(path: &Path) -> std::io::Result<Vec<u8>> {
+	read_limited(path, MAX_ASSET_BYTES)
+}
+
+/// Whether the cache's marker `marker` names [`CACHE_FORMAT`]. A marker
+/// longer than `limit` bytes does not.
+fn is_current(marker: &Path, limit: usize) -> bool {
+	read_limited(marker, limit).is_ok_and(|s| s.trim_ascii() == CACHE_FORMAT.as_bytes())
+}
 
 /// Brings the workspace's cache up to [`CACHE_FORMAT`]: entries from
 /// before it are deleted once, since one cut short cannot be told from a
@@ -63,7 +82,7 @@ pub fn upgrade_cache(root: &Path) {
 	}
 	let dir = root.join(CACHE_DIR);
 	let marker = dir.join(FORMAT_FILE);
-	if std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == CACHE_FORMAT) {
+	if is_current(&marker, MAX_FORMAT_BYTES) {
 		return;
 	}
 	let mut cleared = true;
@@ -93,10 +112,17 @@ pub fn upgrade_cache(root: &Path) {
 
 /// The raw download of an asset, if it is cached. An empty file is not
 /// trusted: it is what a write cut short leaves behind. Nor is one read
-/// through a link (see [`check_no_links`]).
+/// through a link (see [`check_no_links`]), or one larger than
+/// [`MAX_ASSET_BYTES`]: like a missing one, it is downloaded again and
+/// replaced.
 pub fn read_cache(root: &Path, asset_id: u64) -> Option<Vec<u8>> {
+	read_cache_within(root, asset_id, MAX_ASSET_BYTES)
+}
+
+/// [`read_cache`], reading at most `limit` bytes.
+fn read_cache_within(root: &Path, asset_id: u64, limit: usize) -> Option<Vec<u8>> {
 	check_no_links(root, &cache_rel(asset_id)).ok()?;
-	std::fs::read(cache_path(root, asset_id))
+	read_limited(&cache_path(root, asset_id), limit)
 		.ok()
 		.filter(|bytes| !bytes.is_empty())
 }
@@ -263,5 +289,22 @@ mod tests {
 			.map(|e| e.unwrap().file_name())
 			.collect();
 		assert_eq!(names, ["8"]);
+	}
+	/// N02: a cache entry or format marker longer than its limit is not
+	/// read: the entry is a miss, so it is downloaded again, and the marker
+	/// is not current, so the cache is upgraded.
+	#[test]
+	fn oversized_cache_files_are_not_read() {
+		let dir = crate::test_support::TempDir::new("store_cache_limit");
+		write_cache(&dir, 8, b"version 4.00\n");
+		assert_eq!(
+			read_cache_within(&dir, 8, 13).as_deref(),
+			Some(&b"version 4.00\n"[..])
+		);
+		assert_eq!(read_cache_within(&dir, 8, 12), None);
+		let marker = dir.join(CACHE_DIR).join(FORMAT_FILE);
+		std::fs::write(&marker, "2\n").unwrap();
+		assert!(is_current(&marker, 2));
+		assert!(!is_current(&marker, 1));
 	}
 }

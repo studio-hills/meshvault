@@ -1,8 +1,7 @@
 # Contributing to Meshvault
 
 Thanks for helping. Bug reports, ideas, documentation fixes and code are all
-welcome. Everyone taking part is expected to follow the
-[code of conduct](CODE_OF_CONDUCT.md).
+welcome.
 
 ## Reporting bugs and asking for features
 

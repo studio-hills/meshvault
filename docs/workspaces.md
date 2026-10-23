@@ -105,6 +105,6 @@ older workspace when it opens it.
 ## Settings
 
 Settings (theme, lighting, recent workspaces, credential type, place id,
-parallel downloads) are in `%APPDATA%\meshvault\config.json`. Meshvault writes
+parallel downloads, the update check) are in `%APPDATA%\meshvault\config.json`. Meshvault writes
 them when they change and when a workspace is opened. Deleting the file resets
 them; it holds no credentials.

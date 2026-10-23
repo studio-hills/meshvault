@@ -30,6 +30,8 @@ pub struct Config {
 	pub theme: ThemeMode,
 	/// How the 3D view is lit.
 	pub lighting: crate::render::lighting::Lighting,
+	/// Whether to ask GitHub for a newer release at startup.
+	pub check_for_updates: bool,
 	/// A settings file that could not be read nor moved aside when it was
 	/// loaded. No save replaces it until it has been moved aside.
 	#[serde(skip)]
@@ -45,6 +47,7 @@ impl Default for Config {
 			concurrency: DEFAULT_CONCURRENCY,
 			theme: ThemeMode::Dark,
 			lighting: Default::default(),
+			check_for_updates: true,
 			unreadable: None,
 		}
 	}
@@ -65,7 +68,8 @@ fn read_config(path: &Path) -> Result<Option<Config>, String> {
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
 		Err(e) => return Err(e.to_string()),
 	};
-	serde_json::from_str(&text)
+	// editors that save UTF-8 with a byte-order mark are common on Windows
+	serde_json::from_str(text.trim_start_matches('\u{feff}'))
 		.map(Some)
 		.map_err(|e| e.to_string())
 }
@@ -500,6 +504,19 @@ mod tests {
 			..Default::default()
 		};
 		assert_eq!(json(&config), json(&expected));
+	}
+
+	/// Windows PowerShell 5.1 and older Notepad save UTF-8 with a byte-order
+	/// mark; a settings file edited with them is still read, not set aside.
+	#[test]
+	fn a_byte_order_mark_is_ignored() {
+		let dir = TempDir::new("config");
+		let path = dir.join("config.json");
+		std::fs::write(&path, "\u{feff}{\"theme\": \"Light\"}").unwrap();
+		let config = load(Some(path), None);
+		assert_eq!(config.theme, ThemeMode::Light);
+		let files: Vec<_> = std::fs::read_dir(&*dir).unwrap().collect();
+		assert_eq!(files.len(), 1, "nothing set aside");
 	}
 
 	#[test]

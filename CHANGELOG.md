@@ -11,6 +11,12 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
 
 The first public release.
 
+### App
+
+- A portable Windows build with its own icon, and a check at startup for
+  newer releases on GitHub (can be turned off in the ⋮ menu, which also shows
+  the version)
+
 ### Viewer
 
 - Opens Roblox meshes v1 to v7 (including Draco-compressed v6 and v7), union

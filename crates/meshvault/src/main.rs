@@ -15,6 +15,7 @@ mod render;
 mod scene;
 mod studio;
 mod ui;
+mod update;
 mod workspace;
 
 #[cfg(test)]

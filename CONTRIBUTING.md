@@ -9,8 +9,8 @@ Open an [issue](https://github.com/studio-hills/meshvault/issues/new/choose)
 with the form for a bug or an idea. For a bug, the most useful things are:
 
 - what you did, what you expected, and what happened instead;
-- Meshvault's version (the release you downloaded, or the commit you built)
-  and your Windows version;
+- Meshvault's version (at the bottom of the ⋮ menu; for a build of your own,
+  the commit too) and your Windows version;
 - for a Studio export problem, the `[Meshvault]` lines from Studio's Output
   window, including any stack trace;
 - for a file that won't open or looks wrong, the asset id or the file itself,

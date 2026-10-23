@@ -11,6 +11,15 @@ right end. The edges resize it, and Windows 11 keeps its corners rounded.
 The sun or moon button in the top bar switches between the light and dark
 themes.
 
+## Updates
+
+At startup Meshvault asks GitHub whether a newer version has been released.
+When there is one, a notice says so and *Update* appears at the right of the
+status bar; click it to open the release page. Nothing is downloaded or
+installed by itself, and the request carries nothing about you or your files.
+Turn the check off with *Check for updates at startup* in the ⋮ menu, which
+also shows the version you are running.
+
 ## Opening files
 
 Open a file with the Open button (Ctrl+O), by dropping it onto the window, or

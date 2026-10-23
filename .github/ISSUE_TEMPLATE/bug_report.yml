@@ -41,7 +41,7 @@ body:
     id: version
     attributes:
       label: Meshvault version
-      description: The release you downloaded, or the commit you built.
+      description: At the bottom of the ⋮ menu. For a build of your own, the commit too.
     validations:
       required: true
   - type: input

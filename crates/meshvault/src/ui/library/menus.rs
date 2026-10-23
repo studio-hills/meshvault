@@ -33,7 +33,11 @@ pub(super) fn export_items_labelled(
 	} else {
 		format!("{n} ")
 	};
-	let blender = widgets::blender_item(ui, format!("Export {what}for Blender (.glb)…"))
+	let blender = ui
+		.button(format!(
+			"{}  Export {what}for Blender (.glb)…",
+			icons::EXPORT
+		))
 		.on_hover_text("Binary glTF with the skeleton, skin weights, clips and maps");
 	let obj = ui.button(format!("{}  Export {what}as OBJ…", icons::EXPORT));
 	for (response, format) in [(blender, Format::Glb), (obj, Format::Obj)] {

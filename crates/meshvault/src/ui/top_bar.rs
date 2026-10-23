@@ -5,7 +5,7 @@
 use eframe::egui::{self, Align, Layout, RichText, Vec2};
 
 use super::layout::TOP_BAR_MARGIN;
-use super::theme::{CONTROL, ThemeMode, display, medium, palette};
+use super::theme::{CAPTION, CONTROL, ThemeMode, display, medium, palette};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::scene::maps::Slot;
@@ -252,22 +252,41 @@ impl App {
 			ui.close();
 			self.show_shortcuts = true;
 		}
+		let mut check = self.config.check_for_updates;
+		if widgets::pointer(ui.checkbox(&mut check, "Check for updates at startup"))
+			.on_hover_text(
+				"Asks GitHub once at startup whether a newer Meshvault has been released",
+			)
+			.changed()
+		{
+			self.set_check_for_updates(check);
+		}
 		ui.separator();
 		if widgets::danger_item(ui, format!("{}  Quit", icons::SIGN_OUT)).clicked() {
 			ui.close();
 			self.ask(ConfirmAction::Quit);
 		}
+		ui.separator();
+		// the version, for bug reports
+		ui.horizontal(|ui| {
+			ui.add_space(ui.spacing().button_padding.x);
+			ui.label(
+				RichText::new(format!("Meshvault {}", crate::update::CURRENT))
+					.size(CAPTION)
+					.weak(),
+			);
+		});
 	}
 
 	/// Exporting what is shown, and saving pictures of it.
 	pub(super) fn export_items(&mut self, ui: &mut egui::Ui) {
-		let blender = widgets::blender_item(ui, "Export for Blender (.glb)…").on_hover_text(
-			if self.model.is_some() {
+		let blender = ui
+			.button(format!("{}  Export for Blender (.glb)…", icons::EXPORT))
+			.on_hover_text(if self.model.is_some() {
 				"Binary glTF: one armature, skinned meshes, every clip and the maps"
 			} else {
 				"Binary glTF with the mesh's maps"
-			},
-		);
+			});
 		if blender.clicked() {
 			ui.close();
 			self.export_glb();

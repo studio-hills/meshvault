@@ -31,13 +31,6 @@ Phosphor Icons, MIT licence. The font is subset to its icon code points; the
 licence and how it was subset are in
 [crates/meshvault/assets/fonts/phosphor/LICENSE.txt](crates/meshvault/assets/fonts/phosphor/LICENSE.txt).
 
-## Blender logo
-
-`crates/meshvault/assets/icons/blender.svg` is the Blender logo, used only to
-label the Export for Blender action. The Blender logo is a trademark of the
-Blender Foundation; Meshvault is not affiliated with or endorsed by the
-Blender Foundation.
-
 ## Rust crates
 
 Meshvault is built from many open-source Rust crates (egui, wgpu, draco-core,
@@ -51,3 +44,7 @@ into the app and its full licence text.
 
 Roblox and Roblox Studio are trademarks of Roblox Corporation. Meshvault is
 not affiliated with, endorsed by or sponsored by Roblox Corporation.
+
+Blender is a registered trademark of the Blender Foundation. Meshvault names
+it only to say that its exports open in Blender; Meshvault is not affiliated
+with or endorsed by the Blender Foundation.

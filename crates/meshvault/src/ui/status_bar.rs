@@ -67,6 +67,24 @@ impl App {
 			ui.add(egui::Label::new(small(path, p.text_weak)).truncate());
 
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				if let Some(release) = &self.update {
+					let notice = ui
+						.add(
+							egui::Label::new(small(
+								format!("{}  Update {}", icons::CLOUD_ARROW_DOWN, release.version),
+								p.accent,
+							))
+							.sense(Sense::click()),
+						)
+						.on_hover_text(format!(
+							"Meshvault {} is available (this is {}). Click to open its release page.",
+							release.version,
+							crate::update::CURRENT
+						));
+					if widgets::pointer(notice).clicked() {
+						ui.ctx().open_url(egui::OpenUrl::new_tab(&release.url));
+					}
+				}
 				if self.downloader.is_running() {
 					if widgets::icon_button(ui, icons::STOP, "Cancel downloads").clicked() {
 						self.downloader.cancel();

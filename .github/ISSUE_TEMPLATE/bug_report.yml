@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in Meshvault doesn't work, crashes, or looks wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please don't paste credentials, cookies, or assets you aren't allowed to share.
+        Security problems go through [private reporting](https://github.com/studio-hills/meshvault/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Viewing a mesh or model
+        - Animation playback
+        - Library or workspace
+        - Downloads or Roblox access
+        - Exporting from Roblox Studio
+        - Export to Blender (glTF) or OBJ
+        - Images and turntables
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Meshvault version
+      description: The release you downloaded, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+  - type: textarea
+    id: output
+    attributes:
+      label: Studio Output or other logs
+      description: For export problems, the `[Meshvault]` lines from Studio's Output window, including any stack trace.
+      render: text
+  - type: textarea
+    id: files
+    attributes:
+      label: Files or asset ids
+      description: The asset id, or the file attached, of a mesh or export that shows the problem, if you may share it.

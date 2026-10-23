@@ -1,0 +1,20 @@
+name: Idea or feature request
+description: Something Meshvault could do, or do better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you imagine it working. Roblox Studio's behaviour, if it is about matching Studio.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other ways you've tried

@@ -1,5 +1,8 @@
 //! Bone weights from mesh files.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+
 use rbx_mesh::mesh::{Chunks6, CoreMeshChunk, Mesh};
 
 use super::facs::{Facs, facs_of};
@@ -9,6 +12,13 @@ use super::facs::{Facs, facs_of};
 const DRACO_METHOD_BYTE: usize = 8;
 /// The Draco method that keeps vertices in order (edgebreaker, 1, does not).
 const DRACO_SEQUENTIAL: u8 = 0;
+
+/// The longest bone name read, in bytes. Roblox keeps names to 100
+/// characters, which UTF-8 holds in at most 400 bytes.
+const MAX_BONE_NAME: usize = 400;
+/// The most bytes of bone names one skin decodes, counting each bone's
+/// copy of a name it shares.
+const MAX_BONE_NAME_BYTES: usize = 4 * 1024 * 1024;
 
 /// Per-vertex bone weights from a mesh file (version 4 and later).
 #[derive(Clone, Debug, PartialEq)]
@@ -102,12 +112,7 @@ fn build_skin(
 			envelopes.len()
 		));
 	}
-	let name_at = |pos: u32| {
-		let rest = names.get(pos as usize..).unwrap_or_default();
-		let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
-		String::from_utf8_lossy(&rest[..end]).into_owned()
-	};
-	let bone_names = bones.iter().map(|b| name_at(b.bone_name_pos)).collect();
+	let bone_names = bone_names(bones, names, MAX_BONE_NAME, MAX_BONE_NAME_BYTES)?;
 	let parents = bones
 		.iter()
 		.map(|b| b.parent.get().filter(|&p| (p as usize) < bones.len()))
@@ -157,6 +162,43 @@ fn build_skin(
 		influences,
 		facs: None,
 	}))
+}
+
+/// Each bone's name, read from the NUL-ended `names` at its offset. A name
+/// is read once per offset, however many bones share it, and only up to
+/// `longest` bytes: a longer name, or names adding up to more than `total`
+/// bytes over every bone, refuse the skin before they are copied.
+fn bone_names(
+	bones: &[rbx_mesh::mesh::Bone4],
+	names: &[u8],
+	longest: usize,
+	total: usize,
+) -> Result<Vec<String>, String> {
+	let mut read: HashMap<u32, String> = HashMap::new();
+	let mut used = 0usize;
+	let mut out = Vec::with_capacity(bones.len());
+	for bone in bones {
+		let pos = bone.bone_name_pos;
+		let name = match read.entry(pos) {
+			Entry::Occupied(e) => e.into_mut(),
+			Entry::Vacant(e) => {
+				let rest = names.get(pos as usize..).unwrap_or_default();
+				// one byte past the longest name is enough to see its end
+				let rest = &rest[..rest.len().min(longest + 1)];
+				let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+				if end > longest {
+					return Err(format!("a bone name is longer than {longest} bytes"));
+				}
+				e.insert(String::from_utf8_lossy(&rest[..end]).into_owned())
+			}
+		};
+		used += name.len();
+		if used > total {
+			return Err(format!("its bone names add up to more than {total} bytes"));
+		}
+		out.push(name.clone());
+	}
+	Ok(out)
 }
 
 #[cfg(test)]
@@ -283,5 +325,119 @@ mod tests {
 		assert!((skin.influences[0][1].1 - 0.8).abs() < 1e-6);
 		assert_eq!(skin.influences[1], [(0, 0.0); 4]);
 		assert!(build_skin(&envelopes, &[bone(0)], b"Root\0", &subsets, 3).is_err());
+	}
+
+	/// A version 4 mesh of one triangle whose `bones` bones all name
+	/// themselves from offset 0 of `names`, each weighting nothing.
+	fn v4_mesh(bones: u16, names: &[u8]) -> Vec<u8> {
+		let mut b = b"version 4.00\n".to_vec();
+		let u16s = |b: &mut Vec<u8>, v: u16| b.extend(v.to_le_bytes());
+		let u32s = |b: &mut Vec<u8>, v: u32| b.extend(v.to_le_bytes());
+		u16s(&mut b, 24);
+		u16s(&mut b, 0); // no LODs
+		u32s(&mut b, 3); // vertices
+		u32s(&mut b, 1); // faces
+		u16s(&mut b, 0); // LOD offsets
+		u16s(&mut b, bones);
+		u32s(&mut b, names.len() as u32);
+		u16s(&mut b, 0); // subsets
+		b.extend([0, 0]);
+		for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+			for c in v.into_iter().chain([0.0, 1.0, 0.0, 0.0, 0.0]) {
+				b.extend(c.to_le_bytes());
+			}
+			b.extend([0u8; 8]); // tangent and colour
+		}
+		b.extend([0u8; 3 * 8]); // envelopes
+		for i in 0..3u32 {
+			u32s(&mut b, i);
+		}
+		for _ in 0..bones {
+			u32s(&mut b, 0); // name offset
+			u16s(&mut b, 0xFFFF);
+			u16s(&mut b, 0xFFFF);
+			b.extend(0.0f32.to_le_bytes());
+			for c in [
+				1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+			] {
+				b.extend(c.to_le_bytes());
+			}
+		}
+		b.extend(names);
+		b
+	}
+
+	/// Bones share one name table entry. A name longer than any Roblox name,
+	/// or names that add up past the budget when every bone that shares
+	/// them is counted, refuse the skin before copying it, and the mesh
+	/// still loads without it.
+	#[test]
+	fn long_or_shared_bone_names_are_bounded() {
+		let mut long = vec![b'A'; 1024 * 1024];
+		long.push(0);
+		let start = std::time::Instant::now();
+		let (loaded, skin) = load_with_skin(&v4_mesh(2, &long)).unwrap();
+		assert_eq!(loaded.geometry.positions.len(), 3);
+		let Err(e) = skin else {
+			panic!("a 1 MiB bone name should refuse the skin");
+		};
+		assert!(e.contains("bone name"), "{e}");
+		// the most a name may be, shared by enough bones to pass the total
+		let mut name = vec![b'B'; MAX_BONE_NAME];
+		name.push(0);
+		let bones = (MAX_BONE_NAME_BYTES / MAX_BONE_NAME + 1) as u16;
+		let (loaded, skin) = load_with_skin(&v4_mesh(bones, &name)).unwrap();
+		assert_eq!(loaded.geometry.positions.len(), 3);
+		let Err(e) = skin else {
+			panic!("shared names past the total should refuse the skin");
+		};
+		assert!(e.contains("bone names"), "{e}");
+		// a few bones sharing a short name still skin, with the name each
+		let (_, skin) = load_with_skin(&v4_mesh(3, b"Root\0")).unwrap();
+		assert_eq!(skin.unwrap().unwrap().bones, ["Root"; 3]);
+		let took = start.elapsed();
+		assert!(took.as_secs_f32() < 1.0, "reading names took {took:?}");
+	}
+
+	/// Under a small budget, many bones sharing one name, or overlapping
+	/// suffixes of it, are refused once their copies pass the total.
+	#[test]
+	fn bone_names_stay_within_a_budget() {
+		use rbx_mesh::mesh::{Bone4, BoneId4, CFrame4};
+		let bone = |pos| Bone4 {
+			bone_name_pos: pos,
+			parent: BoneId4::new(None),
+			lod_parent: BoneId4::new(None),
+			cull_distance: 0.0,
+			cframe: CFrame4 {
+				r00: 1.0,
+				r01: 0.0,
+				r02: 0.0,
+				r10: 0.0,
+				r11: 1.0,
+				r12: 0.0,
+				r20: 0.0,
+				r21: 0.0,
+				r22: 1.0,
+				x: 0.0,
+				y: 0.0,
+				z: 0.0,
+			},
+		};
+		let mut names = vec![b'N'; 60];
+		names.push(0);
+		let shared: Vec<_> = (0..10_000).map(|_| bone(0)).collect();
+		let e = bone_names(&shared, &names, 64, 1024).unwrap_err();
+		assert!(e.contains("more than 1024 bytes"), "{e}");
+		let suffixes: Vec<_> = (0..10_000).map(|i| bone(i % 60)).collect();
+		assert!(bone_names(&suffixes, &names, 64, 1024).is_err());
+		assert!(bone_names(&shared[..1], &names, 59, 1024).is_err());
+		// within it, every bone gets its name, a name past the table is empty
+		let read = bone_names(&[bone(0), bone(58), bone(0), bone(99)], &names, 64, 1024).unwrap();
+		assert_eq!(
+			read,
+			[&names[..60], b"NN", &names[..60], b""]
+				.map(|n| String::from_utf8(n.to_vec()).unwrap())
+		);
 	}
 }

@@ -1927,7 +1927,15 @@ mod tests {
 		assert_eq!(std::fs::read(&outside).unwrap(), b"keep me", "{kind}");
 		saved.unwrap();
 		assert!(added.unwrap());
-		Workspace::open(&dir).unwrap();
+		// a symbolic link at the marker is left alone, so the workspace is
+		// refused when opened; a hard link is only a second name, replaced
+		let opened = Workspace::open(&dir);
+		if kind == "symbolic link" {
+			let err = opened.err().unwrap();
+			assert!(err.contains(".cache/format"), "{err}");
+		} else {
+			opened.unwrap();
+		}
 		let rig = std::fs::read_to_string(dir.join("Rigs/Workspace/Wolf.rig.json")).unwrap();
 		assert_eq!(export_file::parse(&rig).unwrap().models.len(), 1);
 	}

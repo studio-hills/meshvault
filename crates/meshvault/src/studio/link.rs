@@ -44,7 +44,7 @@ pub const PORT: u16 = 34875;
 /// Largest single piece accepted; the exporter sends 2 MB.
 const MAX_CHUNK: usize = 64 * 1024 * 1024;
 /// Largest whole export accepted.
-const MAX_EXPORT: usize = 2 * 1024 * 1024 * 1024;
+const MAX_EXPORT: usize = super::export_file::MAX_EXPORT_BYTES;
 /// Most pieces one export may say it has, so a bad count cannot make a
 /// huge list of pieces.
 const MAX_PIECES: usize = 100_000;

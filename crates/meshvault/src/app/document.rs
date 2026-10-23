@@ -10,6 +10,8 @@ use crate::scene::geometry::{self, GroupKind, Loaded};
 use crate::scene::maps::Slot;
 use crate::scene::surface::AlphaMode;
 use crate::scene::texture::{self, Material};
+use crate::studio::export_file;
+use crate::ui::format::format_bytes;
 
 pub struct Document {
 	pub path: PathBuf,
@@ -54,10 +56,38 @@ fn file_name(path: &Path) -> String {
 /// Extensions the open dialog offers for Roblox meshes and union data.
 const MESH_EXTENSIONS: [&str; 5] = ["mesh", "meshdata", "meshdata5", "data", "bin"];
 
+/// The largest file opened or imported: exports are the largest files
+/// Meshvault reads, and this is their limit.
+const MAX_FILE_BYTES: usize = export_file::MAX_EXPORT_BYTES;
+
+/// Reads `path` whole, unless it is longer than `limit` bytes.
+fn read_limited(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+	use std::io::Read;
+	let too_big = |len: u64| {
+		std::io::Error::other(format!(
+			"it is {}, larger than the {} Meshvault reads",
+			format_bytes(usize::try_from(len).unwrap_or(usize::MAX)),
+			format_bytes(limit)
+		))
+	};
+	let file = std::fs::File::open(path)?;
+	let len = file.metadata()?.len();
+	if len > limit as u64 {
+		return Err(too_big(len));
+	}
+	let mut bytes = Vec::with_capacity(len as usize);
+	// the file may grow after its size was read
+	file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+	if bytes.len() > limit {
+		return Err(too_big(bytes.len() as u64));
+	}
+	Ok(bytes)
+}
+
 impl App {
 	/// Reads the file at `path`, or reports why it could not be read.
 	pub(super) fn read_or_report(&mut self, path: &Path) -> Option<Vec<u8>> {
-		match std::fs::read(path) {
+		match read_limited(path, MAX_FILE_BYTES) {
 			Ok(bytes) => Some(bytes),
 			Err(e) => {
 				self.toasts
@@ -232,6 +262,17 @@ pub fn slot_for_image(path: &Path) -> Slot {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// A file over the limit is not read; one at the limit is.
+	#[test]
+	fn reads_files_up_to_the_limit() {
+		let dir = crate::test_support::TempDir::new("read_limited");
+		let path = dir.join("export.json");
+		std::fs::write(&path, b"12345678").unwrap();
+		assert_eq!(read_limited(&path, 8).unwrap(), b"12345678");
+		let err = read_limited(&path, 7).unwrap_err();
+		assert!(err.to_string().contains("larger than"), "{err}");
+	}
 
 	#[test]
 	fn dropped_images_pick_their_slot_from_the_name() {

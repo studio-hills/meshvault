@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::Deserialize;
 
-use crate::anim::schema::AnimatedModel;
+use crate::anim::schema::{AnimatedModel, AnimationClip, CurveData, Pose};
 use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
 
@@ -32,6 +32,86 @@ pub const MAX_FOLDER_DEPTH: usize = 64;
 pub const MAX_FOLDER_PART: usize = 200;
 /// The longest folder path, in characters, `/`s included.
 pub const MAX_FOLDER_LEN: usize = 2000;
+
+/// The largest export read, from Studio or from disk.
+pub const MAX_EXPORT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+/// The most of each thing an export may hold. Real exports have thousands
+/// of meshes and some hundred models; these only stop a document that
+/// would take far too long to show or import.
+pub struct Limits {
+	pub meshes: usize,
+	pub models: usize,
+	/// Parts in one model.
+	pub parts: usize,
+	/// Animations of one model.
+	pub clips: usize,
+	/// Keyframes, poses and curve keys of one animation.
+	pub keys: usize,
+}
+
+pub const LIMITS: Limits = Limits {
+	meshes: 1_000_000,
+	models: 100_000,
+	parts: 100_000,
+	clips: 10_000,
+	keys: 5_000_000,
+};
+
+/// Why an export of `len` bytes is not read.
+pub fn too_big(len: usize) -> String {
+	format!(
+		"The export is {}, larger than the {} Meshvault reads.",
+		crate::ui::format::format_bytes(len),
+		crate::ui::format::format_bytes(MAX_EXPORT_BYTES)
+	)
+}
+
+/// Why an export holds more than `limits` allow.
+fn over_limits(meshes: usize, models: &[AnimatedModel], limits: &Limits) -> Option<String> {
+	let over = |count: usize, limit: usize, what: &str| {
+		(count > limit).then(|| {
+			format!("This export has {count} {what}, more than the {limit} Meshvault reads.")
+		})
+	};
+	over(meshes, limits.meshes, "meshes")
+		.or_else(|| over(models.len(), limits.models, "models"))
+		.or_else(|| {
+			models.iter().find_map(|m| {
+				over(m.parts.len(), limits.parts, "parts in one model")
+					.or_else(|| over(m.animations.len(), limits.clips, "animations in one model"))
+					.or_else(|| {
+						m.animations
+							.iter()
+							.find_map(|a| over(clip_keys(a), limits.keys, "keys in one animation"))
+					})
+			})
+		})
+}
+
+/// Keyframes, poses at every depth, and curve keys in `clip`.
+fn clip_keys(clip: &AnimationClip) -> usize {
+	let mut count = clip.keyframes.len();
+	let mut poses: Vec<&Pose> = clip.keyframes.iter().flat_map(|k| &k.poses).collect();
+	while let Some(pose) = poses.pop() {
+		count += 1;
+		poses.extend(&pose.children);
+	}
+	for track in &clip.curves {
+		count += match &track.curve {
+			CurveData::FloatCurve { keys } => keys.len(),
+			CurveData::RotationCurve { keys } => keys.len(),
+			CurveData::Vector3Curve { channels }
+			| CurveData::EulerRotationCurve { channels, .. } => [&channels.x, &channels.y, &channels.z]
+				.into_iter()
+				.flatten()
+				.map(Vec::len)
+				.sum(),
+			CurveData::Unknown => 0,
+		};
+	}
+	count
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -144,12 +224,23 @@ fn join_chunks(text: &str) -> Option<String> {
 }
 
 pub fn parse(text: &str) -> Result<Export, String> {
+	parse_with(text, &LIMITS)
+}
+
+/// [`parse`], allowing at most `limits`.
+fn parse_with(text: &str, limits: &Limits) -> Result<Export, String> {
+	if text.len() > MAX_EXPORT_BYTES {
+		return Err(too_big(text.len()));
+	}
 	let text = text.trim_start_matches('\u{feff}');
 	let joined = join_chunks(text);
 	let json = joined.as_deref().unwrap_or(text).trim_start();
 	if json.starts_with('[') {
 		let raw: Vec<RawEntry> =
 			serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
+		if let Some(why) = over_limits(raw.len(), &[], limits) {
+			return Err(why);
+		}
 		return Ok(convert(raw, Vec::new(), Origin::default()));
 	}
 	let header: Header =
@@ -167,6 +258,9 @@ pub fn parse(text: &str) -> Result<Export, String> {
 	}
 	let doc: Document = serde_json::from_str(json)
 		.map_err(|e| format!("Not a valid schema {version} export: {e}"))?;
+	if let Some(why) = over_limits(doc.meshes.len(), &doc.models, limits) {
+		return Err(why);
+	}
 	let origin = Origin {
 		game: doc
 			.game_name
@@ -479,6 +573,51 @@ mod tests {
 			"{:?}",
 			export.skipped
 		);
+	}
+
+	/// More meshes, models, parts, clips or keys than Meshvault reads is an
+	/// error naming the count; the real limits are checked the same way.
+	#[test]
+	fn rejects_exports_over_the_counts() {
+		let tiny = Limits {
+			meshes: 2,
+			models: 1,
+			parts: 1,
+			clips: 1,
+			keys: 3,
+		};
+		let mesh = r#"{"Id":1,"Name":"B","MeshId":"rbxassetid://1"}"#;
+		let doc = |meshes: usize, models: &str| {
+			format!(
+				r#"{{"SchemaVersion":2,"Meshes":[{}],"Models":[{models}]}}"#,
+				vec![mesh; meshes].join(",")
+			)
+		};
+		let check = |json: &str| parse_with(json, &tiny).err();
+		assert_eq!(check(&doc(2, "")), None);
+		let too_many = check(&doc(3, "")).unwrap();
+		assert!(too_many.contains("3 meshes"), "{too_many}");
+		// schema 0 is counted too
+		let old = format!("[{}]", [mesh; 3].join(","));
+		assert!(check(&old).unwrap().contains("3 meshes"));
+		assert!(check(&doc(0, r#"{},{}"#)).unwrap().contains("2 models"));
+		assert!(
+			check(&doc(0, r#"{"Parts":[{},{}]}"#))
+				.unwrap()
+				.contains("2 parts")
+		);
+		assert!(
+			check(&doc(0, r#"{"Animations":[{},{}]}"#))
+				.unwrap()
+				.contains("2 animations")
+		);
+		// keyframes, their poses at every depth, and curve keys all count
+		let keys = r#"{"Animations":[{"Keyframes":[{"Poses":[{"Children":[{}]}]}],
+			"Curves":[{"Curve":{"Type":"FloatCurve","Keys":[{}]}}]}]}"#;
+		assert!(check(&doc(0, keys)).unwrap().contains("4 keys"));
+		let fits = r#"{"Animations":[{"Keyframes":[{"Poses":[{}]}],
+			"Curves":[{"Curve":{"Type":"Vector3Curve","Channels":{"X":[{}]}}}]}]}"#;
+		assert_eq!(check(&doc(0, fits)), None);
 	}
 
 	#[test]

@@ -217,5 +217,24 @@ A newer Meshvault reads every older schema, and an export with a higher
 `Status` a build doesn't know is shown as unsupported and the clip can't play;
 an unknown curve `Type` is skipped, and the rest of its clip still plays.
 
+## Limits
+
+Meshvault refuses an export that would take far too long to show or import:
+
+- an export file over 2 GB (the same limit as the Studio link);
+- more than 1,000,000 meshes or 100,000 models, a model with more than
+  100,000 parts or 10,000 clips, or a clip with more than 5,000,000 keys
+  (keyframes, poses and curve keys together).
+
+Some entries are skipped instead, and listed as ignored in the import dialog:
+a mesh entry or model in a folder more than 64 levels deep (counting the
+game's folder), with a folder name over 200 characters, or a folder path over
+2,000 characters.
+
+A clip whose `Duration` or last key is more than an hour (or not a number)
+doesn't load, and is shown as unplayable. Exporting a model to Blender bakes
+each clip at 30 frames a second for every bone; a model whose clips come to
+more than 10,000,000 keys that way is not exported.
+
 The workspace keeps each animated model as `Rigs/<Path>.rig.json`, which is
 itself a schema 2 export holding that one model.

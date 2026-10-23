@@ -17,6 +17,12 @@ switches between them, and the welcome screen lists the recent ones.
    dialog can include or skip each kind of map.
 4. Downloads start in the background when the import is done.
 
+Exports are read one at a time. One that arrives (or is opened) while another
+is being read or its import dialog is open waits, and opens when that import
+is done; up to 8 can wait, and one more is not imported (an export from Studio
+is still saved, so it can be imported again later). Waiting exports are
+dropped if the workspace is closed.
+
 Importing an export again merges it with what is there:
 
 - A mesh entry with the same game, folder, name and mesh id as one already in
@@ -62,6 +68,8 @@ run at once, from 1 to 8 (4 by default).
 - Rate limits and server errors are retried.
 - Each asset id is downloaded once, even when several models or maps use it.
 - Decal ids are resolved to their image.
+- A download over 256 MB, or one that unpacks to more, fails rather than
+  being saved cut short.
 - Progress is kept when the app is closed. Downloads don't start again by
   themselves: after reopening a workspace, click Download in the top bar
   (Ctrl+D) to carry on. Files deleted outside the app are fetched again then,

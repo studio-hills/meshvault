@@ -1,7 +1,8 @@
 //! Importing exports: picked files, and exports sent from Roblox Studio.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::App;
@@ -14,6 +15,36 @@ use crate::ui::import::{self, ImportDialog};
 pub struct Parsing {
 	pub path: PathBuf,
 	pub task: Task<export_file::Export>,
+}
+
+/// Most exports waiting to be read. Each is a file on disk (exports from
+/// Studio are saved first), so waiting costs no memory.
+const MAX_WAITING: usize = 8;
+
+/// Exports are read one at a time: one that arrives while another is read
+/// or shown waits here, and is read from its file when its turn comes.
+#[derive(Default)]
+pub struct ImportQueue {
+	waiting: VecDeque<PathBuf>,
+	/// Held by the thread reading an export, until it ends. A reader that
+	/// was cancelled still holds it, so the next one waits for it.
+	reader: Arc<()>,
+}
+
+impl ImportQueue {
+	/// Whether an export reader thread is still running.
+	fn reading(&self) -> bool {
+		Arc::strong_count(&self.reader) > 1
+	}
+
+	/// Puts `path` at the back; false if the queue is full.
+	fn push(&mut self, path: PathBuf) -> bool {
+		if self.waiting.len() >= MAX_WAITING {
+			return false;
+		}
+		self.waiting.push_back(path);
+		true
+	}
 }
 
 impl App {
@@ -34,9 +65,20 @@ impl App {
 			self.show_new_workspace(Some(path));
 			return;
 		}
+		if bytes.len() > export_file::MAX_EXPORT_BYTES {
+			let why = export_file::too_big(bytes.len());
+			self.toasts.error(format!("{}: {why}", path.display()));
+			return;
+		}
+		if self.import_busy() {
+			self.queue_import(path);
+			return;
+		}
 		// schema 1 exports with animations run to hundreds of megabytes
 		let bytes = bytes.to_vec();
+		let reader = Arc::clone(&self.import_queue.reader);
 		let task = Task::spawn(&self.ctx, move |_| {
+			let _reader = reader;
 			let result = export_file::parse(&String::from_utf8_lossy(&bytes));
 			drop(bytes);
 			result
@@ -44,7 +86,56 @@ impl App {
 		self.parsing = Some(Parsing { path, task });
 	}
 
+	/// Whether an export is being read or shown for import.
+	fn import_busy(&self) -> bool {
+		self.parsing.is_some() || self.import.is_some() || self.import_queue.reading()
+	}
+
+	/// Keeps `path` to read once the export being read or shown is done.
+	fn queue_import(&mut self, path: PathBuf) {
+		let name = path.display();
+		if self.import_queue.push(path.clone()) {
+			self.toasts.info(format!(
+				"{name} opens for import when the current one is done ({} waiting).",
+				self.import_queue.waiting.len()
+			));
+		} else {
+			self.toasts.error(format!(
+				"Not importing {name}: {MAX_WAITING} exports are already waiting. Import it again later."
+			));
+		}
+	}
+
+	/// Starts the next waiting export once nothing else is being read or
+	/// shown.
+	fn next_import(&mut self) {
+		if self.import_queue.waiting.is_empty() {
+			return;
+		}
+		if self.workspace.is_none() {
+			// the workspace they were for was closed
+			let dropped = self.import_queue.waiting.len();
+			self.import_queue.waiting.clear();
+			self.toasts.info(format!(
+				"{dropped} waiting exports were not imported: their workspace was closed."
+			));
+			return;
+		}
+		if self.import_busy() {
+			return;
+		}
+		let path = self
+			.import_queue
+			.waiting
+			.pop_front()
+			.expect("checked above");
+		if let Some(bytes) = self.read_or_report(&path) {
+			self.start_import(path, &bytes);
+		}
+	}
+
 	pub(super) fn poll_parsing(&mut self) {
+		self.next_import();
 		let Some(parsing) = &self.parsing else { return };
 		let Some(result) = parsing.task.poll("The export reader stopped unexpectedly") else {
 			return;
@@ -162,5 +253,41 @@ impl App {
 				)),
 			}
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The queue holds a few exports, and a reader counts as running until
+	/// its thread ends, even after its task was dropped (cancelled).
+	#[test]
+	fn the_queue_is_bounded_and_knows_its_reader() {
+		let mut queue = ImportQueue::default();
+		for i in 0..MAX_WAITING {
+			assert!(queue.push(PathBuf::from(format!("{i}.json"))));
+		}
+		assert!(!queue.push(PathBuf::from("one more.json")));
+		assert_eq!(queue.waiting.front(), Some(&PathBuf::from("0.json")));
+
+		assert!(!queue.reading());
+		let ctx = eframe::egui::Context::default();
+		let (go, wait) = std::sync::mpsc::channel::<()>();
+		let reader = Arc::clone(&queue.reader);
+		let task = Task::spawn(&ctx, move |_| {
+			let _reader = reader;
+			wait.recv().map_err(|e| e.to_string())
+		});
+		drop(task);
+		assert!(queue.reading(), "a cancelled reader still runs");
+		go.send(()).unwrap();
+		for _ in 0..500 {
+			if !queue.reading() {
+				return;
+			}
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+		panic!("the reader did not end");
 	}
 }

@@ -31,7 +31,7 @@ use crate::workspace::download::Downloader;
 use crate::workspace::{MANIFEST, Workspace};
 
 pub use document::Document;
-pub use import::Parsing;
+pub use import::{ImportQueue, Parsing};
 use task::Task;
 pub use workspace::LoadingModel;
 
@@ -65,6 +65,8 @@ pub struct App {
 	pub import: Option<ImportDialog>,
 	/// An export being read on a background thread.
 	pub parsing: Option<Parsing>,
+	/// Exports waiting for that one to be read and imported.
+	pub import_queue: ImportQueue,
 	pub settings: Option<SettingsDialog>,
 	pub new_workspace: Option<NewWorkspaceDialog>,
 	pub show_shortcuts: bool,
@@ -131,6 +133,7 @@ impl App {
 			downloader: Downloader::default(),
 			import: None,
 			parsing: None,
+			import_queue: ImportQueue::default(),
 			settings: None,
 			new_workspace: None,
 			show_shortcuts: false,

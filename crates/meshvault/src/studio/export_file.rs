@@ -18,6 +18,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::anim::budget;
 use crate::anim::schema::{AnimatedModel, AnimationClip, CurveData, Pose};
 use crate::content_id::parse_asset_id;
 use crate::scene::maps::MapKind;
@@ -70,27 +71,7 @@ pub fn read_text(path: &Path) -> Result<String, String> {
 		.map_err(|_| format!("Could not read {}: it is not UTF-8 text", path.display()))
 }
 
-/// The most of each thing an export may hold. Real exports have thousands
-/// of meshes and some hundred models; these only stop a document that
-/// would take far too long to show or import.
-pub struct Limits {
-	pub meshes: usize,
-	pub models: usize,
-	/// Parts in one model.
-	pub parts: usize,
-	/// Animations of one model.
-	pub clips: usize,
-	/// Keyframes, poses and curve keys of one animation.
-	pub keys: usize,
-}
-
-pub const LIMITS: Limits = Limits {
-	meshes: 1_000_000,
-	models: 100_000,
-	parts: 100_000,
-	clips: 10_000,
-	keys: 5_000_000,
-};
+pub use crate::anim::budget::{LIMITS, Limits};
 
 /// Why an export of `len` bytes is not read.
 pub fn too_big(len: usize) -> String {
@@ -101,26 +82,18 @@ pub fn too_big(len: usize) -> String {
 	)
 }
 
-/// Why an export holds more than `limits` allow.
-fn over_limits(meshes: usize, models: &[AnimatedModel], limits: &Limits) -> Option<String> {
-	let over = |count: usize, limit: usize, what: &str| {
-		(count > limit).then(|| {
-			format!("This export has {count} {what}, more than the {limit} Meshvault reads.")
+/// Why an animation in `models` has more keys, all lists together, than
+/// `limits` allow. Each list was capped as it was read.
+fn over_limits(models: &[AnimatedModel], limits: &Limits) -> Option<String> {
+	models.iter().flat_map(|m| &m.animations).find_map(|a| {
+		let count = clip_keys(a);
+		(count > limits.clip_keys).then(|| {
+			format!(
+				"This export has {count} keys in one animation, more than the {} Meshvault reads.",
+				limits.clip_keys
+			)
 		})
-	};
-	over(meshes, limits.meshes, "meshes")
-		.or_else(|| over(models.len(), limits.models, "models"))
-		.or_else(|| {
-			models.iter().find_map(|m| {
-				over(m.parts.len(), limits.parts, "parts in one model")
-					.or_else(|| over(m.animations.len(), limits.clips, "animations in one model"))
-					.or_else(|| {
-						m.animations
-							.iter()
-							.find_map(|a| over(clip_keys(a), limits.keys, "keys in one animation"))
-					})
-			})
-		})
+	})
 }
 
 /// Keyframes, poses at every depth, and curve keys in `clip`.
@@ -219,7 +192,52 @@ pub struct Export {
 #[derive(Deserialize)]
 struct Header {
 	#[serde(rename = "SchemaVersion")]
-	version: Option<serde_json::Value>,
+	version: Option<Version>,
+}
+
+/// `SchemaVersion`: a number, or a short description of what it is
+/// instead. Whatever it is, it is not built in memory.
+enum Version {
+	Number(u64),
+	Other(String),
+}
+
+impl<'de> Deserialize<'de> for Version {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+		struct V;
+		impl<'de> Visitor<'de> for V {
+			type Value = Version;
+			fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+				f.write_str("a version number")
+			}
+			fn visit_u64<E>(self, v: u64) -> Result<Version, E> {
+				Ok(Version::Number(v))
+			}
+			fn visit_i64<E>(self, v: i64) -> Result<Version, E> {
+				Ok(Version::Other(v.to_string()))
+			}
+			fn visit_f64<E>(self, v: f64) -> Result<Version, E> {
+				Ok(Version::Other(v.to_string()))
+			}
+			fn visit_bool<E>(self, v: bool) -> Result<Version, E> {
+				Ok(Version::Other(v.to_string()))
+			}
+			fn visit_str<E>(self, v: &str) -> Result<Version, E> {
+				let short: String = v.chars().take(20).collect();
+				Ok(Version::Other(format!("{short:?}")))
+			}
+			fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Version, A::Error> {
+				while seq.next_element::<IgnoredAny>()?.is_some() {}
+				Ok(Version::Other("(a list)".into()))
+			}
+			fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Version, A::Error> {
+				while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+				Ok(Version::Other("(an object)".into()))
+			}
+		}
+		d.deserialize_any(V)
+	}
 }
 
 #[derive(Deserialize)]
@@ -228,9 +246,9 @@ struct Document {
 	game_name: Option<String>,
 	#[serde(rename = "PlaceId", default)]
 	place_id: Option<u64>,
-	#[serde(rename = "Meshes")]
+	#[serde(rename = "Meshes", deserialize_with = "budget::meshes")]
 	meshes: Vec<RawEntry>,
-	#[serde(rename = "Models")]
+	#[serde(rename = "Models", deserialize_with = "budget::models")]
 	models: Vec<AnimatedModel>,
 }
 
@@ -269,21 +287,26 @@ fn parse_with(text: &str, limits: &Limits) -> Result<Export, String> {
 	let text = text.trim_start_matches('\u{feff}');
 	let joined = join_chunks(text);
 	let json = joined.as_deref().unwrap_or(text).trim_start();
+	// a limit reached while reading is the error, not where serde was then
+	let (export, over) = budget::with_budget(limits, json.len(), || read(json, limits));
+	export.map_err(|e| over.unwrap_or(e))
+}
+
+/// Reads the export `json`, within the budget [`parse_with`] set.
+fn read(json: &str, limits: &Limits) -> Result<Export, String> {
 	if json.starts_with('[') {
-		let raw: Vec<RawEntry> =
-			serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
-		if let Some(why) = over_limits(raw.len(), &[], limits) {
-			return Err(why);
-		}
+		let mut de = serde_json::Deserializer::from_str(json);
+		let raw: Vec<RawEntry> = budget::meshes(&mut de)
+			.and_then(|raw| de.end().map(|()| raw))
+			.map_err(|e| format!("Not a valid export file: {e}"))?;
 		return Ok(convert(raw, Vec::new(), Origin::default()));
 	}
 	let header: Header =
 		serde_json::from_str(json).map_err(|e| format!("Not a valid export file: {e}"))?;
 	let version = match &header.version {
 		None => return Err("Not a valid export file: SchemaVersion is missing".into()),
-		Some(v) => v
-			.as_u64()
-			.ok_or_else(|| format!("Unrecognised SchemaVersion {v}"))?,
+		Some(Version::Number(v)) => *v,
+		Some(Version::Other(v)) => return Err(format!("Unrecognised SchemaVersion {v}")),
 	};
 	if !(1..=u64::from(SCHEMA_VERSION)).contains(&version) {
 		return Err(format!(
@@ -292,7 +315,7 @@ fn parse_with(text: &str, limits: &Limits) -> Result<Export, String> {
 	}
 	let doc: Document = serde_json::from_str(json)
 		.map_err(|e| format!("Not a valid schema {version} export: {e}"))?;
-	if let Some(why) = over_limits(doc.meshes.len(), &doc.models, limits) {
+	if let Some(why) = over_limits(&doc.models, limits) {
 		return Err(why);
 	}
 	let origin = Origin {
@@ -335,22 +358,23 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 				)),
 			}
 		}
-		let folder: Vec<String> = origin
+		let parts = origin
 			.game
-			.iter()
-			.cloned()
-			.chain(
-				r.folder
-					.split('/')
-					.map(str::trim)
-					.filter(|s| !s.is_empty())
-					.map(String::from),
-			)
-			.collect();
+			.as_deref()
+			.into_iter()
+			.chain(r.folder.split('/').map(str::trim).filter(|s| !s.is_empty()));
+		let folder = match take_parts(parts, MAX_FOLDER_DEPTH) {
+			Ok(folder) => folder,
+			Err(depth) => {
+				skipped.push(format!("{}: {}", r.name, too_deep(depth)));
+				continue;
+			}
+		};
 		if let Some(why) = folder_problem(&folder) {
 			skipped.push(format!("{}: {why}", r.name));
 			continue;
 		}
+		let folder = folder.into_iter().map(String::from).collect();
 		entries.push(Entry {
 			name: r.name,
 			folder,
@@ -363,15 +387,18 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 	let models = models
 		.into_iter()
 		.filter(|m| {
-			let path: Vec<&str> = origin
+			let parts = origin
 				.game
-				.iter()
-				.map(String::as_str)
-				.chain(m.path.split('/').filter(|s| !s.is_empty()))
-				.collect();
-			let why = path
-				.split_last()
-				.and_then(|(_, folder)| folder_problem(folder));
+				.as_deref()
+				.into_iter()
+				.chain(m.path.split('/').filter(|s| !s.is_empty()));
+			// the last part is the model itself, not a folder
+			let why = match take_parts(parts, MAX_FOLDER_DEPTH + 1) {
+				Ok(path) => path
+					.split_last()
+					.and_then(|(_, folder)| folder_problem(folder)),
+				Err(depth) => Some(too_deep(depth - 1)),
+			};
 			if let Some(why) = &why {
 				skipped.push(format!("{}: {why}", m.name));
 			}
@@ -387,14 +414,33 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 	}
 }
 
+/// The first `max` of `parts` or, when there are more, how many there are:
+/// counted, not collected, as a short document can name a path tens of
+/// thousands of folders deep.
+fn take_parts<'a>(
+	mut parts: impl Iterator<Item = &'a str>,
+	max: usize,
+) -> Result<Vec<&'a str>, usize> {
+	let mut taken = Vec::new();
+	while let Some(part) = parts.next() {
+		if taken.len() == max {
+			return Err(max + 1 + parts.count());
+		}
+		taken.push(part);
+	}
+	Ok(taken)
+}
+
+/// Why a folder `depth` levels deep cannot be imported.
+fn too_deep(depth: usize) -> String {
+	format!("its folder is {depth} levels deep, more than the {MAX_FOLDER_DEPTH} allowed")
+}
+
 /// Why a folder path cannot be imported: too deep or too long for the
 /// folder tree and for paths on disk.
 fn folder_problem(folder: &[impl AsRef<str>]) -> Option<String> {
 	if folder.len() > MAX_FOLDER_DEPTH {
-		return Some(format!(
-			"its folder is {} levels deep, more than the {MAX_FOLDER_DEPTH} allowed",
-			folder.len()
-		));
+		return Some(too_deep(folder.len()));
 	}
 	// the `/`s between the names
 	let mut len = folder.len().saturating_sub(1);
@@ -610,7 +656,7 @@ mod tests {
 	}
 
 	/// More meshes, models, parts, clips or keys than Meshvault reads is an
-	/// error naming the count; the real limits are checked the same way.
+	/// error naming the limit; the real limits are checked the same way.
 	#[test]
 	fn rejects_exports_over_the_counts() {
 		let tiny = Limits {
@@ -618,7 +664,8 @@ mod tests {
 			models: 1,
 			parts: 1,
 			clips: 1,
-			keys: 3,
+			clip_keys: 3,
+			..LIMITS
 		};
 		let mesh = r#"{"Id":1,"Name":"B","MeshId":"rbxassetid://1"}"#;
 		let doc = |meshes: usize, models: &str| {
@@ -630,20 +677,20 @@ mod tests {
 		let check = |json: &str| parse_with(json, &tiny).err();
 		assert_eq!(check(&doc(2, "")), None);
 		let too_many = check(&doc(3, "")).unwrap();
-		assert!(too_many.contains("3 meshes"), "{too_many}");
+		assert!(too_many.contains("more than 2 meshes"), "{too_many}");
 		// schema 0 is counted too
 		let old = format!("[{}]", [mesh; 3].join(","));
-		assert!(check(&old).unwrap().contains("3 meshes"));
-		assert!(check(&doc(0, r#"{},{}"#)).unwrap().contains("2 models"));
+		assert!(check(&old).unwrap().contains("more than 2 meshes"));
+		assert!(check(&doc(0, r#"{},{}"#)).unwrap().contains("1 models"));
 		assert!(
 			check(&doc(0, r#"{"Parts":[{},{}]}"#))
 				.unwrap()
-				.contains("2 parts")
+				.contains("1 parts")
 		);
 		assert!(
 			check(&doc(0, r#"{"Animations":[{},{}]}"#))
 				.unwrap()
-				.contains("2 animations")
+				.contains("1 animations")
 		);
 		// keyframes, their poses at every depth, and curve keys all count
 		let keys = r#"{"Animations":[{"Keyframes":[{"Poses":[{"Children":[{}]}]}],
@@ -652,6 +699,198 @@ mod tests {
 		let fits = r#"{"Animations":[{"Keyframes":[{"Poses":[{}]}],
 			"Curves":[{"Curve":{"Type":"Vector3Curve","Channels":{"X":[{}]}}}]}]}"#;
 		assert_eq!(check(&doc(0, fits)), None);
+	}
+
+	/// A list one record over its cap is refused as that record is read:
+	/// the rest of the list, however long, is never built.
+	#[test]
+	fn stops_reading_a_list_at_its_cap() {
+		let tiny = Limits { parts: 4, ..LIMITS };
+		let parts = |n: usize| {
+			format!(
+				r#"{{"SchemaVersion":2,"Meshes":[],"Models":[{{"Parts":[{}]}}]}}"#,
+				vec!["{}"; n].join(",")
+			)
+		};
+		assert!(parse_with(&parts(4), &tiny).is_ok());
+		assert_eq!(budget::records_read(), 5, "a model and its 4 parts");
+		let err = parse_with(&parts(100_000), &tiny).err().unwrap();
+		assert_eq!(
+			err,
+			"This export has more than 4 parts in one model, the most Meshvault reads."
+		);
+		// the 4 parts; the model itself was never finished
+		assert_eq!(budget::records_read(), 4, "nothing past the cap was kept");
+		// schema 0 the same
+		let tiny = Limits {
+			meshes: 4,
+			..LIMITS
+		};
+		let mesh = r#"{"Name":"B","MeshId":"1"}"#;
+		let err = parse_with(&format!("[{}]", vec![mesh; 50_000].join(",")), &tiny)
+			.err()
+			.unwrap();
+		assert!(err.contains("more than 4 meshes"), "{err}");
+		assert_eq!(budget::records_read(), 4);
+	}
+
+	/// Lists inside lists are capped and charged too: joints, bones, poses
+	/// under poses, face controls, markers, curves and their channels,
+	/// decals and lights.
+	#[test]
+	fn caps_nested_lists() {
+		let tiny = Limits {
+			joints: 2,
+			bones: 2,
+			poses: 2,
+			face_controls: 2,
+			markers: 2,
+			curves: 2,
+			keys: 2,
+			decals: 2,
+			lights: 2,
+			keyframes: 2,
+			..LIMITS
+		};
+		let three = "{},{},{}";
+		let curve = r#"{"Curve":{"Type":"New"}}"#;
+		let doc =
+			|model: String| format!(r#"{{"SchemaVersion":2,"Meshes":[],"Models":[{model}]}}"#);
+		let clip = |inner: String| format!(r#"{{"Animations":[{{}},{inner}]}}"#);
+		for (model, what) in [
+			(format!(r#"{{"Joints":[{three}]}}"#), "joints"),
+			(format!(r#"{{"Bones":[{three}]}}"#), "bones"),
+			(
+				format!(r#"{{"Parts":[{{}},{{"Decals":[{three}]}}]}}"#),
+				"decals",
+			),
+			(format!(r#"{{"Parts":[{{"Lights":[{three}]}}]}}"#), "lights"),
+			(clip(format!(r#"{{"Keyframes":[{three}]}}"#)), "keyframes"),
+			(
+				clip(format!(r#"{{"Keyframes":[{{"Markers":[{three}]}}]}}"#)),
+				"markers",
+			),
+			(
+				clip(format!(
+					r#"{{"Keyframes":[{{"Poses":[{{"Children":[{{"Children":[{three}]}}]}}]}}]}}"#
+				)),
+				"poses",
+			),
+			(
+				clip(format!(
+					r#"{{"Keyframes":[{{"Poses":[{{"FaceControls":[{three}]}}]}}]}}"#
+				)),
+				"face controls",
+			),
+			(
+				clip(format!(r#"{{"Curves":[{curve},{curve},{curve}]}}"#)),
+				"curves",
+			),
+			(
+				clip(format!(
+					r#"{{"Curves":[{{"Curve":{{"Type":"RotationCurve","Keys":[{three}]}}}}]}}"#
+				)),
+				"keys",
+			),
+			(
+				clip(format!(
+					r#"{{"Curves":[{{"Curve":{{"Type":"Vector3Curve","Channels":{{"Y":[{three}]}}}}}}]}}"#
+				)),
+				"keys",
+			),
+		] {
+			let err = parse_with(&doc(model.clone()), &tiny).err();
+			let err = err.unwrap_or_else(|| panic!("{model} was read"));
+			assert!(
+				err.contains(&format!("more than 2 {what}")),
+				"{model}: {err}"
+			);
+			// and two of each is fine
+			let fits = if model.contains(three) {
+				model.replace(three, "{},{}")
+			} else {
+				model.replacen(&format!(",{curve}"), "", 1)
+			};
+			assert!(parse_with(&doc(fits.clone()), &tiny).is_ok(), "{fits}");
+		}
+	}
+
+	/// The budget is for the whole document: many lists, each within its
+	/// cap, cannot together expand far beyond the document's size.
+	#[test]
+	fn small_records_spend_the_documents_budget() {
+		let tiny = Limits {
+			decoded_base: 4096,
+			decoded_per_byte: 8,
+			..LIMITS
+		};
+		let markers = |n: usize| {
+			let keyframe = format!(r#"{{"Markers":[{}]}}"#, vec!["{}"; n].join(","));
+			format!(
+				r#"{{"SchemaVersion":2,"Meshes":[],"Models":[{{"Animations":[{{"Keyframes":[{}]}}]}}]}}"#,
+				vec![keyframe; 200].join(",")
+			)
+		};
+		let err = parse_with(&markers(100), &tiny).err().unwrap();
+		assert!(err.contains("too much memory"), "{err}");
+		// a real record is longer than what it takes in memory
+		let named = r#"{"Name":"Footstep","Value":"Left"}"#;
+		let real = markers(100).replace("{}", named);
+		assert!(parse_with(&real, &tiny).is_ok());
+	}
+
+	/// A `SchemaVersion` that is not a number is reported, not built.
+	#[test]
+	fn reports_a_strange_schema_version() {
+		for (version, shown) in [
+			("\"2\"", "\"2\""),
+			("-1", "-1"),
+			("[[],[],[]]", "(a list)"),
+			("{\"a\":[]}", "(an object)"),
+		] {
+			let json = format!(r#"{{"SchemaVersion":{version},"Meshes":[],"Models":[]}}"#);
+			let err = parse(&json).err().unwrap();
+			assert_eq!(err, format!("Unrecognised SchemaVersion {shown}"));
+		}
+	}
+
+	/// Lists the count checks used to miss are capped too: a short document
+	/// of empty `{}` records cannot hold more bones, markers or face
+	/// controls than any real model has.
+	#[test]
+	fn caps_every_list() {
+		let records = |n: usize| vec!["{}"; n].join(",");
+		let doc =
+			|model: String| format!(r#"{{"SchemaVersion":2,"Meshes":[],"Models":[{model}]}}"#);
+		for model in [
+			format!(r#"{{"Bones":[{}]}}"#, records(10_001)),
+			format!(
+				r#"{{"Animations":[{{"Keyframes":[{{"Markers":[{}]}}]}}]}}"#,
+				records(1_001)
+			),
+			format!(
+				r#"{{"Animations":[{{"Keyframes":[{{"Poses":[{{"FaceControls":[{}]}}]}}]}}]}}"#,
+				records(1_001)
+			),
+			format!(r#"{{"Parts":[{{"Decals":[{}]}}]}}"#, records(1_001)),
+			format!(r#"{{"Parts":[{{"Lights":[{}]}}]}}"#, records(1_001)),
+		] {
+			let err = parse(&doc(model.clone())).err();
+			assert!(err.is_some(), "{}", &model[..40]);
+		}
+	}
+
+	/// Many models, each within the counts, still cannot add up to more
+	/// than the document is allowed to expand to.
+	#[test]
+	fn the_whole_document_has_a_budget() {
+		let model = format!(r#"{{"Parts":[{}]}}"#, vec!["{}"; 65_000].join(","));
+		let json = format!(
+			r#"{{"SchemaVersion":2,"Meshes":[],"Models":[{}]}}"#,
+			vec![model; 3].join(",")
+		);
+		let err = parse(&json).err().expect("refused");
+		assert!(err.contains("too much"), "{err}");
 	}
 
 	#[test]

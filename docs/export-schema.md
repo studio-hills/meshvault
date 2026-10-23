@@ -219,12 +219,26 @@ an unknown curve `Type` is skipped, and the rest of its clip still plays.
 
 ## Limits
 
-Meshvault refuses an export that would take far too long to show or import:
+Meshvault refuses an export that would take far too long, or far too much
+memory, to show or import:
 
 - an export file over 2 GB (the same limit as the Studio link);
-- more than 1,000,000 meshes or 100,000 models, a model with more than
-  100,000 parts or 10,000 clips, or a clip with more than 5,000,000 keys
-  (keyframes, poses and curve keys together).
+- more than 1,000,000 meshes or 100,000 models;
+- a model with more than 100,000 parts, 100,000 joints, 10,000 bones or
+  10,000 clips; a part with more than 1,000 decals or 1,000 lights;
+- a clip with more than 1,000,000 keyframes or 1,000,000 curves, or more than
+  5,000,000 keys (keyframes, poses and curve keys together); a keyframe with
+  more than 100,000 poses or 1,000 markers, a pose with more than 100,000
+  child poses or 1,000 face controls, a curve (or one channel of it) with more
+  than 5,000,000 keys;
+- a document whose lists would take more than 64 MiB plus 8 bytes for each
+  byte of the file once read. A real record takes at most a few times
+  its length in the file, so only a document of mostly empty records (`{}`) comes near this.
+
+Real exports stay far below these: a few thousand meshes, some hundred models
+of at most a few thousand parts, a few hundred bones, about 50 face controls.
+Each list is counted as it is read, and reading stops at the first record over
+a limit, so an export over one is refused before it is built in memory.
 
 Some entries are skipped instead, and listed as ignored in the import dialog:
 a mesh entry or model in a folder more than 64 levels deep (counting the

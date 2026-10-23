@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::budget;
+
 pub type CFrame12 = [f32; 12];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -16,9 +18,13 @@ pub struct AnimatedModel {
 	/// it; animation translations do not, and are scaled by it when played.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub scale: Option<f32>,
+	#[serde(deserialize_with = "budget::parts")]
 	pub parts: Vec<ModelPart>,
+	#[serde(deserialize_with = "budget::joints")]
 	pub joints: Vec<JointInfo>,
+	#[serde(deserialize_with = "budget::bones")]
 	pub bones: Vec<BoneInfo>,
+	#[serde(deserialize_with = "budget::clips")]
 	pub animations: Vec<AnimationClip>,
 	/// The model's classic clothing (schema 2; absent in older exports).
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -86,7 +92,10 @@ pub struct ModelPart {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub surface_appearance: Option<SurfaceAppearanceInfo>,
 	/// The part's Decals and Textures (schema 2; absent in older exports).
-	#[serde(skip_serializing_if = "Vec::is_empty")]
+	#[serde(
+		skip_serializing_if = "Vec::is_empty",
+		deserialize_with = "budget::decals"
+	)]
 	pub decals: Vec<DecalInfo>,
 	/// The MaterialVariant the part shows, its own or MaterialService's
 	/// override for its material (schema 2; absent in older exports).
@@ -94,7 +103,10 @@ pub struct ModelPart {
 	pub material_variant: Option<MaterialVariantInfo>,
 	/// Lights on the part or its attachments (schema 2; absent in older
 	/// exports).
-	#[serde(skip_serializing_if = "Vec::is_empty")]
+	#[serde(
+		skip_serializing_if = "Vec::is_empty",
+		deserialize_with = "budget::lights"
+	)]
 	pub lights: Vec<LightInfo>,
 }
 
@@ -277,7 +289,9 @@ pub struct AnimationClip {
 	#[serde(rename = "Loop")]
 	pub looped: bool,
 	pub priority: String,
+	#[serde(deserialize_with = "budget::keyframes")]
 	pub keyframes: Vec<Keyframe>,
+	#[serde(deserialize_with = "budget::curves")]
 	pub curves: Vec<CurveTrack>,
 }
 
@@ -285,7 +299,9 @@ pub struct AnimationClip {
 #[serde(rename_all = "PascalCase", default)]
 pub struct Keyframe {
 	pub time: f32,
+	#[serde(deserialize_with = "budget::poses")]
 	pub poses: Vec<Pose>,
+	#[serde(deserialize_with = "budget::markers")]
 	pub markers: Vec<Marker>,
 }
 
@@ -338,11 +354,15 @@ pub struct Pose {
 	pub weight: f32,
 	pub easing_style: EasingStyle,
 	pub easing_direction: EasingDirection,
+	#[serde(deserialize_with = "budget::poses")]
 	pub children: Vec<Pose>,
 	/// Face control values set at this pose (NumberPoses in its
 	/// FaceControls), from the current schema 1 and 2 exporters; absent in
 	/// older exports.
-	#[serde(skip_serializing_if = "Vec::is_empty")]
+	#[serde(
+		skip_serializing_if = "Vec::is_empty",
+		deserialize_with = "budget::face_controls"
+	)]
 	pub face_controls: Vec<FaceControlPose>,
 }
 
@@ -391,16 +411,19 @@ pub struct RotationKey {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Channels {
-	#[serde(rename = "X")]
+	#[serde(rename = "X", deserialize_with = "budget::channel_keys")]
 	pub x: Option<Vec<ScalarKey>>,
-	#[serde(rename = "Y")]
+	#[serde(rename = "Y", deserialize_with = "budget::channel_keys")]
 	pub y: Option<Vec<ScalarKey>>,
-	#[serde(rename = "Z")]
+	#[serde(rename = "Z", deserialize_with = "budget::channel_keys")]
 	pub z: Option<Vec<ScalarKey>>,
 }
 
+/// A curve, written with its `Type` beside its fields. It is read through
+/// [`RawCurve`]: serde would otherwise buffer the whole curve, keys and all,
+/// before it knew the type, outside any budget.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "Type")]
+#[serde(tag = "Type", try_from = "RawCurve")]
 pub enum CurveData {
 	FloatCurve {
 		#[serde(rename = "Keys", default)]
@@ -425,9 +448,224 @@ pub enum CurveData {
 	Unknown,
 }
 
+/// Every field any curve type has, read in one pass.
+#[derive(Deserialize)]
+struct RawCurve {
+	#[serde(rename = "Type")]
+	kind: String,
+	#[serde(rename = "Keys", default, deserialize_with = "budget::keys")]
+	keys: Vec<RawKey>,
+	#[serde(rename = "Channels", default)]
+	channels: Channels,
+	#[serde(rename = "RotationOrder", default)]
+	rotation_order: String,
+}
+
+/// A float or a rotation key, by its `Value`.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+struct RawKey {
+	time: f32,
+	value: Option<KeyValue>,
+	interpolation: String,
+	left_tangent: f32,
+	right_tangent: f32,
+}
+
+/// A key's `Value`: a float key's number or a rotation key's CFrame, or
+/// something else, which only a curve type this app does not know may have.
+enum KeyValue {
+	Float(f32),
+	Rotation(CFrame12),
+	Other,
+}
+
+impl<'de> Deserialize<'de> for KeyValue {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+		struct V;
+		impl<'de> Visitor<'de> for V {
+			type Value = KeyValue;
+			fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+				f.write_str("a key value")
+			}
+			fn visit_f64<E>(self, v: f64) -> Result<KeyValue, E> {
+				Ok(KeyValue::Float(v as f32))
+			}
+			fn visit_i64<E>(self, v: i64) -> Result<KeyValue, E> {
+				Ok(KeyValue::Float(v as f32))
+			}
+			fn visit_u64<E>(self, v: u64) -> Result<KeyValue, E> {
+				Ok(KeyValue::Float(v as f32))
+			}
+			fn visit_bool<E>(self, _: bool) -> Result<KeyValue, E> {
+				Ok(KeyValue::Other)
+			}
+			fn visit_str<E>(self, _: &str) -> Result<KeyValue, E> {
+				Ok(KeyValue::Other)
+			}
+			fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<KeyValue, A::Error> {
+				while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+				Ok(KeyValue::Other)
+			}
+			/// 12 numbers are a CFrame; anything else in a list is skipped
+			/// without being kept.
+			fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<KeyValue, A::Error> {
+				let mut cf = [0.0; 12];
+				let mut count = 0;
+				let mut numbers = true;
+				while let Some(item) = seq.next_element::<Number>()? {
+					match item {
+						Number(Some(v)) if count < 12 => cf[count] = v,
+						_ => numbers = false,
+					}
+					count += 1;
+				}
+				Ok(if numbers && count == 12 {
+					KeyValue::Rotation(cf)
+				} else {
+					KeyValue::Other
+				})
+			}
+		}
+		d.deserialize_any(V)
+	}
+}
+
+/// A number in a key's `Value` list, or `None` for anything else (skipped).
+struct Number(Option<f32>);
+
+impl<'de> Deserialize<'de> for Number {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		Ok(match KeyValue::deserialize(d)? {
+			KeyValue::Float(v) => Number(Some(v)),
+			// anything nested was walked without being kept
+			KeyValue::Rotation(_) | KeyValue::Other => Number(None),
+		})
+	}
+}
+
+impl TryFrom<RawCurve> for CurveData {
+	type Error = String;
+
+	fn try_from(raw: RawCurve) -> Result<Self, String> {
+		let scalar = |k: RawKey| {
+			let value = match k.value {
+				Some(KeyValue::Float(v)) => v,
+				None => 0.0,
+				Some(_) => return Err("a FloatCurve key's Value is not a number".to_owned()),
+			};
+			Ok(ScalarKey {
+				time: k.time,
+				value,
+				interpolation: k.interpolation,
+				left_tangent: k.left_tangent,
+				right_tangent: k.right_tangent,
+			})
+		};
+		let rotation = |k: RawKey| {
+			let value = match k.value {
+				Some(KeyValue::Rotation(cf)) => cf,
+				None => CFrame12::default(),
+				Some(_) => {
+					return Err(
+						"a RotationCurve key's Value is not a CFrame of 12 numbers".to_owned()
+					);
+				}
+			};
+			Ok(RotationKey {
+				time: k.time,
+				value,
+				interpolation: k.interpolation,
+				left_tangent: k.left_tangent,
+				right_tangent: k.right_tangent,
+			})
+		};
+		Ok(match raw.kind.as_str() {
+			"FloatCurve" => CurveData::FloatCurve {
+				keys: raw.keys.into_iter().map(scalar).collect::<Result<_, _>>()?,
+			},
+			"RotationCurve" => CurveData::RotationCurve {
+				keys: raw
+					.keys
+					.into_iter()
+					.map(rotation)
+					.collect::<Result<_, _>>()?,
+			},
+			"Vector3Curve" => CurveData::Vector3Curve {
+				channels: raw.channels,
+			},
+			"EulerRotationCurve" => CurveData::EulerRotationCurve {
+				rotation_order: raw.rotation_order,
+				channels: raw.channels,
+			},
+			_ => CurveData::Unknown,
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// Curves are read in one pass by their `Type`, wherever it is, and
+	/// written back the same way.
+	#[test]
+	fn curves_read_by_their_type() {
+		let identity = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1];
+		let read = |v: serde_json::Value| serde_json::from_value::<CurveData>(v);
+		let float =
+			read(serde_json::json!({"Keys": [{"Time": 1, "Value": 2}], "Type": "FloatCurve"}))
+				.unwrap();
+		let CurveData::FloatCurve { keys } = &float else {
+			panic!("{float:?}")
+		};
+		assert_eq!((keys[0].time, keys[0].value), (1.0, 2.0));
+		let rotation =
+			read(serde_json::json!({"Type": "RotationCurve", "Keys": [{"Value": identity}, {}]}))
+				.unwrap();
+		let CurveData::RotationCurve { keys } = &rotation else {
+			panic!("{rotation:?}")
+		};
+		assert_eq!(keys[0].value[3], 1.0);
+		assert_eq!(keys[1].value, [0.0; 12]);
+		let euler = read(
+			serde_json::json!({"Type": "EulerRotationCurve", "RotationOrder": "XYZ",
+			"Channels": {"X": [{"Value": 1}], "Y": null}}),
+		)
+		.unwrap();
+		let CurveData::EulerRotationCurve {
+			rotation_order,
+			channels,
+		} = &euler
+		else {
+			panic!("{euler:?}")
+		};
+		assert_eq!(rotation_order, "XYZ");
+		assert_eq!(channels.x.as_ref().unwrap()[0].value, 1.0);
+		assert!(channels.y.is_none() && channels.z.is_none());
+		assert!(matches!(
+			read(serde_json::json!({"Type": "Vector3Curve"})).unwrap(),
+			CurveData::Vector3Curve { .. }
+		));
+		assert!(matches!(
+			read(serde_json::json!({"Type": "Future", "Keys": [{"Value": "x"}]})).unwrap(),
+			CurveData::Unknown
+		));
+		// a value of the wrong kind, a short CFrame, or no type
+		assert!(
+			read(serde_json::json!({"Type": "FloatCurve", "Keys": [{"Value": identity}]})).is_err()
+		);
+		assert!(
+			read(serde_json::json!({"Type": "RotationCurve", "Keys": [{"Value": [1, 2]}]}))
+				.is_err()
+		);
+		assert!(read(serde_json::json!({"Keys": []})).is_err());
+		// written with the type beside the fields, and read back
+		let out = serde_json::to_value(&rotation).unwrap();
+		assert_eq!(out["Type"], "RotationCurve");
+		assert!(matches!(read(out).unwrap(), CurveData::RotationCurve { keys } if keys.len() == 2));
+	}
 
 	/// Stored models write their keys back out, so an interpolation name
 	/// must come back as it was read, even one the player does not know, and

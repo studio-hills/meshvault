@@ -154,6 +154,24 @@ pub struct Clip {
 	pub face: Vec<FaceTrack>,
 }
 
+/// The longest clip that loads, in seconds. Roblox animations run seconds
+/// to minutes; an hour bounds the work of baking one for Blender.
+pub const MAX_CLIP_SECONDS: f32 = 3600.0;
+
+/// Whether a key time or duration is within [`MAX_CLIP_SECONDS`].
+fn fits(seconds: f32) -> bool {
+	seconds.is_finite() && seconds <= MAX_CLIP_SECONDS
+}
+
+/// Why a clip lasting `seconds` (or keyed that late) is not loaded.
+fn too_long(seconds: f32) -> String {
+	if seconds.is_finite() {
+		format!("The clip is {seconds:.0} seconds long; clips longer than an hour are not loaded.")
+	} else {
+		"The clip's length is not a number; clips longer than an hour are not loaded.".into()
+	}
+}
+
 impl Clip {
 	/// Builds a playable clip, or explains why the record has no motion.
 	pub fn from_record(record: &AnimationClip) -> Result<Clip, String> {
@@ -177,12 +195,24 @@ impl Clip {
 		if clip.tracks.is_empty() && clip.face.is_empty() {
 			return Err("The clip has no motion data.".into());
 		}
+		// keys are sorted, so the last of each track is its end; a NaN one
+		// sorts last too
+		let tracks = clip.tracks.iter().map(Track::end_time);
+		let face = clip.face.iter().map(FaceTrack::end_time);
+		let mut end = 0.0f32;
+		for time in tracks.chain(face) {
+			if !fits(time) {
+				return Err(too_long(time));
+			}
+			end = end.max(time);
+		}
+		if !fits(clip.duration) {
+			return Err(too_long(clip.duration));
+		}
 		// the exported duration is the last key time; recompute if missing,
 		// face tracks included, so a face-only clip still has a length
 		if clip.duration <= 0.0 {
-			let tracks = clip.tracks.iter().map(Track::end_time);
-			let face = clip.face.iter().map(FaceTrack::end_time);
-			clip.duration = tracks.chain(face).fold(0.0, f32::max);
+			clip.duration = end;
 		}
 		Ok(clip)
 	}
@@ -963,6 +993,36 @@ mod tests {
 		})
 		.unwrap();
 		assert_eq!(clip.duration, 1.0);
+	}
+
+	/// A clip that says it lasts for years, or keys one that far in, is not
+	/// loaded: baking it for Blender would take a frame every 1/30 s.
+	#[test]
+	fn clips_longer_than_the_limit_are_refused() {
+		let frame = |time: f32| Keyframe {
+			time,
+			poses: vec![pose("Torso", 0.0, 1.0, vec![])],
+			..Default::default()
+		};
+		let clip = |duration: f32, times: &[f32]| AnimationClip {
+			status: ClipStatus::KeyframeSequence,
+			duration,
+			keyframes: times.iter().map(|&t| frame(t)).collect(),
+			..Default::default()
+		};
+		for record in [
+			clip(1e9, &[0.0]),
+			clip(f32::INFINITY, &[0.0]),
+			clip(f32::NAN, &[0.0]),
+			clip(0.0, &[0.0, 1e9]),
+			clip(2.0, &[0.0, MAX_CLIP_SECONDS + 1.0]),
+			clip(0.0, &[0.0, f32::INFINITY]),
+		] {
+			let err = Clip::from_record(&record).unwrap_err();
+			assert!(err.contains("longer than"), "{err}");
+		}
+		let longest = Clip::from_record(&clip(MAX_CLIP_SECONDS, &[0.0, MAX_CLIP_SECONDS])).unwrap();
+		assert_eq!(longest.duration, MAX_CLIP_SECONDS);
 	}
 
 	#[test]

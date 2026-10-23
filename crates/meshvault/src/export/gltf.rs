@@ -85,6 +85,21 @@ fn pad_to_4(buf: &mut Vec<u8>, byte: u8) {
 pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 	let mut g = Gltf::default();
 	let nodes = model.export_nodes();
+	// every clip's key times, checked against the budget before any work
+	let clip_times: Vec<Option<Vec<f32>>> = model
+		.clips
+		.iter()
+		.map(|slot| {
+			slot.clip
+				.as_ref()
+				.ok()
+				.map(|clip| key_times(clip.duration))
+				.transpose()
+		})
+		.collect::<Result<_, _>>()?;
+	let frames: Vec<usize> = clip_times.iter().flatten().map(Vec::len).collect();
+	// every node is keyed in every frame, the root not
+	frames_fit(&frames, nodes.len())?;
 	let rest = model.export_frame(None, 0.0);
 	// a root above everything, so the armature has one
 	let root = nodes.len();
@@ -138,9 +153,8 @@ pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 	g.scene = scene;
 
 	// each clip, baked
-	for (i, slot) in model.clips.iter().enumerate() {
-		let Ok(clip) = &slot.clip else { continue };
-		let times = key_times(clip.duration);
+	for (i, (slot, times)) in model.clips.iter().zip(clip_times).enumerate() {
+		let Some(times) = times else { continue };
 		let frames = times.len();
 		let locals: Vec<Vec<CFrame>> = times
 			.iter()
@@ -274,9 +288,35 @@ fn bake(
 	))
 }
 
+/// The most keys baked for one export: frames over all its clips times its
+/// nodes. Each is 28 bytes in the file, so this keeps a file under 300 MB;
+/// an hour-long clip of a 90-bone rig fits.
+const MAX_BAKED_KEYS: usize = 10_000_000;
+
+/// Whether clips of `frames` keys each, for `nodes` nodes, are within
+/// [`MAX_BAKED_KEYS`].
+fn frames_fit(frames: &[usize], nodes: usize) -> Result<(), String> {
+	let keys = frames
+		.iter()
+		.try_fold(0usize, |sum, &f| sum.checked_add(f.checked_mul(nodes)?));
+	match keys {
+		Some(keys) if keys <= MAX_BAKED_KEYS => Ok(()),
+		_ => Err(format!(
+			"The model's clips are too long to export: {} frames for {nodes} bones is more than {MAX_BAKED_KEYS} keys",
+			frames.iter().fold(0usize, |a, &b| a.saturating_add(b))
+		)),
+	}
+}
+
 /// Key times of a baked clip: every frame at [`FPS`], and its end. A clip
-/// that is a single pose holds it for one frame.
-fn key_times(duration: f32) -> Vec<f32> {
+/// that is a single pose holds it for one frame. A clip longer than
+/// [`MAX_CLIP_SECONDS`](crate::anim::clip::MAX_CLIP_SECONDS) is an error.
+fn key_times(duration: f32) -> Result<Vec<f32>, String> {
+	if !(duration.is_finite() && duration <= crate::anim::clip::MAX_CLIP_SECONDS) {
+		return Err(format!(
+			"A clip is too long to export: it lasts {duration} seconds, and the most is an hour"
+		));
+	}
 	let duration = duration.max(0.0);
 	let mut times: Vec<f32> = (0..)
 		.map(|k| k as f32 / FPS)
@@ -286,7 +326,7 @@ fn key_times(duration: f32) -> Vec<f32> {
 	if times.len() < 2 {
 		times = vec![0.0, 1.0 / FPS];
 	}
-	times
+	Ok(times)
 }
 
 /// A CFrame as a column-major 4 × 4 matrix.
@@ -716,7 +756,7 @@ mod tests {
 	#[test]
 	fn key_times_increase_and_end_on_the_clip() {
 		for duration in [0.0, 0.01, 1.0 / FPS, 0.5, 1.0, 2.345] {
-			let t = key_times(duration);
+			let t = key_times(duration).unwrap();
 			assert!(t.len() >= 2, "{duration}: {t:?}");
 			assert!(t.windows(2).all(|w| w[1] > w[0]), "{duration}: {t:?}");
 			assert_eq!(*t.first().unwrap(), 0.0);
@@ -727,6 +767,34 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	/// A clip too long to bake, or more frames than the budget over all the
+	/// nodes, is refused before any frame is baked.
+	#[test]
+	fn export_model_refuses_clips_too_long_to_bake() {
+		for duration in [1e9, f32::INFINITY, f32::NAN] {
+			let err = key_times(duration).unwrap_err();
+			assert!(err.contains("too long"), "{duration}: {err}");
+		}
+		let longest = key_times(crate::anim::clip::MAX_CLIP_SECONDS).unwrap();
+		assert_eq!(longest.len(), 108_001);
+		assert!(frames_fit(&[longest.len(); 2], 2).is_ok());
+		let err = frames_fit(&[longest.len(); 2], MAX_BAKED_KEYS / 100_000).unwrap_err();
+		assert!(err.contains("too long"), "{err}");
+		assert!(frames_fit(&[usize::MAX, 1], usize::MAX).is_err());
+
+		// a clip made some other way than loading still fails, quickly
+		let dir = TempDir::new("glb_long_clip");
+		let ctx = eframe::egui::Context::default();
+		let (sources, images) = (HashMap::new(), HashMap::new());
+		let mut view = ModelView::load(&ctx, 0, &swinging_arm(true), &sources, &images);
+		if let Ok(clip) = &mut view.clips[0].clip {
+			clip.duration = 1e9;
+		}
+		let path = dir.join("long.glb");
+		assert!(export_model(&view, &path).unwrap_err().contains("too long"));
+		assert!(!path.exists());
 	}
 
 	fn map(pixels: &[[u8; 4]]) -> image::RgbaImage {

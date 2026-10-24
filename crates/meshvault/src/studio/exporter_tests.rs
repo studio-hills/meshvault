@@ -166,7 +166,10 @@ local services = {
 		if not productName then error("HTTP 403 (Forbidden)") end
 		return { Name = productName }
 	end },
-	MaterialService = Instance.new("MaterialService", "MaterialService"),
+	MaterialService = Instance.new("MaterialService", "MaterialService", nil, {
+		-- as Studio does: the material's own name when nothing overrides it
+		GetBaseMaterialOverride = function(_, material) return material.Name end,
+	}),
 }
 function game:GetService(name) return (assert(services[name], name)) end
 
@@ -837,4 +840,42 @@ fn effects_are_exported_with_their_settings() {
 	let model = export.models.iter().find(|m| m.name == "Pod").unwrap();
 	assert_eq!(model.effects.len(), 2);
 	assert!(!model.effects[0].is_enabled() || !model.effects[1].is_enabled());
+}
+
+// A part with no MaterialVariant and no override has none in the export:
+// Studio's GetBaseMaterialOverride names the material itself then, which is
+// not a variant to look for
+#[test]
+fn a_material_without_an_override_is_no_variant() {
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load(
+			r#"
+			local box = newInstance("Model", "Box", part.Parent)
+			newInstance("MeshPart", "Lid", box, {
+				MeshId = "rbxassetid://77", TextureID = "", CFrame = cframe(0, 0, 0),
+				Size = { X = 1, Y = 1, Z = 1 }, BrickColor = { Name = "White" },
+			})
+			"#,
+		)
+		.exec()
+		.unwrap();
+	let (problems, _, _) = studio.export("nil");
+	assert_eq!(issues(&problems), []);
+	let doc: serde_json::Value = serde_json::from_str(&studio.received()).unwrap();
+	let diagnostics = &doc["MaterialDiagnostics"];
+	assert_eq!(diagnostics["MeshesWithMaterialVariant"], 0);
+	assert_eq!(diagnostics["UnresolvedMaterialVariants"], 0);
+	let model = doc["Models"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|m| m["Name"] == "Box")
+		.unwrap();
+	assert!(
+		model["Parts"][0].get("MaterialVariant").is_none(),
+		"{}",
+		model["Parts"][0]
+	);
 }

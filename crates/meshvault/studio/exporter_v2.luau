@@ -253,7 +253,8 @@ local function run(options)
 		local ok, name = pcall(function()
 			return MaterialService:GetBaseMaterialOverride(part.Material)
 		end)
-		if ok then override = nonempty(name) end
+		-- with no override set, Studio gives the material's own name back
+		if ok and name ~= part.Material.Name then override = nonempty(name) end
 		local chosen = explicit or override
 		if not chosen then return nil end
 		local key = chosen .. "\0" .. part.Material.Name

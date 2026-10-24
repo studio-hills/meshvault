@@ -1,6 +1,7 @@
 //! The grid view: thumbnails, grouped by folder.
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Sense, Stroke, Vec2};
+use eframe::emath;
 
 use super::list::nothing_matches;
 use super::menus::item_hover;
@@ -15,6 +16,9 @@ use crate::workspace::{Item, Workspace};
 /// Smallest grid tile, and the gap between tiles.
 const TILE: f32 = 92.0;
 const GAP: f32 = 6.0;
+/// How long a thumbnail takes to fade in over its icon when it arrives, in
+/// seconds.
+const THUMBNAIL_FADE: f32 = 0.15;
 
 /// A run of tiles under one heading.
 #[derive(Debug, PartialEq)]
@@ -185,29 +189,35 @@ impl Browser {
 					egui::StrokeKind::Inside,
 				);
 			}
-			match thumbnail {
-				Some(texture) => {
-					painter.image(
-						texture.id(),
-						picture.shrink(4.0),
-						egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-						Color32::WHITE,
-					);
-				}
-				None => {
-					let icon = match key {
-						Row::Model(i) if ws.models()[i].is_animated() => icons::PERSON_SIMPLE_RUN,
-						Row::Model(_) => icons::PACKAGE,
-						Row::Mesh(_) => icons::CUBE,
-					};
-					painter.text(
-						picture.center(),
-						Align2::CENTER_CENTER,
-						icon,
-						FontId::proportional(26.0),
-						p.text_weak.gamma_multiply(0.6),
-					);
-				}
+			// a thumbnail that arrives while the tile is shown fades in over
+			// its icon; one already there when the tile first shows does not
+			let shown = ui.ctx().animate_bool_with_time_and_easing(
+				egui::Id::unique("thumbnail_fade").with(&subject),
+				thumbnail.is_some(),
+				THUMBNAIL_FADE,
+				emath::easing::cubic_out,
+			);
+			if let Some(texture) = &thumbnail {
+				painter.image(
+					texture.id(),
+					picture.shrink(4.0),
+					egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+					Color32::WHITE.gamma_multiply(shown),
+				);
+			}
+			if shown < 1.0 {
+				let icon = match key {
+					Row::Model(i) if ws.models()[i].is_animated() => icons::PERSON_SIMPLE_RUN,
+					Row::Model(_) => icons::PACKAGE,
+					Row::Mesh(_) => icons::CUBE,
+				};
+				painter.text(
+					picture.center(),
+					Align2::CENTER_CENTER,
+					icon,
+					FontId::proportional(26.0),
+					p.text_weak.gamma_multiply(0.6 * (1.0 - shown)),
+				);
 			}
 			// downloads still to come, or failed, show in the corner
 			if s != Status::Done {

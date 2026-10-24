@@ -177,54 +177,175 @@ local function run(options)
 	end
 	local function v3(v) return {v.X, v.Y, v.Z} end
 	local function rgb(c) return {c.R, c.G, c.B} end
-	-- Read available texture maps from a mesh or its surface appearance.
-	local function getMaps(inst)
+	-- Read an optional property without breaking older Studio versions.
+	local function optionalProperty(inst, property)
+		local ok, value = pcall(function() return inst[property] end)
+		return ok and value or nil
+	end
+	-- Serialize Content safely; object-backed content is not an asset ID.
+	-- Empty Content (SourceType None) is nil, as it references nothing.
+	local function contentData(inst, property)
+		local value = optionalProperty(inst, property)
+		if value == nil then return nil end
+		local uri = optionalProperty(value, "Uri")
+		local object = optionalProperty(value, "Object")
+		local hasUri = type(uri) == "string" and uri ~= ""
+		local hasObject = typeof(object) == "Instance"
+		if not hasUri and not hasObject then return nil end
+		local source = optionalProperty(value, "SourceType")
+		local result = { Kind = typeof(source) == "EnumItem" and source.Name or "Unknown" }
+		if hasUri then result.Uri = uri end
+		if hasObject then
+			result.ObjectClass = object.ClassName
+			result.ObjectPath = fullpath(object)
+		end
+		return result
+	end
+	local MATERIAL_MAPS = {"ColorMap", "NormalMap", "RoughnessMap", "MetalnessMap"}
+	-- Collect legacy maps and newer content-backed SurfaceAppearance fields.
+	local function surfaceData(inst)
 		local sa = inst:FindFirstChildOfClass("SurfaceAppearance")
 		if not sa and inst:IsA("SpecialMesh") and inst.Parent then
 			sa = inst.Parent:FindFirstChildOfClass("SurfaceAppearance")
 		end
 		local maps = {ColorMap="", NormalMap="", RoughnessMap="", MetalnessMap=""}
-		if sa then
-			for k in pairs(maps) do
-				local ok, val = pcall(function() return sa[k] end)
-				if ok and nonempty(val) then maps[k] = val end
-			end
+		if not sa then return maps, nil end
+		local appearance = {
+			Color = rgb(sa.Color), AlphaMode = sa.AlphaMode.Name,
+		}
+		for _, name in ipairs(MATERIAL_MAPS) do
+			local val = optionalProperty(sa, name)
+			if nonempty(val) then maps[name] = val end
+			appearance[name] = maps[name]
+			appearance[name .. "Content"] = contentData(sa, name .. "Content")
 		end
-		local tex
-		if inst:IsA("MeshPart") then
-			local ok, id = pcall(function() return inst.TextureID end)
-			if ok then tex = nonempty(id) end
-		elseif inst:IsA("SpecialMesh") then
-			tex = nonempty(inst.TextureId)
+		for _, name in ipairs({"TexturePackContent", "EmissiveMaskContent"}) do
+			appearance[name] = contentData(sa, name)
 		end
-		tex = nonempty(maps.ColorMap) or tex
-		return tex or "", maps
+		appearance.EmissiveStrength = optionalProperty(sa, "EmissiveStrength")
+		local tint = optionalProperty(sa, "EmissiveTint")
+		if tint then appearance.EmissiveTint = rgb(tint) end
+		local resample = optionalProperty(sa, "ResampleMode")
+		if resample then appearance.ResampleMode = resample.Name end
+		return maps, appearance
 	end
 	-- Read the asset ID of a file-backed mesh.
 	local function meshIdOf(inst)
 		if inst:IsA("MeshPart") then
-			local ok, id = pcall(function() return inst.MeshId end)
-			return ok and nonempty(id) or nil
+			return nonempty(optionalProperty(inst, "MeshId"))
 		end
 		if inst:IsA("SpecialMesh") and inst.MeshType == Enum.MeshType.FileMesh then
 			return nonempty(inst.MeshId)
 		end
 		return nil
 	end
-	-- Deduplicate mesh/material combinations and return their reference ID.
+	local MaterialService = game:GetService("MaterialService")
+	local variantCache = {}
+	local materialDiagnostics = {
+		MeshesWithSurfaceAppearance = 0, MeshesWithTextureId = 0,
+		MeshesWithMaterialVariant = 0, MeshesWithNoTextureReference = 0,
+		UnresolvedMaterialVariants = 0, MeshesWithContentReferences = 0,
+	}
+	-- Resolve explicit variants and global overrides without losing missing names.
+	local function materialVariantOf(part)
+		local explicit = nonempty(part.MaterialVariant)
+		local override = nil
+		local ok, name = pcall(function()
+			return MaterialService:GetBaseMaterialOverride(part.Material)
+		end)
+		if ok then override = nonempty(name) end
+		local chosen = explicit or override
+		if not chosen then return nil end
+		local key = chosen .. "\0" .. part.Material.Name
+		if variantCache[key] == nil then
+			local resolved = nil
+			local got, found = pcall(function()
+				return MaterialService:GetMaterialVariant(part.Material, chosen)
+			end)
+			if got and found then resolved = found end
+			if not resolved then
+				for _, v in ipairs(MaterialService:GetDescendants()) do
+					if v:IsA("MaterialVariant") and v.Name == chosen and v.BaseMaterial == part.Material then
+						resolved = v
+						break
+					end
+				end
+			end
+			if resolved then
+				variantCache[key] = {
+					Name = resolved.Name, Resolved = true, StudsPerTile = resolved.StudsPerTile,
+					ColorMap = resolved.ColorMap, NormalMap = resolved.NormalMap,
+					RoughnessMap = resolved.RoughnessMap, MetalnessMap = resolved.MetalnessMap,
+				}
+			else
+				variantCache[key] = { Name = chosen, Resolved = false }
+			end
+		end
+		local info = table.clone(variantCache[key])
+		info.Source = explicit and "Explicit" or "BaseMaterialOverride"
+		info.BaseMaterial = part.Material.Name
+		if explicit and override then info.BaseMaterialOverride = override end
+		return info
+	end
+	-- Capture appearance on each mesh, keeping differently styled instances distinct.
 	local function getOrAddMesh(inst)
 		local id = meshIdOf(inst)
 		if not id then return nil end
-		local tex, maps = getMaps(inst)
-		local key = HttpService:JSONEncode({id, tex, maps.ColorMap, maps.NormalMap, maps.RoughnessMap, maps.MetalnessMap})
+		local part = inst:IsA("BasePart") and inst or inst.Parent
+		local maps, appearance = surfaceData(inst)
+		local legacyTexture
+		if inst:IsA("MeshPart") then
+			legacyTexture = optionalProperty(inst, "TextureID")
+		else
+			legacyTexture = inst.TextureId
+		end
+		legacyTexture = nonempty(legacyTexture) or ""
+		local textureContent = inst:IsA("MeshPart") and contentData(inst, "TextureContent") or nil
+		local tex = nonempty(maps.ColorMap) or legacyTexture
+		local variant = part and part:IsA("BasePart") and materialVariantOf(part) or nil
+		local material = part and part:IsA("BasePart") and part.Material.Name or nil
+		local tint = part and part:IsA("BasePart") and rgb(part.Color) or nil
+		local transparency = part and part:IsA("BasePart") and part.Transparency or nil
+		local reflectance = part and part:IsA("BasePart") and part.Reflectance or nil
+		local source = appearance and "SurfaceAppearance"
+			or (variant and variant.Resolved and "MaterialVariant")
+			or (tex ~= "" and "MeshTexture") or (material and "BaseMaterial") or "Unknown"
+		-- false stands in for nil so every field keeps its place in the key
+		local signature = {id, tex, legacyTexture, maps, appearance or false,
+			textureContent or false, material or false, variant or false, tint or false,
+			transparency or false, reflectance or false}
+		local key = HttpService:JSONEncode(signature)
 		if not meshByKey[key] then
 			local newId = #meshes + 1
 			meshByKey[key] = newId
+			local hasContent = textureContent ~= nil
+			if appearance then
+				for _, field in ipairs({"ColorMapContent", "NormalMapContent", "RoughnessMapContent",
+					"MetalnessMapContent", "TexturePackContent", "EmissiveMaskContent"}) do
+					if appearance[field] ~= nil then hasContent = true break end
+				end
+			end
+			if appearance then materialDiagnostics.MeshesWithSurfaceAppearance += 1 end
+			if legacyTexture ~= "" then materialDiagnostics.MeshesWithTextureId += 1 end
+			if variant then
+				materialDiagnostics.MeshesWithMaterialVariant += 1
+				if not variant.Resolved then materialDiagnostics.UnresolvedMaterialVariants += 1 end
+			end
+			if tex == "" and not hasContent and not (variant and variant.Resolved and
+				(variant.ColorMap ~= "" or variant.NormalMap ~= "" or variant.RoughnessMap ~= "" or variant.MetalnessMap ~= "")) then
+				materialDiagnostics.MeshesWithNoTextureReference += 1
+			end
+			if hasContent then materialDiagnostics.MeshesWithContentReferences += 1 end
 			table.insert(meshes, {
 				Id = newId, Name = inst.Name, MeshId = id, TextureId = tex,
 				Folder = fullpath(inst.Parent),
 				ColorMap = maps.ColorMap, NormalMap = maps.NormalMap,
 				RoughnessMap = maps.RoughnessMap, MetalnessMap = maps.MetalnessMap,
+				LegacyTextureId = legacyTexture, TextureContent = textureContent,
+				SurfaceAppearance = appearance, Material = material,
+				MaterialVariant = variant, Color = tint,
+				Transparency = transparency, Reflectance = reflectance,
+				MaterialSource = source,
 			})
 		end
 		return meshByKey[key]
@@ -418,34 +539,6 @@ local function run(options)
 		end
 		return item
 	end
-	local MaterialService = game:GetService("MaterialService")
-	local variantCache = {}
-	-- Resolve a part's material variant and associated texture maps.
-	local function materialVariantOf(part)
-		local name = part.MaterialVariant
-		if name == "" then
-			local ok, override = pcall(function()
-				return MaterialService:GetBaseMaterialOverride(part.Material)
-			end)
-			name = ok and override or ""
-		end
-		if name == "" then return nil end
-		local key = name .. "\0" .. part.Material.Name
-		if variantCache[key] == nil then
-			variantCache[key] = false
-			for _, v in ipairs(MaterialService:GetDescendants()) do
-				if v:IsA("MaterialVariant") and v.Name == name and v.BaseMaterial == part.Material then
-					variantCache[key] = {
-						Name = v.Name, StudsPerTile = v.StudsPerTile,
-						ColorMap = v.ColorMap, NormalMap = v.NormalMap,
-						RoughnessMap = v.RoughnessMap, MetalnessMap = v.MetalnessMap,
-					}
-					break
-				end
-			end
-		end
-		return variantCache[key] or nil
-	end
 	-- Add a joint and its transforms to the model's rig data.
 	local function addJoint(m, inst, part0, part1, c0, c1, transform, kind)
 		table.insert(m.Joints, {
@@ -530,14 +623,7 @@ local function run(options)
 					end
 				end
 				if #lights == 0 then lights = nil end
-				local surfaceAppearance = nil
-				local appearance = inst:FindFirstChildOfClass("SurfaceAppearance")
-				if appearance then
-					surfaceAppearance = {
-						Color = rgb(appearance.Color),
-						AlphaMode = appearance.AlphaMode.Name,
-					}
-				end
+				local _, surfaceAppearance = surfaceData(inst)
 				local shape = ""
 				if inst:IsA("Part") then
 					shape = inst.Shape.Name
@@ -670,6 +756,7 @@ local function run(options)
 		PlaceId = game.PlaceId,
 		Meshes = meshes,
 		Models = models,
+		MaterialDiagnostics = materialDiagnostics,
 	}
 	log(("Exported %d models and %d meshes in %.1fs."):format(#models, #meshes, os.clock() - started))
 	if #meshes == 0 and #models == 0 then

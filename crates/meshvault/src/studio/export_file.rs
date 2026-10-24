@@ -13,7 +13,7 @@
 //! `PlaceId`): the game becomes the top folder of everything imported from
 //! it, and its place is sent with the downloads.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -334,6 +334,13 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 	let mut skipped = Vec::new();
 	let mut warnings = Vec::new();
 	let mut ids = HashSet::new();
+	// the exporter lists a mesh once per look of the parts showing it (their
+	// colour, material...), named after the first such part; the parts carry
+	// their look themselves, so meshes with ids (which parts refer to) and the
+	// same mesh and maps are one entry, as earlier exporters listed them, and
+	// `alias` sends the refs to the others to it
+	let mut same: HashMap<(u64, BTreeMap<MapKind, u64>), u32> = HashMap::new();
+	let mut alias: HashMap<u32, u32> = HashMap::new();
 	for r in raw {
 		if let Some(id) = r.id
 			&& !ids.insert(id)
@@ -375,7 +382,14 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 			skipped.push(format!("{}: {why}", r.name));
 			continue;
 		}
-		let folder = folder.into_iter().map(String::from).collect();
+		let folder: Vec<String> = folder.into_iter().map(String::from).collect();
+		if let Some(id) = r.id {
+			if let Some(&to) = same.get(&(mesh_id, maps.clone())) {
+				alias.insert(id, to);
+				continue;
+			}
+			same.insert((mesh_id, maps.clone()), id);
+		}
 		entries.push(Entry {
 			name: r.name,
 			folder,
@@ -387,6 +401,14 @@ fn convert(raw: Vec<RawEntry>, models: Vec<AnimatedModel>, origin: Origin) -> Ex
 	// a model shows in the folder holding it (`workspace::model_folder`)
 	let models = models
 		.into_iter()
+		.map(|mut m| {
+			for part in &mut m.parts {
+				if let Some(&to) = alias.get(&part.mesh_ref) {
+					part.mesh_ref = to;
+				}
+			}
+			m
+		})
 		.filter(|m| {
 			let parts = origin
 				.game
@@ -546,6 +568,42 @@ mod tests {
 		assert_eq!(export.models.len(), 1);
 		assert_eq!(export.models[0].parts[0].mesh_ref, 1);
 		assert_eq!(export.models[0].parts[0].cframe[1], 3.0);
+	}
+
+	/// The exporter lists a mesh once for each look of its parts; those
+	/// differing only in that are one entry, and the parts refer to it.
+	#[test]
+	fn a_mesh_listed_once_per_look_is_one_entry() {
+		let mesh = |id: u32, color: &str, texture: &str| {
+			format!(
+				r#"{{"Id":{id},"Name":"Brick","MeshId":"rbxassetid://10","Folder":"RS/Wall",
+				 "TextureId":"{texture}","Color":{color},"Material":"Plastic"}}"#
+			)
+		};
+		let part = |id: u32| {
+			format!(
+				r#"{{"Path":"RS/Wall/Brick","Name":"Brick","MeshRef":{id},
+				 "CFrame":[0,0,0,1,0,0,0,1,0,0,0,1],"Size":[1,1,1],"Transparency":0}}"#
+			)
+		};
+		let json = format!(
+			r#"{{"SchemaVersion":2,"Meshes":[{},{},{}],
+			"Models":[{{"Name":"Wall","Path":"RS/Wall","Parts":[{},{},{}],
+				"Joints":[],"Bones":[],"Animations":[]}}]}}"#,
+			mesh(1, "[1,0,0]", ""),
+			mesh(2, "[0,0,1]", ""),
+			mesh(3, "[1,0,0]", "rbxassetid://11"),
+			part(1),
+			part(2),
+			part(3),
+		);
+		let export = parse(&json).unwrap();
+		// a different image is a different entry
+		let ids: Vec<_> = export.entries.iter().map(|e| e.source_id).collect();
+		assert_eq!(ids, [Some(1), Some(3)]);
+		let refs: Vec<_> = export.models[0].parts.iter().map(|p| p.mesh_ref).collect();
+		assert_eq!(refs, [1, 1, 3]);
+		assert_eq!(export.skipped, Vec::<String>::new());
 	}
 
 	/// Schema 2 adds model scale, part appearance, SpecialMesh and joint

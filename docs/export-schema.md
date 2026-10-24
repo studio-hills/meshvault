@@ -68,6 +68,19 @@ each with an `Id` that parts refer to.
 An entry with a duplicate `Id` or a `MeshId` Meshvault can't read is skipped
 and listed in the import dialog; a map it can't read is ignored with a warning.
 
+The Studio exporter lists a mesh once for each look of the parts that show it,
+and describes that look with fields Meshvault doesn't read:
+- `LegacyTextureId` and `TextureContent`;
+- `SurfaceAppearance`, which includes its Content-backed maps;
+- `Material`, `MaterialVariant`, `Color`, `Transparency` and `Reflectance`;
+- `MaterialSource`.
+
+Parts carry their own look, so Meshvault reads entries that have an `Id` and
+the same `MeshId` and maps as one entry, and points their parts' `MeshRef` at
+the first of them. The export's top-level `MaterialDiagnostics` counts these
+looks (for example meshes with a SurfaceAppearance, or an unresolved
+MaterialVariant) to help find meshes whose images were missed.
+
 ## Models (schemas 1 and 2)
 
 ```json

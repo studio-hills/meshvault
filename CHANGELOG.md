@@ -35,7 +35,9 @@ The first public release.
   game by its published name
 - Export schema 2: meshes, maps, and animated models with their parts,
   joints, bones, clips, appearance, clothing, decals, MaterialVariants and
-  lights (schemas 0 and 1 are still read)
+  lights, each mesh listed with the look of its parts (Content-backed
+  SurfaceAppearance maps, resolved or missing MaterialVariants) and a count
+  of looks with no image (schemas 0 and 1 are still read)
 - Workspaces that mirror the export's folders, grouped by the game each
   export came from, with parallel, resumable downloads of each asset once,
   through an Open Cloud API key or a cookie kept in Windows Credential Manager;

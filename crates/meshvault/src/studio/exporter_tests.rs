@@ -34,6 +34,11 @@ local Instance = {}
 Instance.__index = Instance
 function Instance.new(class, name, parent, props)
 	local inst = setmetatable({ ClassName = class, Name = name, Parent = parent, children = {} }, Instance)
+	if class == "MeshPart" then
+		-- what every part has, for the exporter's look of a mesh
+		inst.Material, inst.MaterialVariant = { Name = "Plastic" }, ""
+		inst.Color, inst.Transparency, inst.Reflectance = { R = 1, G = 1, B = 1 }, 0, 0
+	end
 	for k, v in pairs(props or {}) do inst[k] = v end
 	if parent then table.insert(parent.children, inst) end
 	return inst
@@ -637,4 +642,74 @@ fn static_models_are_exported_whole() {
 		.map(|m| m.unwrap().get("Name").unwrap())
 		.collect();
 	assert_eq!(names, ["Hardware"]);
+}
+
+// A mesh is listed once for each look of the parts showing it, with that
+// look; an empty Content property is no reference to an image
+#[test]
+fn each_look_of_a_mesh_is_listed_with_it() {
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load(
+			r#"
+			local function brick(name, parent, color)
+				return newInstance("MeshPart", name, parent, {
+					MeshId = "rbxassetid://77", TextureID = "",
+					CFrame = { GetComponents = function() return 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 end },
+					Size = { X = 1, Y = 1, Z = 1 }, Color = color,
+					BrickColor = { Name = "White" },
+					-- as Studio gives it when no image is set
+					TextureContent = { SourceType = { Name = "None" }, Uri = "" },
+				})
+			end
+			local wall = newInstance("Model", "Wall", part.Parent)
+			brick("Red", wall, { R = 1, G = 0, B = 0 })
+			brick("AlsoRed", wall, { R = 1, G = 0, B = 0 })
+			brick("Blue", wall, { R = 0, G = 0, B = 1 })
+			"#,
+		)
+		.exec()
+		.unwrap();
+	let (problems, _, _) = studio.export("nil");
+	assert_eq!(issues(&problems), []);
+	let received = studio.received();
+	let doc: serde_json::Value = serde_json::from_str(&received).unwrap();
+	let looks: Vec<_> = doc["Meshes"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|m| m["MeshId"] == "rbxassetid://77")
+		.map(|m| {
+			(
+				m["Color"].clone(),
+				m["MaterialSource"].clone(),
+				m.get("TextureContent").cloned(),
+			)
+		})
+		.collect();
+	assert_eq!(
+		looks,
+		[
+			(
+				serde_json::json!([1, 0, 0]),
+				serde_json::json!("BaseMaterial"),
+				None
+			),
+			(
+				serde_json::json!([0, 0, 1]),
+				serde_json::json!("BaseMaterial"),
+				None
+			),
+		]
+	);
+	let diagnostics = &doc["MaterialDiagnostics"];
+	assert_eq!(diagnostics["MeshesWithContentReferences"], 0);
+	assert_eq!(diagnostics["MeshesWithNoTextureReference"], 2);
+	// Meshvault reads the two as one entry for the wall's three bricks
+	let export = export_file::parse(&received).unwrap();
+	let bricks: Vec<_> = export.entries.iter().filter(|e| e.mesh_id == 77).collect();
+	assert_eq!(bricks.len(), 1);
+	let refs: Vec<_> = export.models[0].parts.iter().map(|p| p.mesh_ref).collect();
+	assert_eq!(refs, vec![bricks[0].source_id.unwrap(); 3]);
 }

@@ -29,7 +29,13 @@ local classes = {
 	MeshPart = { "MeshPart", "BasePart", "PVInstance", "Instance" },
 	Folder = { "Folder", "Instance" },
 	Model = { "Model", "PVInstance", "Instance" },
+	Attachment = { "Attachment", "Instance" },
+	Bone = { "Bone", "Attachment", "Instance" },
 }
+-- a CFrame at (x, y, z), unrotated: as much of one as the exporter reads
+function cframe(x, y, z)
+	return { GetComponents = function() return x, y, z, 1, 0, 0, 0, 1, 0, 0, 0, 1 end }
+end
 local Instance = {}
 Instance.__index = Instance
 function Instance.new(class, name, parent, props)
@@ -38,6 +44,7 @@ function Instance.new(class, name, parent, props)
 		-- what every part has, for the exporter's look of a mesh
 		inst.Material, inst.MaterialVariant = { Name = "Plastic" }, ""
 		inst.Color, inst.Transparency, inst.Reflectance = { R = 1, G = 1, B = 1 }, 0, 0
+		inst.PivotOffset = cframe(0, 0, 0)
 	end
 	for k, v in pairs(props or {}) do inst[k] = v end
 	if parent then table.insert(parent.children, inst) end
@@ -78,6 +85,8 @@ end
 -- for tests that build more of the place
 newInstance = Instance.new
 function Instance:GetScale() return 1 end
+-- a model's WorldPivot, or a part's CFrame (its PivotOffset is not applied)
+function Instance:GetPivot() return self.WorldPivot or self.CFrame or cframe(0, 0, 0) end
 function Instance:GetFullName()
 	local names = {}
 	local inst = self
@@ -712,4 +721,120 @@ fn each_look_of_a_mesh_is_listed_with_it() {
 	assert_eq!(bricks.len(), 1);
 	let refs: Vec<_> = export.models[0].parts.iter().map(|p| p.mesh_ref).collect();
 	assert_eq!(refs, vec![bricks[0].source_id.unwrap(); 3]);
+}
+
+// A model is exported with its pivot and PrimaryPart, each part with its
+// pivot and PivotOffset, and its Attachments (not its Bones, which are
+// Attachments too) with where they sit on their parent and in the world
+#[test]
+fn attachments_and_pivots_are_exported() {
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load(
+			r#"
+			local turret = newInstance("Model", "Turret", part.Parent, { WorldPivot = cframe(1, 2, 3) })
+			local base = newInstance("MeshPart", "Base", turret, {
+				MeshId = "rbxassetid://77", TextureID = "", CFrame = cframe(0, 5, 0),
+				PivotOffset = cframe(0, -1, 0),
+				Size = { X = 1, Y = 1, Z = 1 }, BrickColor = { Name = "White" },
+			})
+			turret.PrimaryPart = base
+			newInstance("Attachment", "Muzzle", base, {
+				CFrame = cframe(0, 0, -2), WorldCFrame = cframe(0, 5, -2), Visible = true,
+			})
+			newInstance("Bone", "Spine", base, { CFrame = cframe(0, 1, 0) })
+			"#,
+		)
+		.exec()
+		.unwrap();
+	let (problems, _, _) = studio.export("nil");
+	assert_eq!(issues(&problems), []);
+	let doc: serde_json::Value = serde_json::from_str(&studio.received()).unwrap();
+	let turret = doc["Models"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|m| m["Name"] == "Turret")
+		.unwrap();
+	let at = |x: i32, y: i32, z: i32| serde_json::json!([x, y, z, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+	assert_eq!(turret["Pivot"], at(1, 2, 3));
+	assert_eq!(turret["PrimaryPartPath"], "ReplicatedStorage/Turret/Base");
+	let base = &turret["Parts"][0];
+	assert_eq!(
+		(&base["Pivot"], &base["PivotOffset"]),
+		(&at(0, 5, 0), &at(0, -1, 0))
+	);
+	assert_eq!(
+		turret["Attachments"],
+		serde_json::json!([{
+			"Name": "Muzzle",
+			"Path": "ReplicatedStorage/Turret/Base/Muzzle",
+			"ParentPath": "ReplicatedStorage/Turret/Base",
+			"CFrame": at(0, 0, -2),
+			"WorldCFrame": at(0, 5, -2),
+			"Visible": true,
+		}])
+	);
+	let bones: Vec<_> = turret["Bones"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|b| &b["Name"])
+		.collect();
+	assert_eq!(bones, ["Spine"]);
+}
+
+// A model's effects are exported with their settings: one turned off says
+// so (Enabled false is not dropped), and Beams name their attachments
+#[test]
+fn effects_are_exported_with_their_settings() {
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load(
+			r#"
+			local pod = newInstance("Model", "Pod", part.Parent)
+			local body = newInstance("MeshPart", "Body", pod, {
+				MeshId = "rbxassetid://77", TextureID = "", CFrame = cframe(0, 5, 0),
+				Size = { X = 1, Y = 1, Z = 1 }, BrickColor = { Name = "White" },
+			})
+			newInstance("ParticleEmitter", "Glow", body, {
+				Enabled = false, Rate = 5, Texture = "rbxassetid://9", LockedToPart = true,
+			})
+			local a0 = newInstance("Attachment", "A0", body, { CFrame = cframe(0, 0, 0), WorldCFrame = cframe(0, 5, 0), Visible = false })
+			local a1 = newInstance("Attachment", "A1", body, { CFrame = cframe(0, 1, 0), WorldCFrame = cframe(0, 6, 0), Visible = false })
+			newInstance("Beam", "Ray", body, { Enabled = true, Width0 = 2, Attachment0 = a0, Attachment1 = a1 })
+			"#,
+		)
+		.exec()
+		.unwrap();
+	let (problems, _, _) = studio.export("nil");
+	assert_eq!(issues(&problems), []);
+	let doc: serde_json::Value = serde_json::from_str(&studio.received()).unwrap();
+	let pod = doc["Models"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|m| m["Name"] == "Pod")
+		.unwrap();
+	let effects = pod["Effects"].as_array().unwrap();
+	let glow = effects.iter().find(|e| e["Name"] == "Glow").unwrap();
+	assert_eq!(glow["ClassName"], "ParticleEmitter");
+	assert_eq!(glow["Enabled"], false);
+	assert_eq!(glow["LockedToPart"], true);
+	assert_eq!(
+		(&glow["Rate"], &glow["Texture"]),
+		(&serde_json::json!(5), &serde_json::json!("rbxassetid://9"))
+	);
+	assert_eq!(glow["ParentPath"], "ReplicatedStorage/Pod/Body");
+	let ray = effects.iter().find(|e| e["Name"] == "Ray").unwrap();
+	assert_eq!(ray["Attachment0Path"], "ReplicatedStorage/Pod/Body/A0");
+	assert_eq!(ray["Attachment1Path"], "ReplicatedStorage/Pod/Body/A1");
+	assert_eq!(ray["Width0"], 2);
+	// and Meshvault reads them
+	let export = export_file::parse(&doc.to_string()).unwrap();
+	let model = export.models.iter().find(|m| m.name == "Pod").unwrap();
+	assert_eq!(model.effects.len(), 2);
+	assert!(!model.effects[0].is_enabled() || !model.effects[1].is_enabled());
 }

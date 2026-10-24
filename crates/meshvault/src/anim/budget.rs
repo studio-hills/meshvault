@@ -46,6 +46,12 @@ pub struct Limits {
 	pub decals: usize,
 	/// Lights of one part.
 	pub lights: usize,
+	/// Attachments in one model.
+	pub attachments: usize,
+	/// Effects (particle emitters, beams, trails...) in one model.
+	pub effects: usize,
+	/// Keypoints of one effect's sequence.
+	pub keypoints: usize,
 	/// Folders in one stored path (workspace manifests).
 	pub folders: usize,
 	/// Keyframes, poses and curve keys of one animation, together.
@@ -71,6 +77,10 @@ pub const LIMITS: Limits = Limits {
 	keys: 5_000_000,
 	decals: 1_000,
 	lights: 1_000,
+	attachments: 100_000,
+	effects: 100_000,
+	// Roblox allows 20
+	keypoints: 1_000,
 	// workspace paths are checked to 64 folders when opened; a little more
 	// is read so that check, not this one, says what is wrong
 	folders: 128,
@@ -96,6 +106,9 @@ pub enum Kind {
 	Keys,
 	Decals,
 	Lights,
+	Attachments,
+	Effects,
+	Keypoints,
 	Folders,
 }
 
@@ -116,6 +129,9 @@ impl Kind {
 			Kind::Keys => limits.keys,
 			Kind::Decals => limits.decals,
 			Kind::Lights => limits.lights,
+			Kind::Attachments => limits.attachments,
+			Kind::Effects => limits.effects,
+			Kind::Keypoints => limits.keypoints,
 			Kind::Folders => limits.folders,
 		}
 	}
@@ -137,6 +153,9 @@ impl Kind {
 			Kind::Keys => "keys in one curve",
 			Kind::Decals => "decals on one part",
 			Kind::Lights => "lights on one part",
+			Kind::Attachments => "attachments in one model",
+			Kind::Effects => "effects in one model",
+			Kind::Keypoints => "keypoints in one sequence",
 			Kind::Folders => "folders in one path",
 		}
 	}
@@ -243,6 +262,14 @@ fn make_room<T>(list: &mut Vec<T>, kind: Kind) -> Result<(), String> {
 	})
 }
 
+/// Adds `item` to `list`, a list of `kind` read by a deserializer of its
+/// own, within the list's cap and the document's budget.
+pub fn push<T>(list: &mut Vec<T>, item: T, kind: Kind) -> Result<(), String> {
+	make_room(list, kind)?;
+	list.push(item);
+	Ok(())
+}
+
 /// Reads a list of `kind` within its cap and the document's budget.
 pub fn seq<'de, D, T>(d: D, kind: Kind) -> Result<Vec<T>, D::Error>
 where
@@ -331,6 +358,8 @@ lists! {
 	keys => Keys,
 	decals => Decals,
 	lights => Lights,
+	attachments => Attachments,
+	effects => Effects,
 	folders => Folders,
 }
 

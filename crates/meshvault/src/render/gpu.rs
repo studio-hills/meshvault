@@ -9,7 +9,9 @@ use std::sync::Arc;
 use eframe::egui_wgpu::{self, wgpu};
 use wgpu::util::DeviceExt;
 
+use super::effects::{EffectDraw, EffectPipeline, View};
 use crate::scene::colour::{linear_to_srgb, srgb8_to_linear};
+use crate::scene::effects::EffectFrame;
 use crate::scene::geometry::Geometry;
 use crate::scene::maps::Slot;
 use crate::scene::surface::AlphaMode;
@@ -18,7 +20,7 @@ use crate::scene::texture::Material;
 /// The window's multisample count (main passes it to `NativeOptions`);
 /// every pipeline and the off-screen colour and depth targets use it.
 pub const MSAA_SAMPLES: u32 = 4;
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -127,6 +129,8 @@ pub struct GpuRenderer {
 	gamma_output: bool,
 	/// The format egui renders to, which the pipelines draw into.
 	target_format: wgpu::TextureFormat,
+	/// Particles, beams and trails.
+	effects: EffectPipeline,
 }
 
 /// One uploaded mesh with its material, owned by the open document (or by
@@ -283,6 +287,7 @@ impl GpuRenderer {
 		};
 		let white = solid([255; 4], wgpu::TextureFormat::Rgba8Unorm);
 		let flat_normal = solid([128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
+		let effects = EffectPipeline::new(&device, target_format);
 		Arc::new(Self {
 			device,
 			queue,
@@ -292,6 +297,7 @@ impl GpuRenderer {
 			white,
 			flat_normal,
 			gamma_output: !target_format.is_srgb(),
+			effects,
 			target_format,
 		})
 	}
@@ -416,10 +422,29 @@ impl GpuRenderer {
 
 	/// The paint callback drawing each scene's `groups` with its uniforms:
 	/// opaque ones first, then see-through ones in the order given.
+	/// A frame of effects ready to draw from `view` with `view_proj`
+	/// (column-major), or `None` when there is nothing to draw.
+	pub(super) fn effect_draw(
+		&self,
+		frame: &EffectFrame,
+		view: View,
+		view_proj: [[f32; 4]; 4],
+	) -> Option<EffectDraw> {
+		self.effects.prepare(
+			&self.device,
+			&self.queue,
+			frame,
+			view,
+			view_proj,
+			self.gamma_output,
+		)
+	}
+
 	pub(super) fn callback<'a>(
 		&self,
 		scenes: impl IntoIterator<Item = (&'a GpuScene, &'a [usize], Uniforms)>,
 		cull: bool,
+		effects: Option<EffectDraw>,
 	) -> MeshCallback {
 		let draws = scenes
 			.into_iter()
@@ -455,6 +480,7 @@ impl GpuRenderer {
 			pipelines: self.pipelines.clone(),
 			cull,
 			draws,
+			effects,
 		}
 	}
 }
@@ -511,6 +537,9 @@ impl GpuRenderer {
 		for draw in &callback.draws {
 			self.queue
 				.write_buffer(&draw.uniform_buffer, 0, bytemuck::bytes_of(&draw.uniforms));
+		}
+		if let Some(effects) = &callback.effects {
+			effects.write(&self.queue);
 		}
 		let mut encoder = self
 			.device
@@ -667,16 +696,36 @@ fn unblend(
 	out
 }
 
+/// Each corner's colour: the group's (linear) colour, times the vertex's
+/// own colour in linear light when the mesh has vertex colours. Vertex
+/// alpha is not drawn.
 fn build_vertices(geometry: &Geometry, colours: &[[f32; 3]]) -> (Vec<Vertex>, Vec<Range<u32>>) {
 	let mut vertices = Vec::with_capacity(geometry.triangles.len() * 3);
 	let mut groups = Vec::with_capacity(geometry.groups.len());
 	const BARY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+	// sRGB bytes to linear, once per build rather than per corner (skinned
+	// meshes are built every frame)
+	let linear: Option<[f32; 256]> = geometry
+		.colors
+		.as_ref()
+		.map(|_| std::array::from_fn(|b| srgb8_to_linear(b as u8)));
 	for (g, range) in geometry.groups.iter().enumerate() {
 		let start = vertices.len() as u32;
-		let color = colours.get(g).copied().unwrap_or([0.8; 3]);
+		let base = colours.get(g).copied().unwrap_or([0.8; 3]);
 		for t in &geometry.triangles[range.clone()] {
 			for (corner, &i) in t.iter().enumerate() {
 				let i = i as usize;
+				let color = match (&geometry.colors, &linear) {
+					(Some(c), Some(linear)) => {
+						let c = c[i];
+						[
+							base[0] * linear[c[0] as usize],
+							base[1] * linear[c[1] as usize],
+							base[2] * linear[c[2] as usize],
+						]
+					}
+					_ => base,
+				};
 				vertices.push(Vertex {
 					pos: geometry.positions[i],
 					normal: geometry.normals.as_ref().map_or([0.0; 3], |n| n[i]),
@@ -697,7 +746,7 @@ fn build_vertices(geometry: &Geometry, colours: &[[f32; 3]]) -> (Vec<Vertex>, Ve
 
 /// Uploads an image with a full mip chain (generated on the CPU, since
 /// wgpu has no built-in mipmap generation).
-fn upload_texture(
+pub(super) fn upload_texture(
 	device: &wgpu::Device,
 	queue: &wgpu::Queue,
 	image: &image::RgbaImage,
@@ -768,6 +817,8 @@ pub(super) struct MeshCallback {
 	/// Back faces are culled.
 	cull: bool,
 	draws: Vec<Draw>,
+	/// Drawn last, over everything.
+	effects: Option<EffectDraw>,
 }
 
 impl egui_wgpu::CallbackTrait for MeshCallback {
@@ -781,6 +832,9 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 	) -> Vec<wgpu::CommandBuffer> {
 		for draw in &self.draws {
 			queue.write_buffer(&draw.uniform_buffer, 0, bytemuck::bytes_of(&draw.uniforms));
+		}
+		if let Some(effects) = &self.effects {
+			effects.write(queue);
 		}
 		Vec::new()
 	}
@@ -829,6 +883,9 @@ impl MeshCallback {
 				render_pass.set_pipeline(pipeline);
 				one(render_pass, draw);
 			}
+		}
+		if let Some(effects) = &self.effects {
+			effects.draw(render_pass);
 		}
 	}
 }
@@ -989,6 +1046,7 @@ mod tests {
 			],
 			uvs: None,
 			normals: None,
+			colors: None,
 			triangles: vec![[0, 1, 2], [0, 2, 3], [1, 3, 2]],
 			groups,
 			group_kind: GroupKind::Lod,
@@ -1049,6 +1107,53 @@ mod tests {
 			assert_eq!(bytemuck::bytes_of(&vertices[0]), bytemuck::bytes_of(&zero));
 			assert!(groups.iter().all(|r| r.is_empty()), "{groups:?}");
 		}
+	}
+
+	/// Vertex colours (sRGB bytes) are made linear and multiply each part's
+	/// colour corner by corner; the same geometry drawn for two parts keeps
+	/// each part's colour, and positions, normals and UVs stay with their
+	/// vertex.
+	#[test]
+	fn vertex_colours_multiply_each_parts_colour() {
+		use crate::scene::colour::srgb8_to_linear;
+		let mut g = geometry(vec![0..2]);
+		g.normals = Some(vec![
+			[0.0, 0.0, 1.0],
+			[0.0, 1.0, 0.0],
+			[1.0, 0.0, 0.0],
+			[0.5; 3],
+		]);
+		g.uvs = Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]);
+		let colors = vec![
+			[102, 115, 72, 255],
+			[16, 21, 29, 255],
+			[255, 255, 255, 255],
+			[164, 163, 127, 0],
+		];
+		g.colors = Some(colors.clone());
+		let linear = |c: [u8; 4]| [0, 1, 2].map(|k| srgb8_to_linear(c[k]));
+		for part in [[1.0; 3], [1.0, 0.5, 0.25]] {
+			let (vertices, _) = build_vertices(&g, &[part]);
+			let corners = g.triangles[0..2].iter().flatten();
+			for (k, (v, &i)) in vertices.iter().zip(corners).enumerate() {
+				let i = i as usize;
+				let c = linear(colors[i]);
+				let expected = [part[0] * c[0], part[1] * c[1], part[2] * c[2]];
+				assert_eq!(v.color, expected, "part {part:?} vertex {k}");
+				assert_eq!(v.pos, g.positions[i]);
+				assert_eq!(v.normal, g.normals.as_ref().unwrap()[i]);
+				assert_eq!(v.uv, g.uvs.as_ref().unwrap()[i]);
+			}
+		}
+	}
+
+	/// Without vertex colours every corner takes its group's colour
+	/// exactly, as before they were read.
+	#[test]
+	fn without_vertex_colours_corners_take_the_group_colour() {
+		let g = geometry(vec![0..3]);
+		let (vertices, _) = build_vertices(&g, &[[0.25, 0.5, 0.75]]);
+		assert!(vertices.iter().all(|v| v.color == [0.25, 0.5, 0.75]));
 	}
 
 	use super::{read_back, read_rows, unblend};

@@ -147,6 +147,23 @@ pub fn export_model(model: &ModelView, path: &Path) -> Result<(), String> {
 	}
 	g.scene = scene;
 
+	// attachments and the pivot: plain nodes under their part's or Bone's
+	// node, not joints, so Blender makes them empties on its bone, which
+	// follow it in every action without keys of their own
+	for a in model.export_attachments() {
+		let index = g.nodes.len();
+		g.nodes.push(json!({
+			"name": a.name,
+			"translation": a.local.pos,
+			"rotation": a.local.quat(),
+		}));
+		let parent = &mut g.nodes[a.node.unwrap_or(root)];
+		match parent.get_mut("children").and_then(Value::as_array_mut) {
+			Some(children) => children.push(json!(index)),
+			None => parent["children"] = json!([index]),
+		}
+	}
+
 	// each clip, baked
 	for (i, slot) in model.clips.iter().enumerate() {
 		let Ok(clip) = &slot.clip else { continue };
@@ -546,6 +563,22 @@ impl Gltf {
 				})
 				.collect();
 			attributes["NORMAL"] =
+				json!(self.floats(&flat, Accessor::Vec3, Some(ARRAY_BUFFER), None));
+		}
+		// glTF multiplies the base colour by COLOR_0 (linear), as the viewer
+		// does where no colour map covers the vertex colours; under a map
+		// they are left out, as glTF would tint the map too
+		let colour_map = geometry.uvs.is_some() && material.active(Slot::Base).is_some();
+		if let Some(colors) = geometry
+			.colors
+			.as_ref()
+			.filter(|c| c.len() == positions.len() && !colour_map)
+		{
+			let flat: Vec<f32> = colors
+				.iter()
+				.flat_map(|c| [c[0], c[1], c[2]].map(srgb8_to_linear))
+				.collect();
+			attributes["COLOR_0"] =
 				json!(self.floats(&flat, Accessor::Vec3, Some(ARRAY_BUFFER), None));
 		}
 		// Roblox and glTF both put the texture origin at the top left
@@ -1058,6 +1091,7 @@ mod tests {
 			positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, -1.0], [0.0, 3.0, 0.0]],
 			uvs: uvs.then(|| vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
 			normals: Some(vec![[0.0, 0.0, 2.0]; 3]),
+			colors: None,
 			triangles: vec![[0, 1, 2]],
 			groups: vec![0..1],
 			group_kind: GroupKind::Whole,
@@ -1151,6 +1185,49 @@ mod tests {
 		);
 		assert_eq!(result, Err("the mesh has no triangles".into()));
 		assert!(!path.exists());
+	}
+
+	/// Vertex colours become COLOR_0 in linear light, one per position,
+	/// multiplying the part colour as in the viewer; under a colour map, or
+	/// without vertex colours, there is none.
+	#[test]
+	fn vertex_colours_are_written_as_color_0() {
+		let dir = TempDir::new("glb_colours");
+		let colors = vec![[102, 115, 72, 255], [16, 21, 29, 255], [255; 4]];
+		let export = |name: &str, geometry: &Geometry, material: &Material| {
+			let path = dir.join(name);
+			export_mesh(geometry, &[0], material, Color32::WHITE, "Tri", &path).unwrap();
+			std::fs::read(&path).unwrap()
+		};
+		let mut coloured = triangle(true);
+		coloured.colors = Some(colors.clone());
+		let glb = export("coloured.glb", &coloured, &Material::default());
+		let (doc, bin) = parse_glb(&glb);
+		let attributes = &doc["meshes"][0]["primitives"][0]["attributes"];
+		let accessor = &doc["accessors"][attributes["COLOR_0"].as_u64().unwrap() as usize];
+		assert_eq!(
+			(accessor["type"].as_str(), accessor["count"].as_u64()),
+			(Some("VEC3"), Some(3))
+		);
+		let expected: Vec<f32> = colors
+			.iter()
+			.flat_map(|c| [c[0], c[1], c[2]].map(srgb8_to_linear))
+			.collect();
+		assert_eq!(floats(&doc, bin, accessor), expected);
+		// the part colour, white, is the base colour
+		let pbr = &doc["materials"][0]["pbrMetallicRoughness"];
+		assert_eq!(pbr["baseColorFactor"], json!([1.0, 1.0, 1.0, 1.0]));
+
+		let (mapped, _) = material_with_map(&dir, &[[10, 20, 30, 255]]);
+		for (name, geometry, material) in [
+			("mapped.glb", &coloured, &mapped),
+			("plain.glb", &triangle(true), &Material::default()),
+		] {
+			let glb = export(name, geometry, material);
+			let (doc, _) = parse_glb(&glb);
+			let attributes = &doc["meshes"][0]["primitives"][0]["attributes"];
+			assert!(attributes.get("COLOR_0").is_none(), "{name}");
+		}
 	}
 
 	fn material_with_map(dir: &Path, pixels: &[[u8; 4]]) -> (Material, PathBuf) {
@@ -1352,6 +1429,46 @@ mod tests {
 			animations,
 			..Default::default()
 		}
+	}
+
+	/// Attachments and the pivot are nodes on their part's node, where they
+	/// sit on it, and not joints of the armature.
+	#[test]
+	fn export_model_writes_attachments_and_the_pivot_as_child_nodes() {
+		use crate::anim::schema::AttachmentInfo;
+		let dir = TempDir::new("glb_attachments");
+		let ctx = eframe::egui::Context::default();
+		let mut model = swinging_arm(false);
+		model.attachments = vec![AttachmentInfo {
+			name: "Grip".into(),
+			path: "Workspace/Rig/Arm/Grip".into(),
+			parent_path: "Workspace/Rig/Arm".into(),
+			cframe: CFrame::from_position([0.0, -0.5, 0.0]).components(),
+			world_cframe: None,
+			visible: true,
+		}];
+		model.pivot = Some(CFrame::from_position([1.0, 2.5, 3.0]).components());
+		model.primary_part_path = Some("Workspace/Rig/Root".into());
+		let view = ModelView::load(&ctx, 0, &model, &HashMap::new(), &HashMap::new());
+		let path = dir.join("rig.glb");
+		export_model(&view, &path).unwrap();
+		let glb = std::fs::read(&path).unwrap();
+		let (doc, _) = parse_glb(&glb);
+		let nodes = doc["nodes"].as_array().unwrap();
+		let find = |name: &str| nodes.iter().position(|n| n["name"] == name).unwrap();
+		let (root, arm, grip, pivot) = (find("Root"), find("Arm"), find("Grip"), find("Pivot"));
+		assert_eq!(nodes[arm]["children"], json!([grip]));
+		assert!(
+			nodes[root]["children"]
+				.as_array()
+				.unwrap()
+				.contains(&json!(pivot))
+		);
+		assert_eq!(nodes[grip]["translation"], json!([0.0, -0.5, 0.0]));
+		// the pivot sits half a stud above Root, on it
+		assert_eq!(nodes[pivot]["translation"], json!([0.0, 0.5, 0.0]));
+		// they are not joints: the armature has the parts and its root only
+		assert_eq!(doc["skins"][0]["joints"], json!([0, 1, 2]));
 	}
 
 	/// An animated model is one armature: a joint per part under a root

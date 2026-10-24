@@ -36,6 +36,13 @@ pub fn linear_rgb(c: Color32) -> [f32; 3] {
 	]
 }
 
+/// `base` times the sRGB colour `c`, multiplied in linear light, as sRGB
+/// in 0..=1: a part's colour over a vertex colour, as the viewer draws it.
+pub fn tint_srgb(base: Color32, c: [u8; 3]) -> [f32; 3] {
+	let base = linear_rgb(base);
+	[0, 1, 2].map(|k| linear_to_srgb(base[k] * srgb8_to_linear(c[k])))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

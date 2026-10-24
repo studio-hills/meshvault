@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::budget;
+pub use super::effect::EffectInfo;
 
 pub type CFrame12 = [f32; 12];
 
@@ -29,6 +30,45 @@ pub struct AnimatedModel {
 	/// The model's classic clothing (schema 2; absent in older exports).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub clothing: Option<ClothingInfo>,
+	/// `Model:GetPivot()` as exported (schema 2; absent in older exports).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pivot: Option<CFrame12>,
+	/// The model's PrimaryPart, by path, when it has one.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub primary_part_path: Option<String>,
+	/// The model's Attachments, Bones aside (schema 2; absent in older
+	/// exports).
+	#[serde(
+		skip_serializing_if = "Vec::is_empty",
+		deserialize_with = "budget::attachments"
+	)]
+	pub attachments: Vec<AttachmentInfo>,
+	/// The model's particle emitters, beams, trails, fire, smoke and
+	/// sparkles (schema 2; absent in older exports).
+	#[serde(
+		skip_serializing_if = "Vec::is_empty",
+		deserialize_with = "budget::effects"
+	)]
+	pub effects: Vec<EffectInfo>,
+}
+
+/// An Attachment: a point and orientation on its parent part, such as where
+/// an effect, a tool or a constraint attaches.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct AttachmentInfo {
+	pub name: String,
+	pub path: String,
+	/// The part (or Bone) it is on.
+	pub parent_path: String,
+	/// Where it sits on its parent.
+	#[serde(rename = "CFrame")]
+	pub cframe: CFrame12,
+	/// Where it was in the world when exported.
+	#[serde(rename = "WorldCFrame", skip_serializing_if = "Option::is_none")]
+	pub world_cframe: Option<CFrame12>,
+	/// `Attachment.Visible`: Studio draws it even when not selected.
+	pub visible: bool,
 }
 
 /// A character's Shirt, Pants and ShirtGraphic: template images in the
@@ -66,6 +106,12 @@ pub struct ModelPart {
 	#[serde(rename = "CFrame")]
 	pub cframe: CFrame12,
 	pub size: [f32; 3],
+	/// `BasePart:GetPivot()` and `PivotOffset`, the pivot in the part's own
+	/// space (schema 2; absent in older exports).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pivot: Option<CFrame12>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pivot_offset: Option<CFrame12>,
 	pub transparency: f32,
 	/// e.g. "Part", "MeshPart", "WedgePart" (schema 2).
 	#[serde(skip_serializing_if = "Option::is_none")]

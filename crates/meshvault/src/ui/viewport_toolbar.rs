@@ -81,6 +81,12 @@ impl App {
 			for (value, icon, tip) in [
 				(&mut self.show_skeleton, icons::BONE, "Skeleton  (K)"),
 				(&mut self.show_joints, icons::SHARE_NETWORK, "Joints  (J)"),
+				(
+					&mut self.show_attachments,
+					icons::PUSH_PIN,
+					"Attachments and pivot  (A)",
+				),
+				(&mut self.show_effects, icons::SPARKLE, "Effects  (P)"),
 			] {
 				if widgets::icon_toggle(ui, icon, tip, *value).clicked() {
 					*value = !*value;

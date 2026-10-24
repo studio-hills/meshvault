@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use rbx_mesh::mesh::{Bone4, Chunk6, Chunks6, CoreMeshChunk, Mesh, Subset4, Vertices2};
+use rbx_mesh::mesh::{Bone4, Chunk6, Chunks6, CoreMeshChunk, Mesh, Subset4, Vertex2, Vertices2};
 
 use super::{Attributes, Geometry, Loaded, attributes, detail, nul_separated, single_group};
 
@@ -13,14 +13,25 @@ fn faces2(faces: &[rbx_mesh::mesh::Face2]) -> Vec<[u32; 3]> {
 		.collect()
 }
 
-fn vertices2(vertices: &Vertices2) -> (Attributes, &'static str) {
+/// The vertices' colours, or `None` when every one is white (most meshes),
+/// which draws the same as having none and is not stored.
+fn vertex_colors(vertices: &[Vertex2]) -> Option<Vec<[u8; 4]>> {
+	vertices
+		.iter()
+		.any(|v| v.color[..3] != [255; 3])
+		.then(|| vertices.iter().map(|v| v.color).collect())
+}
+
+fn vertices2(vertices: &Vertices2) -> (Attributes, Option<Vec<[u8; 4]>>, &'static str) {
 	match vertices {
 		Vertices2::Full(v) => (
 			attributes(v, |v| v.pos, |v| v.tex, |v| v.norm),
+			vertex_colors(v),
 			"40 bytes (with colour)",
 		),
 		Vertices2::Truncated(v) => (
 			attributes(v, |v| v.pos, |v| v.tex, |v| v.norm),
+			None,
 			"36 bytes (no colour)",
 		),
 	}
@@ -88,7 +99,7 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 			}
 		}
 		Mesh::V2(m) => {
-			let ((positions, uvs, normals), vertex_size) = vertices2(&m.vertices);
+			let ((positions, uvs, normals), colors, vertex_size) = vertices2(&m.vertices);
 			let triangles = faces2(&m.faces);
 			Loaded {
 				format: "Mesh v2.00".into(),
@@ -99,7 +110,8 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 				],
 				geometry: Geometry::whole(positions, triangles)
 					.with_uvs(uvs)
-					.with_normals(normals),
+					.with_normals(normals)
+					.with_colors(colors),
 				note: None,
 			}
 		}
@@ -108,7 +120,7 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 				rbx_mesh::mesh::Revision3::Version300 => "3.00",
 				rbx_mesh::mesh::Revision3::Version301 => "3.01",
 			};
-			let ((positions, uvs, normals), vertex_size) = vertices2(&m.vertices);
+			let ((positions, uvs, normals), colors, vertex_size) = vertices2(&m.vertices);
 			let triangles = faces2(&m.faces);
 			let groups = lod_groups(&m.lods, triangles.len());
 			Loaded {
@@ -121,7 +133,8 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 				],
 				geometry: Geometry::lods(positions, triangles, groups)
 					.with_uvs(uvs)
-					.with_normals(normals),
+					.with_normals(normals)
+					.with_colors(colors),
 				note: None,
 			}
 		}
@@ -132,6 +145,7 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 			};
 			let (positions, uvs, normals) =
 				attributes(&m.vertices, |v| v.pos, |v| v.tex, |v| v.norm);
+			let colors = vertex_colors(&m.vertices);
 			let triangles = faces2(&m.faces);
 			let groups = lod_groups(&m.lods, triangles.len());
 			let mut details = vec![
@@ -147,13 +161,15 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 				details,
 				geometry: Geometry::lods(positions, triangles, groups)
 					.with_uvs(uvs)
-					.with_normals(normals),
+					.with_normals(normals)
+					.with_colors(colors),
 				note: None,
 			}
 		}
 		Mesh::V5(m) => {
 			let (positions, uvs, normals) =
 				attributes(&m.vertices, |v| v.pos, |v| v.tex, |v| v.norm);
+			let colors = vertex_colors(&m.vertices);
 			let triangles = faces2(&m.faces);
 			let groups = lod_groups(&m.lods, triangles.len());
 			let mut details = vec![
@@ -172,7 +188,8 @@ pub(super) fn from_mesh(mesh: &Mesh) -> Loaded {
 				details,
 				geometry: Geometry::lods(positions, triangles, groups)
 					.with_uvs(uvs)
-					.with_normals(normals),
+					.with_normals(normals)
+					.with_colors(colors),
 				note: None,
 			}
 		}
@@ -235,10 +252,11 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 		}
 	};
 
-	let ((positions, uvs, normals), triangles) = match &core {
+	let ((positions, uvs, normals), triangles, colors) = match &core {
 		Some(core) => (
 			attributes(&core.vertices, |v| v.pos, |v| v.tex, |v| v.norm),
 			faces2(&core.faces),
+			vertex_colors(&core.vertices),
 		),
 		None => Default::default(),
 	};
@@ -273,15 +291,123 @@ fn from_chunks(m: &impl Chunks6, revision: &str) -> Loaded {
 		details,
 		geometry: Geometry::lods(positions, triangles, groups)
 			.with_uvs(uvs)
-			.with_normals(normals),
+			.with_normals(normals)
+			.with_colors(colors),
 		note,
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::collections::BTreeSet;
+
 	use crate::scene::geometry::load;
 	use crate::test_support::load_sample;
+
+	/// A v2.00 mesh of one triangle per three `colors`, with 40-byte
+	/// vertices (with colour) or 36-byte ones (without).
+	fn mesh_v2(colors: &[[u8; 4]], with_colour: bool) -> Vec<u8> {
+		let mut b = b"version 2.00\n".to_vec();
+		b.extend(12u16.to_le_bytes());
+		b.push(if with_colour { 40 } else { 36 });
+		b.push(12);
+		b.extend((colors.len() as u32).to_le_bytes());
+		b.extend((colors.len() as u32 / 3).to_le_bytes());
+		for (i, c) in colors.iter().enumerate() {
+			let f = i as f32;
+			for v in [f, 0.0, 0.0, 0.0, 0.0, 1.0, f / 10.0, 0.5] {
+				b.extend(v.to_le_bytes());
+			}
+			b.extend([0, 0, 127, 127]);
+			if with_colour {
+				b.extend(c);
+			}
+		}
+		for t in 0..colors.len() as u32 / 3 {
+			for i in 0..3 {
+				b.extend((t * 3 + i).to_le_bytes());
+			}
+		}
+		b
+	}
+
+	/// Each vertex keeps its own colour, beside its position and UV.
+	#[test]
+	fn vertex_colours_are_kept_with_their_vertex() {
+		let colors = [[102, 115, 72, 255], [16, 21, 29, 255], [255, 255, 255, 128]];
+		let g = load(&mesh_v2(&colors, true)).unwrap().geometry;
+		assert_eq!(g.colors.as_deref(), Some(&colors[..]));
+		let uvs = g.uvs.unwrap();
+		for (i, (p, uv)) in g.positions.iter().zip(&uvs).enumerate() {
+			assert_eq!(p[0], i as f32);
+			assert_eq!(*uv, [i as f32 / 10.0, 0.5]);
+		}
+	}
+
+	/// All-white vertex colours draw as none, so none are kept; 36-byte
+	/// vertices have none.
+	#[test]
+	fn white_or_missing_vertex_colours_are_none() {
+		let white = [
+			[255, 255, 255, 255],
+			[255, 255, 255, 0],
+			[255, 255, 255, 255],
+		];
+		assert!(
+			load(&mesh_v2(&white, true))
+				.unwrap()
+				.geometry
+				.colors
+				.is_none()
+		);
+		let coloured = [[1, 2, 3, 255]; 3];
+		assert!(
+			load(&mesh_v2(&coloured, false))
+				.unwrap()
+				.geometry
+				.colors
+				.is_none()
+		);
+		// the repo's samples have no vertex colours
+		for name in ["sphere.mesh", "torso.mesh"] {
+			assert!(load_sample(name).geometry.colors.is_none(), "{name}");
+		}
+	}
+
+	/// The Cobra (a game's tank, so kept out of the repo: copy its two v7
+	/// Draco meshes to `rbx_mesh/meshes/personal/` as `cobra_body.mesh` and
+	/// `cobra_neon.mesh`). Their colours are the ones Roblox's EditableMesh
+	/// reports.
+	#[test]
+	#[ignore = "needs the Cobra meshes in rbx_mesh/meshes/personal"]
+	fn the_cobra_keeps_its_vertex_colours() {
+		let colours = |name: &str, lod0: usize, vertices: usize| {
+			let g = load_sample(&format!("personal/{name}")).geometry;
+			assert_eq!(g.positions.len(), vertices, "{name}");
+			assert_eq!(g.groups[0].len(), lod0, "{name}");
+			let colors = g.colors.expect("vertex colours");
+			assert_eq!(colors.len(), vertices);
+			// every LOD-0 corner, as EditableMesh samples them
+			g.triangles[g.groups[0].clone()]
+				.iter()
+				.flatten()
+				.map(|&i| {
+					let c = colors[i as usize];
+					format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+				})
+				.collect::<BTreeSet<_>>()
+		};
+		assert_eq!(
+			colours("cobra_body.mesh", 3194, 5832),
+			BTreeSet::from(
+				["#10151D", "#252B32", "#343E43", "#667348", "#A4A37F"].map(String::from)
+			)
+		);
+		assert_eq!(
+			colours("cobra_neon.mesh", 156, 336),
+			BTreeSet::from(["#C2CD9C".to_string()])
+		);
+	}
 
 	/// Every sample file in the repo should either decode with geometry
 	/// or be a CSGK placeholder.

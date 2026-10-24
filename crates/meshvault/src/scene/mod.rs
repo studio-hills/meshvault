@@ -3,6 +3,7 @@
 //! and textures on them, and animated models.
 
 pub mod colour;
+pub mod effects;
 pub mod geometry;
 pub mod maps;
 pub mod model_view;

@@ -336,6 +336,10 @@ mod tests {
 			path: "Workspace/Arm".into(),
 			scale: None,
 			clothing: None,
+			pivot: None,
+			primary_part_path: None,
+			attachments: Vec::new(),
+			effects: Vec::new(),
 			parts: vec![
 				ModelPart {
 					path: "Workspace/Arm/Upper".into(),
@@ -416,6 +420,47 @@ mod tests {
 			"{:?}",
 			p[1]
 		);
+	}
+
+	/// A posed skinned mesh moves its vertices and keeps their colours.
+	#[test]
+	fn skinned_meshes_keep_their_vertex_colours() {
+		let (rig, _) = two_part_rig();
+		let rest = rig.rest();
+		let skin = Skin {
+			bones: vec!["Upper".into(), "Lower".into()],
+			parents: vec![None, Some(0)],
+			binds: vec![cf([0.0; 3]); 2],
+			influences: vec![[(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; 3]
+				.into_iter()
+				.enumerate()
+				.map(|(i, mut w)| {
+					w[0].0 = (i > 0) as u16;
+					w
+				})
+				.collect(),
+			facs: None,
+		};
+		let mut a = asset(
+			vec![[0.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.5, 0.0]],
+			skin.clone(),
+		);
+		let colors = vec![[102, 115, 72, 255], [16, 21, 29, 255], [194, 205, 156, 255]];
+		a.geometry.colors = Some(colors.clone());
+		let mut ps = PartSkin::build(&skin, &a, &rig, &rest, 0, ([0.0; 3], [1.0; 3], [0.0; 3]));
+		let binding = Binding {
+			targets: vec![Some(crate::anim::rig::Target::Joint(0))],
+			unmatched: vec![],
+		};
+		let joint_t = vec![CFrame::axis_rotation(0, std::f32::consts::FRAC_PI_2)];
+		let posed = rig.pose_from(&binding, &joint_t);
+		ps.update(&rest, &posed, 0, &HashMap::new(), &[]);
+		assert_ne!(
+			ps.geometry.positions[1],
+			[0.0, -1.0, 0.0],
+			"the lower vertex moved"
+		);
+		assert_eq!(ps.geometry.colors, Some(colors));
 	}
 
 	#[test]

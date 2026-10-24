@@ -101,8 +101,39 @@ toggles, and warnings such as missing meshes or a rig captured mid-animation.
 
 The skeleton (K) and joints (J) can be drawn over the model: lines from joint
 to joint and along its Bones, and a mark at each joint, accent coloured for
-joints clips drive and grey for welds. Hovering a mark names it. Hovering a
-part in the inspector's parts list highlights it in the view.
+joints clips drive and grey for welds. Attachments and the pivot (A) can be
+drawn too: each Attachment as a green dot with orange and yellow lines along
+its Axis and SecondaryAxis, as Studio shows them (fainter when Studio hides
+it until selected), and the model's pivot as red, green and blue axes. They
+follow their parts as clips play, the pivot with the PrimaryPart. Hovering a
+mark names it, and the inspector lists the PrimaryPart and how many
+attachments the model has. Hovering a part in the inspector's parts list
+highlights it in the view and shows that part's own pivot (its PivotOffset),
+overlay on or off. Exports made before attachments and pivots were exported
+have neither.
+
+A model's effects (P to turn them off and on) run whether a clip plays or
+not, as they do in Studio, starting as if they had already been running a
+couple of seconds:
+
+- ParticleEmitters, with their rate, lifetime, speed, spread, acceleration,
+  drag, size, colour and transparency over each particle's life, rotation,
+  orientation, emission shape, squash, flipbooks, LockedToPart and
+  LightEmission (which adds a particle's light rather than blending it).
+- Beams between their attachments, curved by `CurveSize`, as wide as
+  `Width0` to `Width1`, turned to the camera or along their attachments' Y
+  axis, with their colour, transparency and scrolling texture along them.
+- Trails behind their attachments as they move (a still model has none).
+- Fire, Smoke and Sparkles, as emitters with settings that look like
+  Studio's.
+
+Textures built into Studio (`rbxasset://`, such as a new ParticleEmitter's
+sparkle) are not assets anyone can download, so Meshvault draws its own
+stand-ins for them: a sparkle, a flame and a soft puff. Other textures are
+downloaded with the model's images. Effects are drawn unlit (as with
+`LightInfluence` 0), particles do not take on their part's velocity, wind is
+not simulated, and the CPU renderer draws no effects. A model of hidden
+parts with effects on them (a VFX holder) shows just its effects.
 
 ### How models are put together
 
@@ -112,7 +143,12 @@ part in the inspector's parts list highlights it in the view.
   when the weld points from the accessory to the body, as Roblox's do.
 - MeshPart meshes are centred and scaled to each part's size. SpecialMesh file
   meshes keep their own units times `Scale`, plus `Offset`. Fully transparent
-  parts are hidden.
+  parts are hidden; ticking one in the parts list draws it opaque. A model
+  whose every part is fully transparent (such as a projectile template a
+  script makes visible) is shown whole, drawn opaque, with a warning.
+- A mesh's own vertex colours are multiplied by its part's colour, so a mesh
+  coloured in the file rather than by a texture shows its colours. A colour
+  map covers them, as it covers the part colour.
 - Parts without a file mesh are drawn as their Roblox shape (block, ball,
   cylinder, wedge, corner wedge, truss, or a SpecialMesh brick, torso, sphere,
   cylinder or head, each sized as Studio sizes it) in their part colour.
@@ -194,6 +230,12 @@ glTF importer reads as such:
   Blender plays it as Meshvault does, with easing, bones only meshes have, and
   facial animation's bone movements.
 - Colour, normal, roughness and metalness maps are embedded.
+- Attachments, and the model's pivot as `Pivot`, are nodes on their part's
+  bone, which Blender imports as empties that follow the bone in every
+  action.
+- Vertex colours are written as `COLOR_0`, which glTF multiplies by the part
+  colour as Meshvault does; under a colour map they are left out, since glTF
+  would tint the map as well.
 - Lengths are in studs, which Blender reads as metres.
 
 A mesh opened on its own exports its visible geometry and maps, without a
@@ -203,8 +245,10 @@ exported yet.
 ### To OBJ
 
 Ctrl+Shift+E exports Wavefront OBJ, with an MTL file and the colour and normal
-maps copied beside it: a mesh's visible LODs or hulls, or an animated model as
-one OBJ of its parts as posed now.
+maps copied beside it: a mesh's visible LODs or hulls, or a model as one OBJ
+of its parts as posed now. Vertex colours, already multiplied by the part
+colour, follow each position (`v x y z r g b`), which Blender and MeshLab
+read; as in glTF, a colour map leaves them out.
 
 Many library models can be exported at once, as glTF or OBJ, from the
 library's selection bar or right-click menu.

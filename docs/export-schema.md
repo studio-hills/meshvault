@@ -105,6 +105,10 @@ MaterialVariant) to help find meshes whose images were missed.
 | `Bones` | array | [Bones](#bones) |
 | `Animations` | array | [Clips](#clips) |
 | `Clothing` | object | Schema 2: [classic clothing](#clothing) |
+| `Pivot` | CFrame | Schema 2: `Model:GetPivot()` when exported |
+| `PrimaryPartPath` | string | Schema 2: the PrimaryPart's path; absent without one |
+| `Attachments` | array | Schema 2: [Attachments](#attachments), Bones aside |
+| `Effects` | array | Schema 2: [effects](#effects): ParticleEmitters, Beams, Trails, Fire, Smoke and Sparkles |
 
 ### Parts
 
@@ -114,6 +118,7 @@ MaterialVariant) to help find meshes whose images were missed.
 | `MeshRef` | integer | `Meshes[].Id` of its mesh, or 0 when it has no file mesh |
 | `CFrame` | CFrame | Its world transform when exported |
 | `Size` | `[x, y, z]` | Its size in studs |
+| `Pivot`, `PivotOffset` | CFrame | Schema 2: `BasePart:GetPivot()` in the world, and `PivotOffset` in the part's own space |
 | `Transparency` | number | 0 to 1 |
 | `ClassName` | string | Schema 2: `Part`, `MeshPart`, `WedgePart`, ... |
 | `Shape` | string | Schema 2: `Block`, `Ball`, `Cylinder`, `Wedge`, `CornerWedge`, `Truss`, or `""` |
@@ -144,6 +149,51 @@ MaterialVariant) to help find meshes whose images were missed.
 | `Name`, `Path` | string | The Bone |
 | `ParentPath` | string | The part or bone it hangs from |
 | `CFrame` | CFrame | Its transform relative to its parent |
+
+### Attachments
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Name`, `Path` | string | The Attachment |
+| `ParentPath` | string | The part it is on |
+| `CFrame` | CFrame | Where it sits on its part |
+| `WorldCFrame` | CFrame | Where it was in the world when exported |
+| `Visible` | boolean | `Attachment.Visible` |
+
+### Effects
+
+Each has `ClassName` (`ParticleEmitter`, `Beam`, `Trail`, `Fire`, `Smoke` or
+`Sparkles`), `Name`, `Path` and `ParentPath` (the part, Attachment or Bone it
+is in), then its class's properties under their Roblox names, as far as the
+exporter reads them:
+
+- **ParticleEmitter:** `Enabled`, `Texture`, `Color`, `Transparency`,
+  `Size`, `Rate`, `Lifetime`, `Speed`, `Rotation`, `RotSpeed`,
+  `SpreadAngle`, `EmissionDirection`, `Acceleration`, `Drag`,
+  `VelocityInheritance`, `LockedToPart`, `Orientation`, `ZOffset`,
+  `LightEmission`, `LightInfluence`, `Brightness`, `Squash`, `Shape`,
+  `ShapeStyle`, `ShapeInOut`, `FlipbookLayout`, `FlipbookMode`,
+  `FlipbookFramerate`, `FlipbookStartRandom`, `TimeScale`;
+- **Beam:** `Enabled`, `Texture`, `Color`, `Transparency`, `Width0`,
+  `Width1`, `CurveSize0`, `CurveSize1`, `TextureSpeed`, `TextureLength`,
+  `TextureMode`, `Segments`, `FaceCamera`, `LightEmission`,
+  `LightInfluence`, `Brightness`, `ZOffset`, with `Attachment0Path` and
+  `Attachment1Path`;
+- **Trail:** `Enabled`, `Texture`, `Color`, `Transparency`, `Lifetime`,
+  `MinLength`, `MaxLength`, `WidthScale`, `TextureMode`, `TextureLength`,
+  `FaceCamera`, `LightEmission`, `LightInfluence`, `Brightness`, with
+  `Attachment0Path` and `Attachment1Path`;
+- **Fire:** `Enabled`, `Color`, `SecondaryColor`, `Heat`, `Size`,
+  `TimeScale`; **Smoke:** `Enabled`, `Color`, `Opacity`, `RiseVelocity`,
+  `Size`, `TimeScale`; **Sparkles:** `Enabled`, `SparkleColor`, `TimeScale`.
+
+Values are written as in the rest of the file: enums by name, colours as
+`[r, g, b]`, a Vector2 or Vector3 as a list, a NumberRange as `[min, max]`, a
+NumberSequence as `[{ Time, Value, Envelope }, ...]` and a ColorSequence as
+`[{ Time, Value }, ...]` with a colour `Value`. The same property can take a
+different shape in different classes (a ParticleEmitter's `Size` is a
+NumberSequence, Fire's a number; a Trail's `Lifetime` is a number).
+`Texture` is a content id, a built-in `rbxasset://` texture, or empty.
 
 ### Clips
 
@@ -238,7 +288,8 @@ memory, to show or import:
 - an export file over 2 GB (the same limit as the Studio link);
 - more than 1,000,000 meshes or 100,000 models;
 - a model with more than 100,000 parts, 100,000 joints, 10,000 bones or
-  10,000 clips; a part with more than 1,000 decals or 1,000 lights;
+  10,000 clips, 100,000 attachments or 100,000 effects; a part with more than
+  1,000 decals or 1,000 lights; a sequence with more than 1,000 keypoints;
 - a clip with more than 1,000,000 keyframes or 1,000,000 curves, or more than
   5,000,000 keys (keyframes, poses and curve keys together); a keyframe with
   more than 100,000 poses or 1,000 markers, a pose with more than 100,000

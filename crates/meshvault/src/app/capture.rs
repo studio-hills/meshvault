@@ -9,7 +9,7 @@ use crate::render::camera::Camera;
 use crate::render::maths::IDENTITY;
 use crate::render::viewport::{ScenePart, render_image};
 use crate::scene::geometry::GroupKind;
-use crate::scene::surface::{PART_COLOUR, Surface};
+use crate::scene::surface::{Surface, mesh_colour};
 use crate::ui::theme;
 
 impl App {
@@ -65,7 +65,7 @@ impl App {
 					transform: IDENTITY,
 					material: plain.unwrap_or(&doc.material),
 					colour_groups: geometry.group_kind == GroupKind::Hull,
-					colour: PART_COLOUR,
+					colour: mesh_colour(geometry),
 					scene: &mut doc.gpu,
 					moved: false,
 					surface: Surface {

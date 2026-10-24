@@ -39,6 +39,10 @@ pub struct Geometry {
 	pub uvs: Option<Vec<[f32; 2]>>,
 	/// Vertex normals, one per position, when the format has them.
 	pub normals: Option<Vec<[f32; 3]>>,
+	/// Vertex colours as stored (sRGB bytes, RGBA), one per position, when
+	/// the file has any that are not white. The renderer multiplies the RGB
+	/// with the part's colour; alpha is kept but not drawn.
+	pub colors: Option<Vec<[u8; 4]>>,
 	pub triangles: Vec<[u32; 3]>,
 	/// Ranges into `triangles`.
 	pub groups: Vec<Range<usize>>,
@@ -60,6 +64,7 @@ impl Geometry {
 			positions: Vec::new(),
 			uvs: None,
 			normals: None,
+			colors: None,
 			triangles: Vec::new(),
 			groups: Vec::new(),
 			group_kind: GroupKind::Whole,
@@ -72,6 +77,7 @@ impl Geometry {
 			positions,
 			uvs: None,
 			normals: None,
+			colors: None,
 			triangles,
 			groups,
 			group_kind: GroupKind::Whole,
@@ -84,6 +90,7 @@ impl Geometry {
 			positions,
 			uvs: None,
 			normals: None,
+			colors: None,
 			triangles,
 			groups,
 			group_kind: GroupKind::Lod,
@@ -103,6 +110,18 @@ impl Geometry {
 	fn with_uvs(mut self, uvs: Vec<[f32; 2]>) -> Self {
 		if uvs.len() == self.positions.len() && !uvs.is_empty() {
 			self.uvs = Some(uvs);
+		}
+		self
+	}
+
+	/// Attaches vertex colours, ignored unless there is one per position.
+	/// `None` (all white, or none in the file) leaves the geometry as it was.
+	fn with_colors(mut self, colors: Option<Vec<[u8; 4]>>) -> Self {
+		if let Some(colors) = colors
+			&& colors.len() == self.positions.len()
+			&& !colors.is_empty()
+		{
+			self.colors = Some(colors);
 		}
 		self
 	}

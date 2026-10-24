@@ -10,6 +10,7 @@ use crate::render::gpu::{GpuRenderer, GpuScene, MeshCallback, Uniforms};
 use crate::render::lighting::{Lighting, SceneLight, light_uniforms};
 use crate::render::maths::{V3, apply, dot, mul, normal_matrix, sub, transpose};
 use crate::scene::colour::{linear_rgb, srgb_to_linear};
+use crate::scene::effects::EffectFrame;
 use crate::scene::geometry::Geometry;
 use crate::scene::surface::{DEFAULT_ROUGHNESS, DecalDraw};
 use crate::scene::texture::Material;
@@ -38,6 +39,9 @@ pub struct ViewSettings {
 	pub lighting: Lighting,
 	/// The colour a highlighted part is tinted.
 	pub highlight: Color32,
+	/// The model's particles, beams and trails this frame, in world space.
+	/// Drawn by the GPU renderer only.
+	pub effects: EffectFrame,
 }
 
 /// One mesh placed in the scene.
@@ -411,7 +415,12 @@ fn mesh_callback(
 		};
 		Some((scene, part.groups, uniforms))
 	});
-	renderer.callback(draws, settings.cull_backfaces)
+	let effects = renderer.effect_draw(
+		&settings.effects,
+		super::effects::View { eye, right, up },
+		uniforms.view_proj,
+	);
+	renderer.callback(draws, settings.cull_backfaces, effects)
 }
 
 /// Where the axes gizmo's centre sits in from the viewport's top-right

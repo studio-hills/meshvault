@@ -35,7 +35,7 @@ impl App {
 			.file_name()
 			.is_some_and(|n| n.to_string_lossy().to_lowercase().ends_with(".rig.json"));
 		let (icon, title) = if is_rig {
-			(icons::PERSON_SIMPLE_RUN, "Open animated model")
+			(icons::PACKAGE, "Open model")
 		} else if ext == "json" {
 			(icons::FILE_ARROW_DOWN, "Import export file")
 		} else if is_image(&path) {

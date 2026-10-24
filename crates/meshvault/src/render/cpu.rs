@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use crate::render::camera::{Camera, View};
 use crate::render::maths::{V3, apply, cross, dot, normalize, sub};
 use crate::render::viewport::{ScenePart, Shading, ViewSettings, WIRE_ONLY, group_colour};
+use crate::scene::colour::{linear_to_srgb, srgb8_to_linear};
 use crate::scene::maps::Slot;
 
 const BASE: Color32 = Color32::from_rgb(170, 185, 205);
@@ -14,6 +15,21 @@ const WIRE: Color32 = Color32::from_rgba_premultiplied(20, 24, 30, 200);
 /// dropped whole (the rasteriser does not clip them). It is smaller than
 /// the camera's own near plane, which points and the grid use.
 const CPU_NEAR_FACTOR: f32 = 1e-3;
+
+/// `base` times the average of a triangle's vertex colours, in linear
+/// light: the flat-shaded stand-in for the GPU's per-corner colours.
+fn tinted(base: Color32, corners: [[u8; 4]; 3]) -> Color32 {
+	let channel = |b: u8, k: usize| {
+		let average = corners.iter().map(|c| srgb8_to_linear(c[k])).sum::<f32>() / 3.0;
+		let linear = srgb8_to_linear(b) * average;
+		(linear_to_srgb(linear) * 255.0).round().clamp(0.0, 255.0) as u8
+	};
+	Color32::from_rgb(
+		channel(base.r(), 0),
+		channel(base.g(), 1),
+		channel(base.b(), 2),
+	)
+}
 
 fn shade(c: Color32, light: f32) -> Color32 {
 	let f = |v: u8| (v as f32 * light).clamp(0.0, 255.0) as u8;
@@ -62,12 +78,23 @@ pub(super) fn draw_cpu(
 			let Some(range) = geometry.groups.get(g) else {
 				continue;
 			};
+			// vertex colours show where nothing covers them: no map, and not
+			// coloured by group
+			let vertex_colours = geometry
+				.colors
+				.as_ref()
+				.filter(|_| texture.is_none() && !part.colour_groups);
 			let base = if texture.is_some() {
 				Color32::WHITE
 			} else if part.colour_groups {
 				group_colour(g)
 			} else if parts.len() == 1 {
-				BASE
+				// a mesh on its own is drawn in its vertex colours, or the default
+				if vertex_colours.is_some() {
+					Color32::WHITE
+				} else {
+					BASE
+				}
 			} else {
 				part.colour
 			};
@@ -86,6 +113,10 @@ pub(super) fn draw_cpu(
 				let diffuse = dot(n, light).abs();
 				// textures are already lit by their artist, so darken them less
 				let ambient = if texture.is_some() { 0.5 } else { 0.25 };
+				let base = match vertex_colours {
+					Some(c) => tinted(base, t.map(|i| c[i as usize])),
+					None => base,
+				};
 				let colour = shade(base, ambient + (1.0 - ambient) * diffuse);
 				let uvs = match texture {
 					Some((tex, uvs)) => t.map(|i| tex.map(uvs[i as usize])),
@@ -153,4 +184,28 @@ fn add_line(mesh: &mut egui::Mesh, a: Pos2, b: Pos2, half_width: f32, colour: Co
 	}
 	mesh.add_triangle(i, i + 1, i + 2);
 	mesh.add_triangle(i, i + 2, i + 3);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// A white base shows a triangle's one vertex colour as it is; a
+	/// coloured base darkens it, in linear light.
+	#[test]
+	fn triangles_are_tinted_by_their_vertex_colours() {
+		let olive = [102, 115, 72, 255];
+		assert_eq!(
+			tinted(Color32::WHITE, [olive; 3]),
+			Color32::from_rgb(102, 115, 72)
+		);
+		let half = tinted(Color32::from_rgb(188, 188, 188), [olive; 3]);
+		assert!(
+			half.r() < 102 && half.g() < 115 && half.b() < 72,
+			"{half:?}"
+		);
+		// white vertices leave the base as it was
+		let white = [255; 4];
+		assert_eq!(tinted(BASE, [white; 3]), BASE);
+	}
 }

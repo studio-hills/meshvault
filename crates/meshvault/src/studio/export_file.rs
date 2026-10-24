@@ -606,6 +606,56 @@ mod tests {
 		assert_eq!(export.skipped, Vec::<String>::new());
 	}
 
+	/// A model's pivot, PrimaryPart and Attachments, and each part's pivot,
+	/// are read; a model with more attachments than the cap is refused.
+	#[test]
+	fn reads_attachments_and_pivots() {
+		let at = |y: i32| format!("[0,{y},0,1,0,0,0,1,0,0,0,1]");
+		let attachment = format!(
+			r#"{{"Name":"Muzzle","Path":"RS/T/Base/Muzzle","ParentPath":"RS/T/Base",
+			 "CFrame":{},"WorldCFrame":{},"Visible":true}}"#,
+			at(1),
+			at(6)
+		);
+		let doc = |attachments: usize| {
+			format!(
+				r#"{{"SchemaVersion":2,"Meshes":[],"Models":[{{"Name":"T","Path":"RS/T",
+				"Pivot":{},"PrimaryPartPath":"RS/T/Base","Attachments":[{}],
+				"Parts":[{{"Path":"RS/T/Base","Name":"Base","CFrame":{},"Size":[1,1,1],
+					"Pivot":{},"PivotOffset":{}}}]}}]}}"#,
+				at(4),
+				vec![attachment.as_str(); attachments].join(","),
+				at(5),
+				at(5),
+				at(0)
+			)
+		};
+		let export = parse(&doc(1)).unwrap();
+		let model = &export.models[0];
+		assert_eq!(model.pivot.unwrap()[1], 4.0);
+		assert_eq!(model.primary_part_path.as_deref(), Some("RS/T/Base"));
+		let a = &model.attachments[0];
+		assert_eq!(
+			(a.name.as_str(), a.parent_path.as_str()),
+			("Muzzle", "RS/T/Base")
+		);
+		assert_eq!(
+			(a.cframe[1], a.world_cframe.unwrap()[1], a.visible),
+			(1.0, 6.0, true)
+		);
+		assert_eq!(model.parts[0].pivot.unwrap()[1], 5.0);
+		assert_eq!(model.parts[0].pivot_offset.unwrap()[1], 0.0);
+		let tiny = Limits {
+			attachments: 1,
+			..LIMITS
+		};
+		let refused = parse_with(&doc(2), &tiny).err().unwrap();
+		assert!(
+			refused.contains("more than 1 attachments in one model"),
+			"{refused}"
+		);
+	}
+
 	/// Schema 2 adds model scale, part appearance, SpecialMesh and joint
 	/// transforms; Roblox's encoder leaves out a nil SpecialMesh entirely.
 	#[test]

@@ -550,9 +550,92 @@ local function run(options)
 			Kind=kind,
 		})
 	end
-	-- Export the model's parts, joints, bones, clothing, and animations.
+	-- Convert effect values into JSON-safe primitives and keypoint arrays.
+	local function effectValue(value)
+		local kind = typeof(value)
+		if kind == "boolean" or kind == "number" or kind == "string" then return value end
+		if kind == "EnumItem" then return value.Name end
+		if kind == "Color3" then return rgb(value) end
+		if kind == "Vector2" then return {value.X, value.Y} end
+		if kind == "Vector3" then return v3(value) end
+		if kind == "NumberRange" then return {value.Min, value.Max} end
+		if kind == "Rect" then return {value.Min.X, value.Min.Y, value.Max.X, value.Max.Y} end
+		if kind == "NumberSequence" then
+			local keys = {}
+			for _, key in ipairs(value.Keypoints) do
+				table.insert(keys, {Time=key.Time, Value=key.Value, Envelope=key.Envelope})
+			end
+			return keys
+		end
+		if kind == "ColorSequence" then
+			local keys = {}
+			for _, key in ipairs(value.Keypoints) do
+				table.insert(keys, {Time=key.Time, Value=rgb(key.Value)})
+			end
+			return keys
+		end
+		return nil
+	end
+
+	local EFFECT_PROPERTIES = {
+		ParticleEmitter = {
+			"Enabled", "Texture", "Color", "Transparency", "Size", "Rate", "Lifetime", "Speed",
+			"Rotation", "RotSpeed", "SpreadAngle", "EmissionDirection", "Acceleration", "Drag",
+			"VelocityInheritance", "LockedToPart", "Orientation", "ZOffset", "LightEmission",
+			"LightInfluence", "Brightness", "Squash", "Shape", "ShapeStyle", "ShapeInOut",
+			"FlipbookLayout", "FlipbookMode", "FlipbookFramerate", "FlipbookStartRandom",
+			"TimeScale", "WindAffectsDrag", "LocalTransparencyModifier",
+		},
+		Beam = {
+			"Enabled", "Texture", "Color", "Transparency", "Width0", "Width1", "CurveSize0",
+			"CurveSize1", "TextureSpeed", "TextureLength", "TextureMode", "Segments",
+			"FaceCamera", "LightEmission", "LightInfluence", "Brightness", "ZOffset",
+		},
+		Trail = {
+			"Enabled", "Texture", "Color", "Transparency", "Lifetime", "MinLength",
+			"WidthScale", "TextureMode", "TextureLength", "FaceCamera", "LightEmission",
+			"LightInfluence", "Brightness", "MaxLength",
+		},
+		Fire = {"Enabled", "Color", "SecondaryColor", "Heat", "Size", "TimeScale"},
+		Smoke = {"Enabled", "Color", "Opacity", "RiseVelocity", "Size", "TimeScale"},
+		Sparkles = {"Enabled", "SparkleColor", "TimeScale"},
+	}
+
+	-- Capture effect settings and attachment links without reading private assets.
+	local function exportEffect(inst)
+		local propertyNames = EFFECT_PROPERTIES[inst.ClassName]
+		if not propertyNames then return nil end
+		local effect = {
+			ClassName=inst.ClassName, Name=inst.Name, Path=fullpath(inst),
+			ParentPath=inst.Parent and fullpath(inst.Parent) or "",
+		}
+		for _, property in ipairs(propertyNames) do
+			-- read directly, not with optionalProperty, which turns false
+			-- (Enabled, LockedToPart, FaceCamera) into nil
+			local ok, value = pcall(function() return inst[property] end)
+			if ok and value ~= nil then
+				effect[property] = effectValue(value)
+			end
+		end
+		if inst:IsA("Beam") or inst:IsA("Trail") then
+			for _, property in ipairs({"Attachment0", "Attachment1"}) do
+				local attachment = optionalProperty(inst, property)
+				if attachment and attachment:IsA("Attachment") then
+					effect[property .. "Path"] = fullpath(attachment)
+				end
+			end
+		end
+		return effect
+	end
+
+	-- Export model geometry, rigging, effects, attachments, and animations.
 	local function exportRig(model)
-		local m = {Name=model.Name, Path=fullpath(model), Scale=model:GetScale(), Parts={}, Joints={}, Bones={}, Animations={}}
+		local m = {
+			Name=model.Name, Path=fullpath(model), Scale=model:GetScale(),
+			Parts={}, Joints={}, Bones={}, Animations={}, Attachments={}, Effects={},
+			Pivot=cfdata(model:GetPivot()),
+			PrimaryPartPath=model.PrimaryPart and fullpath(model.PrimaryPart) or nil,
+		}
 		do
 			local clothing = {}
 			local shirt = model:FindFirstChildOfClass("Shirt")
@@ -572,6 +655,8 @@ local function run(options)
 		local animSeen = {}
 		for _, inst in ipairs(model:GetDescendants()) do
 			if isExcluded(inst) then continue end
+			local effect = exportEffect(inst)
+			if effect then table.insert(m.Effects, effect) end
 			if inst:IsA("BasePart") then
 				local meshRef = getOrAddMesh(inst)
 				local sm = inst:FindFirstChildOfClass("SpecialMesh")
@@ -638,6 +723,8 @@ local function run(options)
 					Path=fullpath(inst), Name=inst.Name, MeshRef=meshRef or 0,
 					ClassName=inst.ClassName, Shape=shape,
 					CFrame=cfdata(inst.CFrame), Size=v3(inst.Size),
+					Pivot=cfdata(inst:GetPivot()),
+					PivotOffset=cfdata(inst.PivotOffset),
 					Color=rgb(inst.Color),
 					BrickColor=inst.BrickColor.Name,
 					Material=inst.Material.Name,
@@ -649,6 +736,17 @@ local function run(options)
 					Lights=lights,
 					Decals=decals,
 				})
+			elseif inst:IsA("Attachment") and not inst:IsA("Bone") then
+				-- Preserve attachment transforms and paths for effects and constraints.
+				local attachment = {
+					Name=inst.Name,
+					Path=fullpath(inst),
+					ParentPath=inst.Parent and fullpath(inst.Parent) or "",
+					CFrame=cfdata(inst.CFrame),
+					WorldCFrame=cfdata(inst.WorldCFrame),
+					Visible=inst.Visible,
+				}
+				table.insert(m.Attachments, attachment)
 			elseif inst:IsA("Motor6D") then
 				addJoint(m, inst, inst.Part0, inst.Part1, inst.C0, inst.C1, inst.Transform, "Motor6D")
 			elseif inst:IsA("AnimationConstraint") then
@@ -708,7 +806,7 @@ local function run(options)
 		end
 		table.insert(models, m)
 	end
-	-- Discover models containing geometry or animations, including static models.
+	-- Discover models containing geometry, animations, or visual effects.
 	local function modelFor(inst, root)
 		local candidate = nil
 		local current = inst
@@ -736,7 +834,7 @@ local function run(options)
 						{ Path = inst:GetFullName() })
 				end
 			end
-			if inst:IsA("BasePart") or inst:IsA("Animation") then
+			if inst:IsA("BasePart") or inst:IsA("Animation") or EFFECT_PROPERTIES[inst.ClassName] then
 				local model = modelFor(inst, root)
 				if model and not modelSeen[model] and not isExcluded(model) then
 					modelSeen[model] = true

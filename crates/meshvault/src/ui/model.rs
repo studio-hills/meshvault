@@ -7,9 +7,9 @@ use super::theme::{CAPTION, CONTROL_RADIUS, Palette, ROW, palette, semibold};
 use super::{icons, widgets};
 use crate::anim::schema::ClipStatus;
 use crate::app::App;
-use crate::render::camera::{Camera, project};
+use crate::render::camera::{Camera, project, project_axis};
 use crate::render::viewport;
-use crate::scene::model_view::{ClipSlot, Joint, ModelView, PartShape, PartView, Skeleton};
+use crate::scene::model_view::{ClipSlot, Joint, ModelView, PartShape, PartView, Points, Skeleton};
 
 /// Corner radius of the transport bar; the controls in it are rounded to
 /// this less its padding and border.
@@ -69,6 +69,12 @@ impl App {
 		if model.tick(dt) {
 			ui.ctx().request_repaint();
 		}
+		// effects run whether a clip plays or not, as in Studio; drawn by
+		// the GPU renderer only
+		if self.show_effects && renderer.is_some() && model.step_effects(dt) {
+			settings.effects = model.effect_frame();
+			ui.ctx().request_repaint();
+		}
 		let home = model.home();
 		let mut camera = std::mem::replace(&mut model.camera, home.clone());
 		let rect = {
@@ -88,6 +94,11 @@ impl App {
 				self.show_skeleton,
 				self.show_joints,
 			);
+		}
+		// a part hovered in the parts list shows its pivot, overlay on or off
+		if self.show_attachments || model.highlight.is_some() {
+			let points = model.points();
+			draw_points(ui, &p, rect, &camera, &points, self.show_attachments);
 		}
 		model.camera = camera;
 		self.viewport = rect;
@@ -129,10 +140,14 @@ impl App {
 			|ui| {
 				// the folder holding the model; the whole path is on hover
 				let folder = model.path.rsplit('/').nth(1).unwrap_or_default();
+				// as the library sorts it: animated when it has clips
+				let kind = super::switch::model_kind(
+					counterparts.animated.unwrap_or(!model.clips.is_empty()),
+				);
 				let subtitle = if folder.is_empty() {
-					"Animated model".to_string()
+					format!("{kind} model")
 				} else {
-					format!("Animated model · {folder}")
+					format!("{kind} model · {folder}")
 				};
 				switch = super::switch::header(
 					ui,
@@ -190,6 +205,19 @@ impl App {
 							"Joints at rest".into()
 						},
 					));
+					rows.push((
+						"PrimaryPart".to_string(),
+						match (model.has_pivot(), model.primary_part()) {
+							(_, Some(name)) => name.to_string(),
+							(true, None) => "None".into(),
+							(false, None) => "Not in this export".into(),
+						},
+					));
+					rows.push((
+						"Attachments".to_string(),
+						model.attachment_count().to_string(),
+					));
+					rows.push(("Effects".to_string(), model.effect_count().to_string()));
 					widgets::properties(ui, "model_properties_grid", &rows);
 				});
 
@@ -580,19 +608,113 @@ fn draw_skeleton(
 		} else {
 			format!("{} (weld)", joint.name)
 		};
-		let galley = painter.layout_no_wrap(text, egui::FontId::proportional(CAPTION), p.text);
-		let label = egui::Rect::from_min_size(
-			at + Vec2::new(10.0, -10.0 - galley.size().y),
-			galley.size() + Vec2::new(12.0, 6.0),
-		);
-		painter.rect_filled(label, CornerRadius::same(5), p.panel);
-		painter.rect_stroke(
-			label,
-			CornerRadius::same(5),
-			Stroke::new(1.0, p.border),
-			egui::StrokeKind::Inside,
-		);
-		painter.galley(label.min + Vec2::new(6.0, 3.0), galley, p.text);
+		hover_label(&painter, p, at, text);
+	}
+}
+
+/// A small label beside the overlay mark at `at`, naming it.
+fn hover_label(painter: &egui::Painter, p: &Palette, at: egui::Pos2, text: String) {
+	let galley = painter.layout_no_wrap(text, egui::FontId::proportional(CAPTION), p.text);
+	let label = egui::Rect::from_min_size(
+		at + Vec2::new(10.0, -10.0 - galley.size().y),
+		galley.size() + Vec2::new(12.0, 6.0),
+	);
+	painter.rect_filled(label, CornerRadius::same(5), p.panel);
+	painter.rect_stroke(
+		label,
+		CornerRadius::same(5),
+		Stroke::new(1.0, p.border),
+		egui::StrokeKind::Inside,
+	);
+	painter.galley(label.min + Vec2::new(6.0, 3.0), galley, p.text);
+}
+
+/// Studio's colours for an attachment: green, with an orange line along its
+/// Axis (its X) and a yellow one along its SecondaryAxis (its Y).
+const ATTACHMENT: Color32 = Color32::from_rgb(74, 222, 128);
+const AXIS: Color32 = Color32::from_rgb(255, 170, 0);
+const SECONDARY_AXIS: Color32 = Color32::from_rgb(255, 230, 80);
+/// The pivot's X, Y and Z axes, as Studio colours them.
+const PIVOT_AXES: [Color32; 3] = [
+	Color32::from_rgb(232, 72, 77),
+	Color32::from_rgb(70, 190, 90),
+	Color32::from_rgb(62, 120, 230),
+];
+
+/// The attachments overlay, when `overlay` is on: each attachment as a dot
+/// with short lines along its axes, and the model's pivot as three longer
+/// axes. Attachments Studio hides until selected (Visible off) are drawn
+/// fainter. The pivot of a part highlighted in the parts list is drawn
+/// either way, a little smaller. Hovering a mark names it.
+fn draw_points(
+	ui: &egui::Ui,
+	p: &Palette,
+	rect: egui::Rect,
+	camera: &Camera,
+	points: &Points,
+	overlay: bool,
+) {
+	let painter = ui.painter_at(rect);
+	let shadow = Color32::from_black_alpha(140);
+	let axis = |at: &crate::anim::math::CFrame, k: usize, length: f32| {
+		let mut dir = [0.0; 3];
+		dir[k] = 1.0;
+		project_axis(camera, rect, at.pos, at.rotate(dir), length)
+	};
+	let line = |(a, b): (egui::Pos2, egui::Pos2), colour: Color32, width: f32| {
+		painter.line_segment([a, b], Stroke::new(width + 2.0, shadow));
+		painter.line_segment([a, b], Stroke::new(width, colour));
+	};
+	let pointer = ui
+		.input(|i| i.pointer.hover_pos())
+		.filter(|at| rect.contains(*at));
+	let mut nearest: Option<(f32, egui::Pos2, &str)> = None;
+	// each mark, with the length of its axes when it is a pivot
+	let overlay_marks = overlay.then(|| {
+		points
+			.attachments
+			.iter()
+			.map(|a| (a, None))
+			.chain(points.pivot.iter().map(|a| (a, Some(28.0))))
+	});
+	let marks = overlay_marks
+		.into_iter()
+		.flatten()
+		.chain(points.part_pivot.iter().map(|a| (a, Some(22.0))));
+	for (point, pivot) in marks {
+		let Some(at) = project(camera, rect, point.at.pos) else {
+			continue;
+		};
+		if let Some(length) = pivot {
+			for (k, colour) in PIVOT_AXES.into_iter().enumerate() {
+				if let Some(segment) = axis(&point.at, k, length) {
+					line(segment, colour, 2.0);
+				}
+			}
+			painter.circle(at, 4.0, p.text, Stroke::new(1.5, shadow));
+		} else {
+			let fade = if point.visible { 1.0 } else { 0.55 };
+			for (k, colour) in [(0, AXIS), (1, SECONDARY_AXIS)] {
+				if let Some(segment) = axis(&point.at, k, 14.0) {
+					line(segment, colour.gamma_multiply(fade), 1.5);
+				}
+			}
+			painter.circle(
+				at,
+				3.5,
+				ATTACHMENT.gamma_multiply(fade),
+				Stroke::new(1.5, shadow),
+			);
+		}
+		if let Some(pointer) = pointer {
+			let d = at.distance(pointer);
+			if d < 9.0 && nearest.is_none_or(|(best, _, _)| d < best) {
+				nearest = Some((d, at, &point.label));
+			}
+		}
+	}
+	if let Some((_, at, label)) = nearest {
+		hover_label(&painter, p, at, label.to_string());
 	}
 }
 

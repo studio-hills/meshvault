@@ -78,6 +78,12 @@ impl App {
 		if key(Key::J) {
 			self.show_joints = !self.show_joints;
 		}
+		if key(Key::A) {
+			self.show_attachments = !self.show_attachments;
+		}
+		if key(Key::P) {
+			self.show_effects = !self.show_effects;
+		}
 		if key(Key::L) {
 			let all = Lighting::ALL;
 			let next = all

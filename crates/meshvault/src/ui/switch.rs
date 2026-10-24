@@ -1,5 +1,5 @@
-//! Switching between an animated model and the meshes it is built from,
-//! shown at the top of the inspector.
+//! Switching between a model and the meshes it is built from, shown at the
+//! top of the inspector.
 
 use eframe::egui::{self, FontId, RichText, Sense, Vec2};
 
@@ -13,6 +13,26 @@ use crate::app::App;
 pub(super) struct Counterparts {
 	pub models: Vec<(usize, String)>,
 	pub meshes: Vec<(usize, String)>,
+	/// Whether the models are animated (have clips): `None` when they are
+	/// a mix, or there are none.
+	pub animated: Option<bool>,
+}
+
+impl Counterparts {
+	/// The models' side of the switch: its icon and name.
+	fn models_label(&self) -> (&'static str, &'static str) {
+		match self.animated {
+			Some(true) => (icons::PERSON_SIMPLE_RUN, "Animated"),
+			Some(false) => (icons::PACKAGE, "Static"),
+			None => (icons::PACKAGE, "Models"),
+		}
+	}
+}
+
+/// "Animated" or "Static", by whether a model has clips (as the library
+/// sorts it).
+pub(super) fn model_kind(animated: bool) -> &'static str {
+	if animated { "Animated" } else { "Static" }
 }
 
 pub(super) enum Switch {
@@ -21,8 +41,8 @@ pub(super) enum Switch {
 }
 
 impl App {
-	/// The animated model open and its meshes, or the mesh open and the
-	/// animated models that use it.
+	/// The model open and its meshes, or the mesh open and the models that
+	/// use it.
 	pub(super) fn counterparts(&self) -> Counterparts {
 		let Some(ws) = &self.workspace else {
 			return Counterparts::default();
@@ -35,14 +55,25 @@ impl App {
 			return Counterparts {
 				models: vec![(model.index, item.name.clone())],
 				meshes: ws.meshes_of_model(model.index),
+				animated: Some(item.is_animated()),
 			};
 		}
 		let Some(stem) = &self.open_stem else {
 			return Counterparts::default();
 		};
+		let models = ws.models_using(stem);
+		let kinds: Vec<bool> = models
+			.iter()
+			.filter_map(|&(i, _)| ws.models().get(i).map(|m| m.is_animated()))
+			.collect();
+		let animated = kinds
+			.first()
+			.copied()
+			.filter(|&first| kinds.iter().all(|&k| k == first));
 		Counterparts {
-			models: ws.models_using(stem),
+			models,
 			meshes: ws.item_with_stem(stem).into_iter().collect(),
+			animated,
 		}
 	}
 
@@ -79,7 +110,8 @@ pub(super) fn header(
 	switch
 }
 
-/// A two-part control: "Animated" and "Meshes", with the open one
+/// A two-part control: "Animated" (or "Static", or "Models" for a mix) and
+/// "Meshes", with the open one
 /// highlighted and how many of each there are beside its name. When the
 /// other side has several choices (a model built from several meshes, or a
 /// mesh several models use) it opens a list. Shown only when both sides
@@ -95,8 +127,9 @@ fn view_switch(ui: &mut egui::Ui, on_model: bool, c: &Counterparts) -> Option<Sw
 	widgets::segment_track(ui, CONTROL_SM, |ui, height| {
 		let half = ((ui.available_width() - 2.0) / 2.0).floor();
 		ui.horizontal(|ui| {
+			let (model_icon, model_label) = c.models_label();
 			let sides = [
-				(true, icons::PERSON_SIMPLE_RUN, "Animated", &c.models),
+				(true, model_icon, model_label, &c.models),
 				(false, icons::CUBE, "Meshes", &c.meshes),
 			];
 			for (is_model, icon, label, targets) in sides {

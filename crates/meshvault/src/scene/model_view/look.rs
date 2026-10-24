@@ -178,6 +178,21 @@ pub(super) fn colour_of(part: &ModelPart, fallback: Color32) -> Color32 {
 
 /// Parts this transparent are invisible in Roblox (HumanoidRootPart).
 pub(super) const INVISIBLE: f32 = 0.99;
+
+/// How a shown part is drawn: its own surface, except that a part Roblox
+/// draws invisible is drawn opaque. Such a part is only shown when asked
+/// for in the parts list, or when the whole model is invisible (a template
+/// a script makes visible), and would otherwise draw nothing.
+pub(super) fn shown(surface: Surface) -> Surface {
+	if surface.opacity <= 1.0 - INVISIBLE {
+		Surface {
+			opacity: 1.0,
+			..surface
+		}
+	} else {
+		surface
+	}
+}
 pub(super) const BLOCK_COLOUR: Color32 = Color32::from_rgb(140, 146, 156);
 
 #[cfg(test)]

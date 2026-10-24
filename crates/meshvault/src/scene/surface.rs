@@ -144,6 +144,17 @@ impl AlphaMode {
 /// colour map is transparent.
 pub const PART_COLOUR: Color32 = Color32::from_rgb(163, 162, 165);
 
+/// The colour a mesh shown on its own is drawn in: [`PART_COLOUR`], or
+/// white when it has vertex colours, which the renderer multiplies by it
+/// (grey would dim them).
+pub fn mesh_colour(geometry: &crate::scene::geometry::Geometry) -> Color32 {
+	if geometry.colors.is_some() {
+		Color32::WHITE
+	} else {
+		PART_COLOUR
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

@@ -132,7 +132,9 @@ pub struct Workspace {
 }
 
 /// Every image a model uses directly, by asset id: its parts' decals and
-/// MaterialVariant maps, then its clothing. An id can appear more than once.
+/// MaterialVariant maps, then its clothing, then its effects' textures
+/// (built-in `rbxasset://` ones are not assets, and are left out). An id
+/// can appear more than once.
 fn image_ids(model: &AnimatedModel) -> impl Iterator<Item = u64> + '_ {
 	model
 		.parts
@@ -145,6 +147,7 @@ fn image_ids(model: &AnimatedModel) -> impl Iterator<Item = u64> + '_ {
 			p.decals.iter().map(|d| d.texture.as_str()).chain(variant)
 		})
 		.chain(model.clothing.iter().flat_map(|c| c.images()))
+		.chain(model.effects.iter().filter_map(|e| e.texture.as_deref()))
 		.filter_map(parse_asset_id)
 }
 

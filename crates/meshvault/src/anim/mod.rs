@@ -3,6 +3,7 @@
 
 pub mod budget;
 pub mod clip;
+pub mod effect;
 pub mod math;
 pub mod rig;
 pub mod schema;

@@ -592,6 +592,10 @@ mod tests {
 			],
 			animations: vec![],
 			clothing: None,
+			pivot: None,
+			primary_part_path: None,
+			attachments: Vec::new(),
+			effects: Vec::new(),
 		}
 	}
 

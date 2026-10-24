@@ -1,17 +1,22 @@
 //! Writes Wavefront OBJ files with their MTL: a mesh with its colour and
-//! normal maps copied beside it, or an animated model as one OBJ of all
-//! its parts as posed, with each part's map or colour.
+//! normal maps copied beside it, or a model as one OBJ of all its parts as
+//! posed, with each part's map or colour. Vertex colours are written after
+//! each position (`v x y z r g b`, the extension Blender and MeshLab read),
+//! already multiplied by the part's colour, since OBJ materials cannot.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use eframe::egui::Color32;
+
 use super::{MeshJob, Names};
 use crate::render::maths::{IDENTITY, apply, apply_normal};
+use crate::scene::colour::tint_srgb;
 use crate::scene::geometry::{self, Geometry};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
-use crate::scene::surface::PART_COLOUR;
+use crate::scene::surface::mesh_colour;
 use crate::scene::texture::Material;
 
 /// Writes a batch job as `name.obj` and `name.mtl`, which `names` has
@@ -77,10 +82,12 @@ fn write_one(
 	} else {
 		(None, None)
 	};
-	let colour = [PART_COLOUR.r(), PART_COLOUR.g(), PART_COLOUR.b()].map(|c| c as f32 / 255.0);
+	let part = mesh_colour(geometry);
+	let colour = [part.r(), part.g(), part.b()].map(|c| c as f32 / 255.0);
 	let material = obj.material(base, normal, colour)?;
 	let name = obj.name.clone();
-	obj.add(&name, geometry, groups, &IDENTITY, &material);
+	let tint = base.is_none().then_some(part);
+	obj.add(&name, geometry, groups, &IDENTITY, &material, tint);
 	obj.write()
 }
 
@@ -132,11 +139,8 @@ fn write_parts(mut obj: Obj, model: &mut ModelView) -> Result<(), String> {
 	// decals and clothing are drawn over a part; the OBJ has the part alone
 	for part in parts.iter().filter(|p| p.decal.is_none()) {
 		let colour = [part.colour.r(), part.colour.g(), part.colour.b()].map(|c| c as f32 / 255.0);
-		let material = obj.material(
-			map_path(part.material, Slot::Base),
-			map_path(part.material, Slot::Normal),
-			colour,
-		)?;
+		let base = map_path(part.material, Slot::Base);
+		let material = obj.material(base, map_path(part.material, Slot::Normal), colour)?;
 		count += 1;
 		obj.add(
 			&format!("part_{count}"),
@@ -144,6 +148,7 @@ fn write_parts(mut obj: Obj, model: &mut ModelView) -> Result<(), String> {
 			part.groups,
 			&part.transform,
 			&material,
+			base.is_none().then_some(part.colour),
 		);
 	}
 	if count == 0 {
@@ -258,7 +263,9 @@ impl<'a> Obj<'a> {
 		Ok(file)
 	}
 
-	/// Adds `groups` of `geometry`, placed by the row-major `transform`.
+	/// Adds `groups` of `geometry`, placed by the row-major `transform`,
+	/// with its vertex colours times `tint` when it has any and `tint` is
+	/// given (no colour map covers them).
 	fn add(
 		&mut self,
 		name: &str,
@@ -266,10 +273,22 @@ impl<'a> Obj<'a> {
 		groups: &[usize],
 		transform: &[[f32; 4]; 4],
 		material: &str,
+		tint: Option<Color32>,
 	) {
-		for &p in &geometry.positions {
+		let colours = geometry
+			.colors
+			.as_ref()
+			.filter(|c| c.len() == geometry.positions.len())
+			.zip(tint);
+		for (i, &p) in geometry.positions.iter().enumerate() {
 			let p = apply(transform, p);
-			let _ = writeln!(self.obj, "v {} {} {}", p[0], p[1], p[2]);
+			let _ = match colours {
+				Some((c, tint)) => {
+					let [r, g, b] = tint_srgb(tint, [c[i][0], c[i][1], c[i][2]]);
+					writeln!(self.obj, "v {} {} {} {r} {g} {b}", p[0], p[1], p[2])
+				}
+				None => writeln!(self.obj, "v {} {} {}", p[0], p[1], p[2]),
+			};
 		}
 		// OBJ's texture origin is the bottom left; Roblox's the top left
 		if let Some(uvs) = &geometry.uvs {
@@ -330,6 +349,7 @@ mod tests {
 	use super::*;
 	use crate::export::fixtures::check_indices;
 	use crate::scene::geometry::GroupKind;
+	use crate::scene::surface::PART_COLOUR;
 	use crate::test_support::TempDir;
 
 	fn triangle(uvs: bool) -> Geometry {
@@ -337,6 +357,7 @@ mod tests {
 			positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
 			uvs: uvs.then(|| vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
 			normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+			colors: None,
 			triangles: vec![[0, 1, 2]],
 			groups: vec![0..1],
 			group_kind: GroupKind::Whole,
@@ -348,8 +369,8 @@ mod tests {
 		let dir = TempDir::new("obj_parts");
 		let mut names = Names::default();
 		let mut obj = Obj::new(&dir, "parts", "parts.mtl".into(), &mut names);
-		obj.add("a", &triangle(false), &[0], &IDENTITY, "m");
-		obj.add("b", &triangle(true), &[0], &IDENTITY, "m");
+		obj.add("a", &triangle(false), &[0], &IDENTITY, "m", None);
+		obj.add("b", &triangle(true), &[0], &IDENTITY, "m", None);
 		assert!(obj.obj.contains("f 4/1/4 5/2/5 6/3/6"), "{}", obj.obj);
 		check_indices(&obj.obj);
 	}
@@ -379,7 +400,7 @@ mod tests {
 		slope.normals = Some(vec![[n, n, 0.0]; 3]);
 		let mut stretch = IDENTITY;
 		stretch[0][0] = 2.0;
-		obj.add("a", &slope, &[0], &stretch, "m");
+		obj.add("a", &slope, &[0], &stretch, "m", None);
 		let vn: Vec<f32> = obj
 			.obj
 			.lines()
@@ -395,6 +416,65 @@ mod tests {
 
 	fn read(path: PathBuf) -> String {
 		std::fs::read_to_string(path).unwrap()
+	}
+
+	/// The colour after each `v` line's position, if any.
+	fn vertex_colours(obj: &str) -> Vec<Vec<f32>> {
+		obj.lines()
+			.filter_map(|l| l.strip_prefix("v "))
+			.map(|l| l.split(' ').skip(3).map(|v| v.parse().unwrap()).collect())
+			.collect()
+	}
+
+	/// A mesh with vertex colours is written with them, white underneath
+	/// (as the viewer shows it); under a colour map, or without vertex
+	/// colours, the positions stand alone.
+	#[test]
+	fn vertex_colours_follow_each_position() {
+		let dir = TempDir::new("obj_colours");
+		let mut coloured = triangle(true);
+		coloured.colors = Some(vec![[102, 115, 72, 255], [16, 21, 29, 255], [255; 4]]);
+		one(&dir, "tank", &coloured, None, None);
+		let obj = read(dir.join("tank.obj"));
+		let expected = [[102.0, 115.0, 72.0], [16.0, 21.0, 29.0], [255.0; 3]];
+		for (got, want) in vertex_colours(&obj).iter().zip(expected) {
+			let got: Vec<f32> = got.iter().map(|c| (c * 255.0).round()).collect();
+			assert_eq!(got, want, "{obj}");
+		}
+		assert!(read(dir.join("tank.mtl")).contains("Kd 1 1 1\n"));
+
+		let map = dir.join("source.png");
+		std::fs::write(&map, "png").unwrap();
+		one(&dir, "mapped", &coloured, Some(&map), None);
+		one(&dir, "plain", &triangle(true), None, None);
+		for name in ["mapped.obj", "plain.obj"] {
+			let obj = read(dir.join(name));
+			assert!(vertex_colours(&obj).iter().all(Vec::is_empty), "{obj}");
+		}
+	}
+
+	/// A model part's vertex colours are multiplied by its colour, in
+	/// linear light, as the viewer draws them.
+	#[test]
+	fn a_parts_vertex_colours_take_its_colour() {
+		let dir = TempDir::new("obj_tinted");
+		let mut names = Names::default();
+		let mut obj = Obj::new(&dir, "t", "t.mtl".into(), &mut names);
+		let mut g = triangle(false);
+		g.colors = Some(vec![
+			[255, 255, 255, 255],
+			[102, 115, 72, 255],
+			[0, 0, 0, 255],
+		]);
+		let red = Color32::from_rgb(255, 0, 0);
+		obj.add("a", &g, &[0], &IDENTITY, "m", Some(red));
+		// as bytes: red keeps only the red of each vertex colour
+		let colours: Vec<Vec<u8>> = vertex_colours(&obj.obj)
+			.iter()
+			.map(|c| c.iter().map(|v| (v * 255.0).round() as u8).collect())
+			.collect();
+		assert_eq!(colours, [vec![255, 0, 0], vec![102, 0, 0], vec![0, 0, 0]]);
+		check_indices(&obj.obj);
 	}
 
 	/// The `Kd` line of the part colour, as the MTL writes it.

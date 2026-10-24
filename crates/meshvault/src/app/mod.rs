@@ -53,6 +53,10 @@ pub struct App {
 	/// and a mark at each joint.
 	pub show_skeleton: bool,
 	pub show_joints: bool,
+	/// Overlay on a model: its Attachments and its pivot.
+	pub show_attachments: bool,
+	/// A model's particles, beams and trails, drawn and running.
+	pub show_effects: bool,
 	/// Shown instead of the document's maps when they are switched off.
 	pub no_material: Material,
 	/// `None` when the GPU renderer is unavailable; drawing falls back to the CPU.
@@ -125,6 +129,8 @@ impl App {
 			show_maps: true,
 			show_skeleton: false,
 			show_joints: false,
+			show_attachments: false,
+			show_effects: true,
 			no_material: Material::default(),
 			gpu,
 			adapter,

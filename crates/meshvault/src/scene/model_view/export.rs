@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 use eframe::egui::Color32;
 
+use super::look::shown;
 use super::skin::{Driver, PartSkin, fit_point, normalize};
 use super::{ModelView, PartShape, PartView};
 use crate::anim::math::{CFrame, V3};
@@ -128,7 +129,7 @@ impl ModelView {
 				influences: Vec::new(),
 				material: empty_material(),
 				colour: part.colour,
-				surface: part.surface,
+				surface: shown(part.surface),
 			};
 			let rest = self.rest.parts[part.index].mul(&CFrame::from_position(part.offset));
 			match (&part.shape, skinned) {

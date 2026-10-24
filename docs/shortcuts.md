@@ -28,6 +28,8 @@ field has focus.
 | M | Maps on or off |
 | G | Ground grid on or off |
 | K / J | Skeleton / joints of an animated model on or off |
+| A | Attachments and pivot of a model on or off |
+| P | Effects of a model (particles, beams, trails) on or off |
 | L | Next lighting preset |
 | F12 | Save the view as an image |
 | ? | Show the shortcuts |

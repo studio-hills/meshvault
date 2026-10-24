@@ -3,6 +3,7 @@
 
 use super::decals::NormalId;
 use super::export::empty_material;
+use super::look::shown;
 use super::{ModelView, PartShape, PartView};
 use crate::anim::math::{CFrame, V3};
 use crate::anim::rig::BoneParent;
@@ -152,7 +153,7 @@ impl ModelView {
 					colour: *colour,
 					scene: gpu,
 					moved,
-					surface: *surface,
+					surface: shown(*surface),
 					decal: None,
 					highlight: lit,
 				}];
@@ -166,7 +167,7 @@ impl ModelView {
 						colour: *colour,
 						scene: &mut d.gpu,
 						moved,
-						surface: *surface,
+						surface: shown(*surface),
 						highlight: lit,
 						decal: Some(DecalDraw {
 							// clothing places the mesh in its body section's box

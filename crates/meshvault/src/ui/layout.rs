@@ -9,7 +9,7 @@ use crate::render::camera::Camera;
 use crate::render::maths::IDENTITY;
 use crate::render::viewport::{self, ScenePart, ViewSettings};
 use crate::scene::geometry::GroupKind;
-use crate::scene::surface::{PART_COLOUR, Surface};
+use crate::scene::surface::{Surface, mesh_colour};
 
 impl eframe::App for App {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -140,7 +140,7 @@ impl App {
 				&self.no_material
 			},
 			colour_groups: geometry.group_kind == GroupKind::Hull,
-			colour: PART_COLOUR,
+			colour: mesh_colour(geometry),
 			scene: &mut doc.gpu,
 			moved: false,
 			surface: Surface {
@@ -174,6 +174,7 @@ impl App {
 			lights: Vec::new(),
 			lighting: self.config.lighting,
 			highlight: p.accent,
+			effects: Default::default(),
 		}
 	}
 }

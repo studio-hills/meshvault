@@ -151,7 +151,7 @@ impl App {
 			ConfirmAction::RemoveModels(models) => {
 				let what = match (models.len(), models.first().and_then(|&i| self.workspace.as_ref()?.models().get(i))) {
 					(1, Some(model)) => format!("\u{201c}{}\u{201d}", model.name),
-					(n, _) => format!("{n} animated models"),
+					(n, _) => format!("{n} models"),
 				};
 				(
 					format!("Remove {what} from the workspace?"),
@@ -161,7 +161,7 @@ impl App {
 			}
 			ConfirmAction::RemoveSelection { items, models } => (
 				format!("Remove {} models from the workspace?", items.len() + models.len()),
-				"Downloaded meshes and maps, and animated models' rigs, are deleted from the workspace folder. The download cache is kept, so importing them again is quick.".to_string(),
+				"Downloaded meshes and maps, and models' rigs, are deleted from the workspace folder. The download cache is kept, so importing them again is quick.".to_string(),
 				"Remove",
 			),
 		};

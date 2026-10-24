@@ -223,8 +223,8 @@ impl App {
 		}
 		let rigs = match rigs {
 			0 => String::new(),
-			1 => " and 1 animated model".into(),
-			n => format!(" and {n} animated models"),
+			1 => " and 1 model".into(),
+			n => format!(" and {n} models"),
 		};
 		self.toasts.success(format!(
 			"Imported {count} meshes{rigs} ({added} new, {} already in the workspace)",

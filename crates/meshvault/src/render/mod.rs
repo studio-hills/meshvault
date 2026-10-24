@@ -3,6 +3,7 @@
 
 pub mod camera;
 pub mod cpu;
+mod effects;
 pub mod gpu;
 pub mod lighting;
 pub mod maths;

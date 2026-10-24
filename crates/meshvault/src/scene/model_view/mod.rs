@@ -27,12 +27,15 @@ use crate::scene::texture::{self, Material};
 
 mod decals;
 mod draw;
+mod effects;
 mod export;
 mod look;
+mod markers;
 mod skin;
 
 pub use self::draw::{Joint, Skeleton};
 pub use self::export::ExportMesh;
+pub use self::markers::Points;
 pub use self::skin::PartSkin;
 
 use self::decals::{
@@ -142,6 +145,14 @@ pub struct ModelView {
 	dirty: bool,
 	/// The part tinted to stand out (hovered in the parts list).
 	pub highlight: Option<usize>,
+	/// The model's Attachments and pivot (schema 2).
+	attachments: Vec<markers::AttachmentView>,
+	pivot: Option<markers::PivotView>,
+	/// Each part's pivot in its own space (schema 2).
+	part_pivots: Vec<Option<CFrame>>,
+	/// What the model's effects can be in, and the effects (schema 2).
+	anchor_sources: Vec<effects::AnchorSource>,
+	effects: crate::scene::effects::Effects,
 }
 
 fn load_asset(ctx: &egui::Context, source: &MeshSource) -> Result<MeshAsset, String> {
@@ -273,6 +284,44 @@ fn fit(shape: &PartShape, look: &Look, size: V3) -> (V3, V3, V3) {
 		},
 		_ => ([0.0; 3], size, [0.0; 3]),
 	}
+}
+
+/// Why every part of a model is shown though Roblox draws none of them.
+const INVISIBLE_MODEL: &str = "Every part of this model is fully transparent in Roblox (Transparency 1), as in a template a script makes visible, so all of them are shown here, drawn opaque.";
+
+/// What the model's warnings say about effects that are not drawn as
+/// exported.
+fn effect_warnings(unplaced: crate::scene::effects::Unplaced) -> Vec<String> {
+	let mut out = Vec::new();
+	if unplaced.unanchored > 0 {
+		out.push(format!(
+			"{} effects are not shown: the part or attachments they are on are not in the model.",
+			unplaced.unanchored
+		));
+	}
+	if unplaced.unknown > 0 {
+		out.push(format!(
+			"{} effects are of a kind Meshvault does not draw.",
+			unplaced.unknown
+		));
+	}
+	if unplaced.textures > 0 {
+		out.push(format!(
+			"{} effect textures are not downloaded or could not be read; those effects are drawn with a soft stand-in.",
+			unplaced.textures
+		));
+	}
+	out
+}
+
+/// Shows every part of a model none of whose parts Roblox draws (see
+/// [`look::shown`]), saying whether it did.
+fn show_invisible(parts: &mut [PartView]) -> bool {
+	if parts.is_empty() || parts.iter().any(|p| p.visible) {
+		return false;
+	}
+	parts.iter_mut().for_each(|p| p.visible = true);
+	true
 }
 
 /// The summary warnings about the parts, in a fixed order.
@@ -562,12 +611,32 @@ impl ModelView {
 					.collect(),
 			});
 		}
+		let attachments = markers::attachments(model, &rig);
+		let (anchor_sources, effects, unplaced) =
+			effects::effects(model, &rig, &attachments, &mut images);
+		// a model of hidden parts with effects on them is the effects (a
+		// VFX holder); one without is a template a script shows
+		if !effects.any_enabled() && show_invisible(&mut parts) {
+			warnings.push(INVISIBLE_MODEL.into());
+		}
 		load_warnings(&mut warnings, &counts, &parts);
+		warnings.extend(effect_warnings(unplaced));
 		let clips = clip_slots(model, &rig, &parts);
 		let (joint_scale, bone_scale) = translation_scales(model, &rig, &mut parts);
 		warnings.extend(stranded_warning(&rig, &clips));
 
-		let bounds = rest_bounds(&parts, &rig, &rest);
+		let bounds = rest_bounds(&parts, &rig, &rest).or_else(|| {
+			// only hidden parts: frame them all, for the effects on them
+			let shown: Vec<bool> = parts.iter().map(|p| p.visible).collect();
+			parts.iter_mut().for_each(|p| p.visible = true);
+			let all = rest_bounds(&parts, &rig, &rest);
+			for (p, v) in parts.iter_mut().zip(shown) {
+				p.visible = v;
+			}
+			all
+		});
+		let pivot = markers::pivot(model, &rig);
+		let part_pivots = markers::part_pivots(model);
 		let mut view = Self {
 			joint_scale,
 			bone_scale,
@@ -590,9 +659,15 @@ impl ModelView {
 			captured_pose: model.joints.iter().any(|j| j.transform.is_some()),
 			dirty: true,
 			highlight: None,
+			attachments,
+			pivot,
+			part_pivots,
+			anchor_sources,
+			effects,
 			clips,
 			parts,
 		};
+		view.warm_up_effects();
 		// start playing the first clip that can play
 		if let Some(first) = view.clips.iter().position(|c| c.clip.is_ok()) {
 			view.select(Some(first));
@@ -776,6 +851,7 @@ mod fixtures {
 				positions,
 				uvs: None,
 				normals: None,
+				colors: None,
 				group_kind: GroupKind::Whole,
 			},
 			groups: vec![0],
@@ -1010,6 +1086,55 @@ mod tests {
 		view.toggle_play();
 		assert!(view.playing);
 		assert!(!view.tick(0.1));
+	}
+
+	/// A model whose every part is fully transparent (a template a script
+	/// shows, like ThornPod) is shown whole, drawn opaque, saying why; in
+	/// a model with any part Roblox draws, its invisible parts stay hidden.
+	#[test]
+	fn a_wholly_invisible_model_is_shown_opaque() {
+		let part = |name: &str, transparency: f32| crate::anim::schema::ModelPart {
+			transparency,
+			..placed_part(Some("Part"), Some("Block"), name, [0.0; 3])
+		};
+		let model = |parts| AnimatedModel {
+			name: "Pod".into(),
+			path: "Workspace/Pod".into(),
+			parts,
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let load =
+			|m: &AnimatedModel| ModelView::load(&ctx, 0, m, &HashMap::new(), &HashMap::new());
+
+		let view = load(&model(vec![part("Body", 1.0), part("Veins", 1.0)]));
+		assert!(view.parts.iter().all(|p| p.visible));
+		assert!(
+			view.parts
+				.iter()
+				.all(|p| look::shown(p.surface).opacity == 1.0)
+		);
+		assert!(
+			view.warnings.iter().any(|w| w == INVISIBLE_MODEL),
+			"{:?}",
+			view.warnings
+		);
+
+		let view = load(&model(vec![
+			part("Body", 0.0),
+			part("HumanoidRootPart", 1.0),
+		]));
+		let shown: Vec<bool> = view.parts.iter().map(|p| p.visible).collect();
+		assert_eq!(shown, [true, false]);
+		assert!(!view.warnings.iter().any(|w| w == INVISIBLE_MODEL));
+		// ticked in the parts list, the root part draws opaque; a part
+		// Roblox draws half see-through keeps that
+		assert_eq!(look::shown(view.parts[1].surface).opacity, 1.0);
+		let half = Surface {
+			opacity: 0.5,
+			..Surface::OPAQUE
+		};
+		assert_eq!(look::shown(half).opacity, 0.5);
 	}
 
 	/// Bones only a skinned mesh has follow clip tracks by name and FACS

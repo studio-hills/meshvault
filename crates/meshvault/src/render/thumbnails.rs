@@ -17,7 +17,7 @@ use crate::render::viewport::{self, ScenePart, Shading, ViewSettings};
 use crate::scene::geometry::{self, Geometry, GroupKind};
 use crate::scene::maps::Slot;
 use crate::scene::model_view::ModelView;
-use crate::scene::surface::{PART_COLOUR, Surface};
+use crate::scene::surface::{Surface, mesh_colour};
 use crate::scene::texture::{self, Material};
 use crate::studio::export_file::read_limited;
 use crate::workspace::view_loader::{item_maps, model_loader};
@@ -74,7 +74,7 @@ enum Source {
 /// What the background thread read, ready to draw.
 enum Prepared {
 	Mesh {
-		geometry: Geometry,
+		geometry: Box<Geometry>,
 		groups: Vec<usize>,
 		material: Material,
 	},
@@ -317,8 +317,15 @@ fn read_list(file: &Path, limit: usize) -> Option<String> {
 	String::from_utf8(bytes).ok()
 }
 
+/// The first line of every list: raised when thumbnails are drawn
+/// differently, so those drawn before are drawn again, once. 2: vertex
+/// colours.
+const LOOK: &str = "look 2";
+
 fn list(files: &[PathBuf]) -> String {
-	let lines: Vec<_> = files.iter().map(|f| f.to_string_lossy()).collect();
+	let lines: Vec<_> = std::iter::once(LOOK.into())
+		.chain(files.iter().map(|f| f.to_string_lossy()))
+		.collect();
 	lines.join("\n")
 }
 
@@ -474,7 +481,7 @@ fn read_mesh(
 		Material::default()
 	};
 	Ok(Prepared::Mesh {
-		geometry,
+		geometry: Box::new(geometry),
 		groups,
 		material,
 	})
@@ -493,6 +500,7 @@ fn thumbnail_settings() -> ViewSettings {
 		lights: Vec::new(),
 		lighting: Default::default(),
 		highlight: egui::Color32::BLACK,
+		effects: Default::default(),
 	}
 }
 
@@ -515,7 +523,7 @@ fn draw(renderer: &GpuRenderer, prepared: Prepared) -> Result<image::RgbaImage, 
 				transform: IDENTITY,
 				material: &material,
 				colour_groups: geometry.group_kind == GroupKind::Hull,
-				colour: PART_COLOUR,
+				colour: mesh_colour(&geometry),
 				scene: &mut scene,
 				moved: false,
 				surface: Surface::OPAQUE,
@@ -664,6 +672,7 @@ mod tests {
 			],
 			uvs: None,
 			normals: None,
+			colors: None,
 			triangles: vec![[0, 1, 2], [0, 2, 3]],
 			groups: vec![0..1, 1..2],
 			group_kind: GroupKind::Lod,
@@ -950,7 +959,7 @@ mod tests {
 			let geometry = geometry();
 			let groups = geometry.default_groups();
 			Ok(Prepared::Mesh {
-				geometry,
+				geometry: Box::new(geometry),
 				groups,
 				material: Material::default(),
 			})
@@ -1048,7 +1057,7 @@ mod tests {
 			let geometry = geometry();
 			let groups = geometry.default_groups();
 			tx.send(Ok(Prepared::Mesh {
-				geometry,
+				geometry: Box::new(geometry),
 				groups,
 				material: Material::default(),
 			}))
@@ -1108,6 +1117,26 @@ mod tests {
 		std::fs::write(drawn_from(&thumb), list(&files)).unwrap();
 		assert!(is_fresh(&thumb, &files));
 	}
+
+	/// A thumbnail drawn before the look changed (its list has no look line,
+	/// or an older one) is drawn again; one drawn since is kept.
+	#[test]
+	fn thumbnails_drawn_with_an_older_look_are_stale() {
+		let dir = TempDir::new("thumb_look");
+		let thumb = dir.join("t.png");
+		let mesh = dir.join("a.mesh");
+		std::fs::write(&mesh, "mesh").unwrap();
+		touch(&thumb, SystemTime::now());
+		let files = [mesh.clone()];
+		let paths = mesh.to_string_lossy().into_owned();
+		for old in [paths.clone(), format!("look 1\n{paths}")] {
+			std::fs::write(drawn_from(&thumb), old).unwrap();
+			assert!(!is_fresh(&thumb, &files));
+		}
+		std::fs::write(drawn_from(&thumb), list(&files)).unwrap();
+		assert!(is_fresh(&thumb, &files));
+	}
+
 	/// N02: a list of what a thumbnail was drawn from that is longer than
 	/// its limit is not read, so the thumbnail is drawn again.
 	#[test]

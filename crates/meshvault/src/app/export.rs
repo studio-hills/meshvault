@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::App;
 use crate::export::{self, Format, MeshJob, ModelJob, gltf, obj};
-use crate::scene::surface::PART_COLOUR;
+use crate::scene::surface::mesh_colour;
 use crate::ui::format::plural;
 use crate::workspace::view_loader::{item_maps, model_loader};
 use crate::workspace::{self, AssetKind};
@@ -137,7 +137,7 @@ impl App {
 				&doc.loaded.geometry,
 				&doc.visible_groups(),
 				&doc.material,
-				PART_COLOUR,
+				mesh_colour(&doc.loaded.geometry),
 				&name,
 				&path,
 			);

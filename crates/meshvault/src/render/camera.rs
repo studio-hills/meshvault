@@ -135,6 +135,33 @@ pub fn project(camera: &Camera, rect: Rect, p: V3) -> Option<Pos2> {
 	Some(view.project(v))
 }
 
+/// The direction `dir` from the world point `at`, drawn `length` points long
+/// on screen from where `at` projects: a gizmo axis that keeps its size as
+/// the camera moves. `None` when `at` is behind the camera or `dir` points
+/// straight at it.
+pub fn project_axis(
+	camera: &Camera,
+	rect: Rect,
+	at: V3,
+	dir: V3,
+	length: f32,
+) -> Option<(Pos2, Pos2)> {
+	let start = project(camera, rect, at)?;
+	// a step small next to the distance, so perspective barely bends it
+	let step = crate::anim::math::distance(camera.eye(), at) * 0.01;
+	let end = project(
+		camera,
+		rect,
+		[
+			at[0] + dir[0] * step,
+			at[1] + dir[1] * step,
+			at[2] + dir[2] * step,
+		],
+	)?;
+	let along = end - start;
+	(along.length() > 1e-4).then(|| (start, start + along.normalized() * length))
+}
+
 #[cfg(test)]
 mod tests {
 	use eframe::egui::Vec2;

@@ -2,9 +2,9 @@
 //! perspective-correct, mipmapped, with physically based shading of
 //! SurfaceAppearance maps. Drawn inside egui via a paint callback.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use eframe::egui_wgpu::{self, wgpu};
 use wgpu::util::DeviceExt;
@@ -131,7 +131,15 @@ pub struct GpuRenderer {
 	target_format: wgpu::TextureFormat,
 	/// Particles, beams and trails.
 	effects: EffectPipeline,
+	/// Maps already on the GPU, shared by every scene that shows them; see
+	/// [`GpuRenderer::upload`].
+	uploads: Mutex<Uploads>,
 }
+
+/// Uploaded maps by the address of their pixels and their format, each with
+/// a weak hold on the pixels: an address whose pixels were freed may be
+/// reused by others, which must not be taken for them.
+type Uploads = HashMap<(usize, wgpu::TextureFormat), (Weak<image::RgbaImage>, wgpu::TextureView)>;
 
 /// One uploaded mesh with its material, owned by the open document (or by
 /// one part of an animated model).
@@ -299,6 +307,7 @@ impl GpuRenderer {
 			gamma_output: !target_format.is_srgb(),
 			effects,
 			target_format,
+			uploads: Mutex::new(HashMap::new()),
 		})
 	}
 
@@ -388,6 +397,28 @@ impl GpuRenderer {
 		})
 	}
 
+	/// `pixels` on the GPU as `format`, uploaded once however many scenes
+	/// show them: a model whose parts share a MaterialVariant or a map once
+	/// uploaded (and mipmapped) it for every part, which froze the window.
+	/// Uploads whose pixels are gone are let go when the next one is made.
+	fn upload(
+		&self,
+		pixels: &Arc<image::RgbaImage>,
+		format: wgpu::TextureFormat,
+	) -> wgpu::TextureView {
+		let key = (Arc::as_ptr(pixels) as usize, format);
+		let mut uploads = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+		if let Some((held, view)) = uploads.get(&key)
+			&& held.upgrade().is_some_and(|p| Arc::ptr_eq(&p, pixels))
+		{
+			return view.clone();
+		}
+		uploads.retain(|_, (held, _)| held.strong_count() > 0);
+		let view = upload_texture(&self.device, &self.queue, pixels, format);
+		uploads.insert(key, (Arc::downgrade(pixels), view.clone()));
+		view
+	}
+
 	/// Re-uploads maps that changed and rebuilds the bind group.
 	pub(super) fn sync_material(&self, scene: &mut GpuScene, material: &Material) {
 		if scene.material_generation == material.generation {
@@ -409,7 +440,7 @@ impl GpuRenderer {
 					} else {
 						wgpu::TextureFormat::Rgba8Unorm
 					};
-					upload_texture(&self.device, &self.queue, &texture.rgba, format)
+					self.upload(&texture.rgba, format)
 				}
 			};
 			textures.insert(slot, (key, view));
@@ -420,8 +451,6 @@ impl GpuRenderer {
 		scene.flags = flags;
 	}
 
-	/// The paint callback drawing each scene's `groups` with its uniforms:
-	/// opaque ones first, then see-through ones in the order given.
 	/// A frame of effects ready to draw from `view` with `view_proj`
 	/// (column-major), or `None` when there is nothing to draw.
 	pub(super) fn effect_draw(
@@ -440,6 +469,9 @@ impl GpuRenderer {
 		)
 	}
 
+	/// The paint callback drawing each scene's `groups` with its uniforms:
+	/// opaque ones first, then see-through ones in the order given, then
+	/// `effects` over them.
 	pub(super) fn callback<'a>(
 		&self,
 		scenes: impl IntoIterator<Item = (&'a GpuScene, &'a [usize], Uniforms)>,

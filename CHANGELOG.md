@@ -7,7 +7,7 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-10-24
 
 The first public release.
 
@@ -75,6 +75,17 @@ The first public release.
 - Vertex colours in both: glTF `COLOR_0`, and OBJ colours after each position
 - PNG stills with a transparent background, clipboard copies, and turntable
   GIFs
+
+### Known limitations
+
+- Windows only, and the executable is not code-signed yet (SmartScreen warns
+  on first run).
+- Effects are drawn unlit, with Meshvault's stand-ins for textures built into
+  Studio; particles do not inherit their part's velocity and wind is not
+  simulated. The software renderer, used without a GPU, draws no effects.
+- Effects are not exported: glTF and OBJ have no way to hold them.
+- Models must be re-exported from Studio to gain what newer exporters add
+  (attachments, pivots, effects, materials).
 
 [Unreleased]: https://github.com/studio-hills/meshvault/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/studio-hills/meshvault/releases/tag/v0.1.0

@@ -13,9 +13,12 @@ use crate::ui::theme::{CAPTION, CARD_RADIUS, palette};
 use crate::ui::{icons, widgets};
 use crate::workspace::{Item, Workspace};
 
-/// Smallest grid tile, and the gap between tiles.
+/// Smallest grid tile.
 const TILE: f32 = 92.0;
+/// Space between grid tiles.
 const GAP: f32 = 6.0;
+/// Space below a picture for its name.
+const LABEL_HEIGHT: f32 = 20.0;
 /// How long a thumbnail takes to fade in over its icon when it arrives, in
 /// seconds.
 const THUMBNAIL_FADE: f32 = 0.15;
@@ -115,20 +118,33 @@ impl Browser {
 		let width = ui.available_width();
 		let columns = ((width + GAP) / (TILE + GAP)).floor().max(1.0) as usize;
 		let side = (width - GAP * (columns - 1) as f32) / columns as f32;
-		for section in sections {
+		for (section_index, section) in sections.into_iter().enumerate() {
 			ui.add_space(4.0);
 			let label = ui.add(egui::Label::new(widgets::caption(ui, section.title)).truncate());
 			if !section.path.is_empty() {
 				label.on_hover_text(section.path);
 			}
 			ui.add_space(2.0);
-			for row in section.rows.chunks(columns) {
-				ui.horizontal(|ui| {
-					ui.spacing_mut().item_spacing.x = GAP;
-					for &key in row {
-						self.tile(ui, ws, key, side, opened, actions);
-					}
-				});
+			// Selection ranges include the whole grid, even its clipped rows.
+			self.selection
+				.borrow_mut()
+				.drawn
+				.extend_from_slice(&section.rows);
+			for (row_index, row) in section.rows.chunks(columns).enumerate() {
+				let size = Vec2::new(width, side + LABEL_HEIGHT);
+				let rect = egui::Rect::from_min_size(ui.next_widget_position(), size);
+				if ui.is_rect_visible(rect) {
+					ui.push_id((section_index, row_index), |ui| {
+						ui.horizontal(|ui| {
+							ui.spacing_mut().item_spacing.x = GAP;
+							for &key in row {
+								self.tile(ui, ws, key, side, opened, actions);
+							}
+						});
+					});
+				} else {
+					ui.allocate_space(size);
+				}
 				ui.add_space(GAP - ui.spacing().item_spacing.y);
 			}
 		}
@@ -143,11 +159,12 @@ impl Browser {
 		opened: Opened<'_>,
 		actions: &mut Vec<Action>,
 	) {
-		let p = palette(ui.ctx());
-		let label_height = 20.0;
 		let (rect, response) =
-			ui.allocate_exact_size(Vec2::new(side, side + label_height), Sense::click());
-		self.drawn(key);
+			ui.allocate_exact_size(Vec2::new(side, side + LABEL_HEIGHT), Sense::click());
+		if !ui.is_rect_visible(rect) {
+			return;
+		}
+		let p = palette(ui.ctx());
 		let (name, open, s, subject) = match key {
 			Row::Model(i) => {
 				let m = &ws.models()[i];
@@ -168,95 +185,97 @@ impl Browser {
 				)
 			}
 		};
-		if ui.is_rect_visible(rect) {
-			let selected = self.is_selected(key);
-			let thumbnail = self.thumbnails.as_mut().and_then(|t| t.get(&subject));
-			let painter = ui.painter_at(rect);
-			let picture = egui::Rect::from_min_size(rect.min, Vec2::splat(side));
-			let fill = if selected {
-				p.accent_soft
-			} else if response.hovered() {
-				p.raised_hover
-			} else {
-				p.raised
-			};
-			painter.rect_filled(picture, CornerRadius::same(CARD_RADIUS), fill);
-			if open {
-				painter.rect_stroke(
-					picture,
-					CornerRadius::same(CARD_RADIUS),
-					Stroke::new(1.5, p.accent),
-					egui::StrokeKind::Inside,
-				);
-			}
-			// a thumbnail that arrives while the tile is shown fades in over
-			// its icon; one already there when the tile first shows does not
-			let shown = ui.ctx().animate_bool_with_time_and_easing(
-				egui::Id::unique("thumbnail_fade").with(&subject),
-				thumbnail.is_some(),
-				THUMBNAIL_FADE,
-				emath::easing::cubic_out,
+		let selected = self.is_selected(key);
+		let thumbnail = self.thumbnails.as_mut().and_then(|t| t.get(&subject));
+		let painter = ui.painter_at(rect);
+		let picture = egui::Rect::from_min_size(rect.min, Vec2::splat(side));
+		let fill = if selected {
+			p.accent_soft
+		} else if response.hovered() {
+			p.raised_hover
+		} else {
+			p.raised
+		};
+		painter.rect_filled(picture, CornerRadius::same(CARD_RADIUS), fill);
+		if open {
+			painter.rect_stroke(
+				picture,
+				CornerRadius::same(CARD_RADIUS),
+				Stroke::new(1.5, p.accent),
+				egui::StrokeKind::Inside,
 			);
-			if let Some(texture) = &thumbnail {
-				painter.image(
-					texture.id(),
-					picture.shrink(4.0),
-					egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-					Color32::WHITE.gamma_multiply(shown),
-				);
-			}
-			if shown < 1.0 {
-				let icon = match key {
-					Row::Model(i) if ws.models()[i].is_animated() => icons::PERSON_SIMPLE_RUN,
-					Row::Model(_) => icons::PACKAGE,
-					Row::Mesh(_) => icons::CUBE,
-				};
-				painter.text(
-					picture.center(),
-					Align2::CENTER_CENTER,
-					icon,
-					FontId::proportional(26.0),
-					p.text_weak.gamma_multiply(0.6 * (1.0 - shown)),
-				);
-			}
-			// downloads still to come, or failed, show in the corner
-			if s != Status::Done {
-				status_dot(&painter, &p, picture.left_top() + Vec2::new(10.0, 10.0), s);
-			}
-			if let Row::Model(i) = key
-				&& ws.models()[i].is_animated()
-			{
-				let clips = format!("{} {}", icons::FILM_STRIP, ws.models()[i].playable_clips);
-				painter.text(
-					picture.right_top() + Vec2::new(-8.0, 8.0),
-					Align2::RIGHT_TOP,
-					clips,
-					FontId::proportional(CAPTION),
-					p.text_weak,
-				);
-			}
-			let label = egui::Rect::from_min_max(
-				egui::pos2(rect.left() + 2.0, picture.bottom()),
-				rect.right_bottom() - Vec2::new(2.0, 0.0),
-			);
-			// centred, and cut short with an ellipsis when it does not fit
-			let galley = widgets::truncated(
-				&painter,
-				name,
-				FontId::proportional(CAPTION),
-				if open { p.accent } else { p.text },
-				label.width(),
-			);
-			painter.galley(label.center() - galley.size() / 2.0, galley, p.text);
 		}
+		// a thumbnail that arrives while the tile is shown fades in over
+		// its icon; one already there when the tile first shows does not
+		let shown = ui.ctx().animate_bool_with_time_and_easing(
+			egui::Id::unique("thumbnail_fade").with(&subject),
+			thumbnail.is_some(),
+			THUMBNAIL_FADE,
+			emath::easing::cubic_out,
+		);
+		if let Some(texture) = &thumbnail {
+			painter.image(
+				texture.id(),
+				picture.shrink(4.0),
+				egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+				Color32::WHITE.gamma_multiply(shown),
+			);
+		}
+		if shown < 1.0 {
+			let icon = match key {
+				Row::Model(i) if ws.models()[i].is_animated() => icons::PERSON_SIMPLE_RUN,
+				Row::Model(_) => icons::PACKAGE,
+				Row::Mesh(_) => icons::CUBE,
+			};
+			painter.text(
+				picture.center(),
+				Align2::CENTER_CENTER,
+				icon,
+				FontId::proportional(26.0),
+				p.text_weak.gamma_multiply(0.6 * (1.0 - shown)),
+			);
+		}
+		// downloads still to come, or failed, show in the corner
+		if s != Status::Done {
+			status_dot(&painter, &p, picture.left_top() + Vec2::new(10.0, 10.0), s);
+		}
+		if let Row::Model(i) = key
+			&& ws.models()[i].is_animated()
+		{
+			let clips = format!("{} {}", icons::FILM_STRIP, ws.models()[i].playable_clips);
+			painter.text(
+				picture.right_top() + Vec2::new(-8.0, 8.0),
+				Align2::RIGHT_TOP,
+				clips,
+				FontId::proportional(CAPTION),
+				p.text_weak,
+			);
+		}
+		let label = egui::Rect::from_min_max(
+			egui::pos2(rect.left() + 2.0, picture.bottom()),
+			rect.right_bottom() - Vec2::new(2.0, 0.0),
+		);
+		// centred, and cut short with an ellipsis when it does not fit
+		let galley = widgets::truncated(
+			&painter,
+			name,
+			FontId::proportional(CAPTION),
+			if open { p.accent } else { p.text },
+			label.width(),
+		);
+		painter.galley(label.center() - galley.size() / 2.0, galley, p.text);
 		let response = widgets::pointer(response);
 		let response = match key {
-			Row::Model(i) => response.on_hover_text(self.model_hover(ws, &ws.models()[i])),
-			Row::Mesh(i) => response.on_hover_text(format!(
-				"{}\n{}",
-				ws.items()[i].folder.join(" / "),
-				item_hover(&ws.items()[i])
-			)),
+			Row::Model(i) => response.on_hover_ui(|ui| {
+				ui.label(self.model_hover(ws, &ws.models()[i]));
+			}),
+			Row::Mesh(i) => response.on_hover_ui(|ui| {
+				ui.label(format!(
+					"{}\n{}",
+					ws.items()[i].folder.join(" / "),
+					item_hover(&ws.items()[i])
+				));
+			}),
 		};
 		if response.clicked() {
 			self.click(ui, key, actions);
@@ -272,6 +291,56 @@ impl Browser {
 mod tests {
 	use super::*;
 	use crate::ui::library::fixtures::{done, item};
+	use crate::workspace::AssetState;
+
+	#[test]
+	fn clipped_rows_keep_the_grids_height_and_selection_order() {
+		let dir = crate::test_support::TempDir::new("grid_rows");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let items = (0..120)
+			.map(|i| item(&format!("Mesh {i:03}"), &["Props"], i, AssetState::Pending))
+			.collect();
+		ws.set_contents(items, Vec::new());
+		let ctx = egui::Context::default();
+		crate::ui::theme::install_fonts(&ctx);
+		let mut browser = Browser::default();
+		for width in [140.0, 460.0] {
+			let mut height = None;
+			for offset in [0.0, 270.0, 900.0, 0.0] {
+				let mut output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							Vec2::new(width, 240.0),
+						)),
+						..Default::default()
+					},
+					|ui| {
+						browser.selection.borrow_mut().drawn.clear();
+						let scroll = egui::ScrollArea::vertical()
+							.vertical_scroll_offset(offset)
+							.show(ui, |ui| {
+								browser.grid(
+									ui,
+									&ws,
+									Opened {
+										stem: None,
+										model: None,
+									},
+									&mut Vec::new(),
+								);
+							});
+						let previous = *height.get_or_insert(scroll.content_size.y);
+						assert!((previous - scroll.content_size.y).abs() < 1.0);
+					},
+				);
+				output.textures_delta.clear();
+				let expected: Vec<_> = (0..120).map(Row::Mesh).collect();
+				let selection = browser.selection.borrow();
+				assert_eq!(selection.drawn, expected);
+			}
+		}
+	}
 
 	// ----------------------------------------------------------------- grid
 

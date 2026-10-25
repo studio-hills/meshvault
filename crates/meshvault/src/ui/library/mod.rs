@@ -14,6 +14,7 @@ mod toolbar;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{self, Color32, RichText, Stroke};
 
@@ -327,7 +328,7 @@ impl Browser {
 		ws: &Workspace,
 		open_stem: Option<&str>,
 		open_model: Option<usize>,
-		renderer: Option<&GpuRenderer>,
+		renderer: Option<&Arc<GpuRenderer>>,
 	) -> Vec<Action> {
 		self.rebuild_if_needed(ws);
 		let opened = Opened {

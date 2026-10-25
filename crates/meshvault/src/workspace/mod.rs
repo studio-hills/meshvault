@@ -118,6 +118,7 @@ thread_local! {
 	pub(crate) static ITEMS_VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[derive(Clone)]
 pub struct Workspace {
 	pub root: PathBuf,
 	manifest: Manifest,
@@ -126,6 +127,8 @@ pub struct Workspace {
 	dirty: bool,
 	/// Bumped whenever items are added or removed, so views can cache.
 	generation: u64,
+	/// Download state changes also invalidate background readers' snapshots.
+	asset_generation: u64,
 	/// Each item's index by its stem, built when first wanted after a
 	/// change (see [`Self::changed`]).
 	stem_index: OnceLock<HashMap<String, usize>>,
@@ -169,6 +172,7 @@ impl Workspace {
 			stems: HashSet::new(),
 			dirty: true,
 			generation: 0,
+			asset_generation: 0,
 			stem_index: OnceLock::new(),
 		};
 		ws.write()?;
@@ -226,6 +230,7 @@ impl Workspace {
 			stems,
 			dirty,
 			generation: 0,
+			asset_generation: 0,
 			stem_index: OnceLock::new(),
 		})
 	}
@@ -250,6 +255,11 @@ impl Workspace {
 
 	pub fn generation(&self) -> u64 {
 		self.generation
+	}
+
+	/// Bumped when a mesh, map or image changes download state.
+	pub fn asset_generation(&self) -> u64 {
+		self.asset_generation
 	}
 
 	/// The item at `stem`, if it is in the workspace. Found through an index
@@ -629,6 +639,7 @@ impl Workspace {
 				if let Some(slot) = id.and_then(|id| model.images.get_mut(&id)) {
 					*slot = state.clone();
 					self.dirty = true;
+					self.asset_generation += 1;
 				}
 			}
 			return;
@@ -645,6 +656,7 @@ impl Workspace {
 			AssetKind::Image => return,
 		}
 		self.dirty = true;
+		self.asset_generation += 1;
 	}
 
 	/// Records a finished download: the files it wrote are moved into place

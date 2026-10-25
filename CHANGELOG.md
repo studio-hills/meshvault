@@ -7,6 +7,13 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Library
+
+- Smooth scrolling in the grid view of large workspaces: only the rows on
+  screen are laid out, and thumbnails are read from the cache and drawn in
+  the background instead of while a frame is drawn. Downloads finishing no
+  longer hold back thumbnails being drawn
+
 ## [0.1.0] - 2026-10-24
 
 The first public release.

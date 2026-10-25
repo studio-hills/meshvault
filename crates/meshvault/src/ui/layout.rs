@@ -110,7 +110,7 @@ impl App {
 				ws,
 				self.open_stem.as_deref(),
 				open_model,
-				self.gpu.as_deref(),
+				self.gpu.as_ref(),
 			);
 			self.handle_browser(actions);
 		}

@@ -1,11 +1,13 @@
 //! Library thumbnails: each mesh and animated model drawn once off screen
 //! and kept as a small PNG under `.cache/thumbnails`, so the library can
-//! show a grid of pictures. Only what the library shows is drawn, one at a
-//! time, with its files read on a background thread.
+//! show a grid of pictures. Background readers load the current screen
+//! while a separate worker draws one cache miss at a time. Only visible
+//! tiles start new work; a drawing in flight is allowed to finish.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use eframe::egui;
@@ -27,11 +29,14 @@ use crate::workspace::{AssetState, CACHE_DIR, Workspace, replace_file, saved_fil
 const SIZE: u32 = 192;
 /// Drawn this many times bigger, then scaled down, for smooth edges.
 const SUPERSAMPLE: u32 = 2;
-/// Cached thumbnails read from disk per frame, so scrolling stays smooth.
-const LOADS_PER_FRAME: usize = 6;
+/// Results accepted per frame, and the readers' maximum buffered results.
+const LOADS_PER_FRAME: usize = 12;
+/// Cache readers sharing a screen batch, independently of the GPU worker.
+const CACHE_READERS: usize = 8;
 /// The viewer's framing leaves room to orbit; a thumbnail is filled more.
 const ZOOM: f32 = 0.85;
 
+/// A library tile that can have a thumbnail.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Subject {
 	/// A mesh, by its stem.
@@ -49,17 +54,33 @@ impl Subject {
 	}
 }
 
+/// What a tile can show, or what it still needs.
 enum State {
+	/// A picture uploaded to egui.
 	Ready(egui::TextureHandle),
+	/// Waiting to draw, keeping any old picture visible until it is replaced.
+	Uncached(Option<egui::TextureHandle>),
 	/// Could not be drawn; the tile keeps its icon.
 	Failed,
 }
 
+impl State {
+	/// The last usable picture, including one waiting to be redrawn.
+	fn texture(&self) -> Option<&egui::TextureHandle> {
+		match self {
+			Self::Ready(texture) => Some(texture),
+			Self::Uncached(texture) => texture.as_ref(),
+			Self::Failed => None,
+		}
+	}
+}
+
 /// A subject's state, and the workspace generation it was last checked
-/// against: after the workspace changes it is checked again.
+/// against. Ready pictures need checking after an import; failures also
+/// need another try after downloads change the available assets.
 struct Entry {
 	state: State,
-	generation: u64,
+	generation: Generation,
 }
 
 /// What to draw a subject from, once it is downloaded.
@@ -81,19 +102,48 @@ enum Prepared {
 	Model(Box<ModelView>),
 }
 
+/// One off-screen drawing in flight.
 struct Job {
 	subject: Subject,
-	file: PathBuf,
-	/// What it is drawn from, and the workspace generation then.
-	files: Vec<PathBuf>,
-	generation: u64,
-	/// The [`versions`] of `files` just before they were read.
-	read: Vec<Version>,
-	rx: Receiver<Result<Prepared, String>>,
+	generation: Generation,
+	rx: Receiver<Result<Picture, String>>,
+}
+
+/// A batch of cache checks, stopped when its tiles leave the screen.
+struct Batch {
+	generation: Generation,
+	/// Shared with the readers so scrolling cancels their remaining work.
+	wanted: Arc<Mutex<HashSet<Subject>>>,
+	rx: Receiver<(Subject, Result<Picture, String>)>,
+}
+
+/// A background result ready to accept on the UI thread.
+enum Picture {
+	/// The picture already in memory is still fresh.
+	Unchanged,
+	/// No usable PNG; drawing can proceed independently of cache reads.
+	Missing,
+	/// A decoded PNG from disk.
+	Cached(egui::ColorImage),
+	/// A new drawing, with the inputs to check before saving it.
+	Drawn {
+		image: egui::ColorImage,
+		png: Option<Vec<u8>>,
+		files: Vec<PathBuf>,
+		/// The [`versions`] of `files` just before they were read.
+		read: Vec<Version>,
+	},
 }
 
 /// A file's modified time and length, or `None` if it cannot be read.
 type Version = Option<(SystemTime, u64)>;
+
+/// Import and download revisions, used separately for pictures and retries.
+type Generation = (u64, u64);
+
+fn generation(ws: &Workspace) -> Generation {
+	(ws.generation(), ws.asset_generation())
+}
 
 fn versions(files: &[PathBuf]) -> Vec<Version> {
 	let version = |f: &PathBuf| {
@@ -103,15 +153,19 @@ fn versions(files: &[PathBuf]) -> Vec<Version> {
 	files.iter().map(version).collect()
 }
 
+/// Cached pictures and the current screen's background work.
 pub struct Thumbnails {
 	root: PathBuf,
 	dir: PathBuf,
 	states: HashMap<Subject, Entry>,
 	/// The workspace generation at the last update.
-	generation: u64,
+	generation: Generation,
 	/// Asked for this frame, in the order shown.
 	wanted: Vec<Subject>,
 	job: Option<Job>,
+	batch: Option<Batch>,
+	/// Shared with the workers, copied only when the workspace changes.
+	snapshot: Option<Arc<Workspace>>,
 }
 
 impl Thumbnails {
@@ -120,27 +174,44 @@ impl Thumbnails {
 			root: root.to_path_buf(),
 			dir: root.join(CACHE_DIR).join("thumbnails"),
 			states: HashMap::new(),
-			generation: 0,
+			generation: (0, 0),
 			wanted: Vec::new(),
 			job: None,
+			batch: None,
+			snapshot: None,
 		}
 	}
 
 	/// The thumbnail of `subject` when it is ready; otherwise it is loaded
-	/// or drawn over the next frames. One checked before the workspace last
-	/// changed is shown while it is checked again (and redrawn if stale).
+	/// or drawn over the next frames. A picture from before a re-import
+	/// stays visible while its cache is checked again (and redrawn if stale).
 	pub fn get(&mut self, subject: &Subject) -> Option<egui::TextureHandle> {
 		let Some(entry) = self.states.get(subject) else {
 			self.wanted.push(subject.clone());
 			return None;
 		};
-		if entry.generation != self.generation {
+		if !self.checked(entry) {
 			self.wanted.push(subject.clone());
 		}
-		match &entry.state {
-			State::Ready(texture) => Some(texture.clone()),
-			State::Failed => None,
+		entry.state.texture().cloned()
+	}
+
+	/// Downloads retry failures without invalidating pictures already shown.
+	fn checked(&self, entry: &Entry) -> bool {
+		match entry.state {
+			State::Ready(_) => entry.generation.0 == self.generation.0,
+			State::Failed => entry.generation == self.generation,
+			State::Uncached(_) => false,
 		}
+	}
+
+	/// Shares a fresh manifest with new work without copying it per tile.
+	fn snapshot(&mut self, ws: &Workspace) -> Arc<Workspace> {
+		let snapshot = self.snapshot.get_or_insert_with(|| Arc::new(ws.clone()));
+		if generation(snapshot) != self.generation {
+			*snapshot = Arc::new(ws.clone());
+		}
+		Arc::clone(snapshot)
 	}
 
 	/// The cached thumbnail of `subject`.
@@ -150,89 +221,86 @@ impl Thumbnails {
 
 	/// Loads or draws what was asked for this frame. Call once a frame,
 	/// after the library is drawn.
-	pub fn update(&mut self, ctx: &egui::Context, ws: &Workspace, renderer: Option<&GpuRenderer>) {
+	pub fn update(
+		&mut self,
+		ctx: &egui::Context,
+		ws: &Workspace,
+		renderer: Option<&Arc<GpuRenderer>>,
+	) {
 		let wanted = std::mem::take(&mut self.wanted);
-		self.generation = ws.generation();
-		self.finish_job(ctx, |prepared| match renderer {
-			Some(renderer) => draw(renderer, prepared),
-			None => Err("no GPU".into()),
-		});
-		let mut loads = 0;
-		let mut waiting = false;
+		let generation = generation(ws);
+		if self.generation != generation {
+			self.generation = generation;
+			// get() ran before this update noticed the change. Give failures
+			// and entries from an older import another frame to ask for work.
+			ctx.request_repaint();
+		}
+		if let Some(batch) = &self.batch {
+			*batch.wanted.lock().expect("thumbnail requests") = wanted.iter().cloned().collect();
+		}
+		self.finish_batch(ctx);
+		self.finish_job(ctx);
+		let mut loads = Vec::new();
 		for subject in wanted {
-			let checked = self
-				.states
-				.get(&subject)
-				.is_some_and(|e| e.generation == self.generation);
-			if checked || self.job.as_ref().is_some_and(|j| j.subject == subject) {
+			let entry = self.states.get(&subject);
+			if entry.is_some_and(|e| self.checked(e))
+				|| self.job.as_ref().is_some_and(|j| j.subject == subject)
+			{
 				continue;
 			}
-			// not downloaded yet: asked for again once it is
-			let Some(found) = source(ws, &subject) else {
-				continue;
-			};
-			let generation = self.generation;
-			// behind a link: not read, so the tile keeps its icon
-			let Ok((source, files)) = found else {
-				let state = State::Failed;
-				self.states.insert(subject, Entry { state, generation });
-				continue;
-			};
-			if loads == LOADS_PER_FRAME {
-				waiting = true;
-				continue;
-			}
-			loads += 1;
-			let file = self.file(&subject);
-			// nor is a cached thumbnail, or its list, read through a link
-			let cached = unlinked(&self.root, &file) && unlinked(&self.root, &drawn_from(&file));
-			if cached && is_fresh(&file, &files) {
-				// what is shown is still what the cache holds
-				if let Some(entry) = self.states.get_mut(&subject)
-					&& matches!(entry.state, State::Ready(_))
-				{
-					entry.generation = generation;
-					continue;
-				}
-				if let Some(texture) = load_png(ctx, &file, &subject) {
-					let state = State::Ready(texture);
-					self.states.insert(subject, Entry { state, generation });
-					continue;
-				}
-			}
-			match renderer {
-				Some(_) if self.job.is_none() => {
-					let read = versions(&files);
-					let rx = spawn(ctx, ws, source);
+			if entry.is_some_and(|e| {
+				matches!(e.state, State::Uncached(_)) && e.generation.0 == self.generation.0
+			}) {
+				if self.job.is_none() {
+					let snapshot = self.snapshot(ws);
+					let rx = spawn(ctx, snapshot, subject.clone(), renderer.cloned());
 					self.job = Some(Job {
 						subject,
-						file,
-						files,
-						generation,
-						read,
+						generation: self.generation,
 						rx,
 					});
 				}
-				Some(_) => waiting = true,
-				// without a GPU nothing is drawn
-				None => {
-					let state = State::Failed;
-					self.states.insert(subject, Entry { state, generation });
-				}
+				continue;
 			}
+			let ready = entry.is_some_and(|e| matches!(e.state, State::Ready(_)));
+			loads.push((subject.clone(), self.file(&subject), ready));
 		}
-		if waiting || self.job.is_some() {
-			ctx.request_repaint();
+		if self.batch.is_none() && !loads.is_empty() {
+			let snapshot = self.snapshot(ws);
+			self.batch = Some(read_batch(ctx, snapshot, loads));
 		}
 	}
 
-	/// Takes the job's result once it is read, drawing it with `draw`. The
-	/// workspace generation must already be noted in `self.generation`.
-	fn finish_job(
-		&mut self,
-		ctx: &egui::Context,
-		draw: impl FnOnce(Prepared) -> Result<image::RgbaImage, String>,
-	) {
+	/// Accepts several cached pictures together without waiting for a draw.
+	fn finish_batch(&mut self, ctx: &egui::Context) {
+		for _ in 0..LOADS_PER_FRAME {
+			let Some(batch) = &self.batch else { return };
+			match batch.rx.try_recv() {
+				Ok((subject, result)) => {
+					let generation = batch.generation;
+					if !batch
+						.wanted
+						.lock()
+						.expect("thumbnail requests")
+						.contains(&subject)
+					{
+						continue;
+					}
+					self.accept(ctx, subject, generation, result);
+				}
+				Err(TryRecvError::Empty) => return,
+				Err(TryRecvError::Disconnected) => {
+					self.batch = None;
+					return;
+				}
+			}
+		}
+		// Buffered pictures may remain after this frame's upload allowance.
+		ctx.request_repaint();
+	}
+
+	/// Takes the drawn picture after noting the workspace generation.
+	fn finish_job(&mut self, ctx: &egui::Context) {
 		let Some(job) = &self.job else { return };
 		let result = match job.rx.try_recv() {
 			Ok(result) => result,
@@ -240,27 +308,58 @@ impl Thumbnails {
 			Err(TryRecvError::Disconnected) => Err("the reader stopped".into()),
 		};
 		let Some(job) = self.job.take() else { return };
+		self.accept(ctx, job.subject, job.generation, result);
+	}
+
+	/// Keeps completed work across downloads, but never across a re-import.
+	fn accept(
+		&mut self,
+		ctx: &egui::Context,
+		subject: Subject,
+		generation: Generation,
+		result: Result<Picture, String>,
+	) {
 		// the workspace changed (a re-import, say) or a file changed while it
 		// was read: what was read may be out of date, and saved now the
 		// picture would look newer than the change, so it is dropped and
 		// drawn again. A file's length and modified time can stay the same
 		// through a re-import, so they alone are not enough; they still catch
 		// changes made outside the app.
-		if job.generation != self.generation || versions(&job.files) != job.read {
+		if generation.0 != self.generation.0 {
 			return;
 		}
 		let state = match result {
-			Ok(prepared) => {
-				match keep(&self.root, &self.dir, &job.file, &job.files, draw(prepared)) {
-					Some(image) => State::Ready(texture(ctx, &job.subject, &image)),
-					None => State::Failed,
+			Ok(Picture::Unchanged) => {
+				if let Some(entry) = self.states.get_mut(&subject) {
+					entry.generation = generation;
 				}
+				return;
+			}
+			Ok(Picture::Missing) => State::Uncached(
+				self.states
+					.get(&subject)
+					.and_then(|e| e.state.texture())
+					.cloned(),
+			),
+			Ok(Picture::Cached(image)) => State::Ready(texture(ctx, &subject, image)),
+			Ok(Picture::Drawn {
+				image,
+				png,
+				files,
+				read,
+			}) => {
+				if versions(&files) != read {
+					return;
+				}
+				let file = self.file(&subject);
+				save(&self.root, &self.dir, &file, &files, png.as_deref());
+				State::Ready(texture(ctx, &subject, image))
 			}
 			// the reader's (or the GPU's) reason is not shown anywhere
 			Err(_) => State::Failed,
 		};
-		let generation = job.generation;
-		self.states.insert(job.subject, Entry { state, generation });
+		self.states.insert(subject, Entry { state, generation });
+		ctx.request_repaint();
 	}
 }
 
@@ -269,6 +368,7 @@ impl Thumbnails {
 /// back is neither saved nor shown, so it is drawn again rather than kept
 /// as a black square. Nothing is saved through a link in the workspace
 /// at `root` (see [`replace_file`]).
+#[cfg(test)]
 fn keep(
 	root: &Path,
 	dir: &Path,
@@ -277,22 +377,33 @@ fn keep(
 	drawn: Result<image::RgbaImage, String>,
 ) -> Option<image::RgbaImage> {
 	let image = drawn.ok()?;
+	let png = encode(&image);
+	save(root, dir, file, files, png.as_deref());
+	Some(image)
+}
+
+fn encode(image: &image::RgbaImage) -> Option<Vec<u8>> {
+	let mut png = Vec::new();
+	image
+		.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+		.ok()?;
+	Some(png)
+}
+
+/// Saves a checked picture. Encoding is done by the worker; accepting it
+/// and saving it happen together, before another import can change it.
+fn save(root: &Path, dir: &Path, file: &Path, files: &[PathBuf], png: Option<&[u8]>) {
+	let Some(png) = png else { return };
 	// a thumbnail that cannot be saved is still shown (and drawn again
 	// next time); one whose list cannot be saved is drawn again next run
 	let save = |p: &Path, bytes: &[u8]| {
 		p.strip_prefix(root)
 			.is_ok_and(|rel| replace_file(root, rel, bytes).is_ok())
 	};
-	let mut png = Vec::new();
-	let encoded = image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png);
-	if encoded.is_ok()
-		&& unlinked(root, &drawn_from(file))
-		&& std::fs::create_dir_all(dir).is_ok()
-		&& save(file, &png)
+	if unlinked(root, &drawn_from(file)) && std::fs::create_dir_all(dir).is_ok() && save(file, png)
 	{
 		save(&drawn_from(file), list(files).as_bytes());
 	}
-	Some(image)
 }
 
 /// Whether `file`, a path under the workspace at `root`, can be read or
@@ -401,11 +512,6 @@ fn is_fresh(file: &Path, files: &[PathBuf]) -> bool {
 		.all(|m: SystemTime| m <= drawn)
 }
 
-fn load_png(ctx: &egui::Context, file: &Path, subject: &Subject) -> Option<egui::TextureHandle> {
-	let image = read_thumbnail(file)?;
-	Some(texture(ctx, subject, &image))
-}
-
 /// The longest cached thumbnail read. One is a [`SIZE`]-pixel square PNG,
 /// a fraction of this.
 const MAX_PNG_BYTES: usize = 1024 * 1024;
@@ -430,41 +536,126 @@ fn read_thumbnail(file: &Path) -> Option<image::RgbaImage> {
 	Some(image.to_rgba8())
 }
 
-fn texture(
-	ctx: &egui::Context,
-	subject: &Subject,
-	image: &image::RgbaImage,
-) -> egui::TextureHandle {
+/// Converts decoded pixels to egui colours on a worker, before uploading.
+fn pixels(image: &image::RgbaImage) -> egui::ColorImage {
 	let size = [image.width() as usize, image.height() as usize];
-	let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-	ctx.load_texture(subject.key(), pixels, egui::TextureOptions::LINEAR)
+	egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw())
 }
 
-/// Reads `source` on a background thread.
+/// Hands already converted pixels to egui without copying them again.
+fn texture(ctx: &egui::Context, subject: &Subject, image: egui::ColorImage) -> egui::TextureHandle {
+	ctx.load_texture(subject.key(), image, egui::TextureOptions::LINEAR)
+}
+
+/// Loads a screen batch on a small pool, independently of the GPU worker.
+fn read_batch(
+	ctx: &egui::Context,
+	ws: Arc<Workspace>,
+	loads: Vec<(Subject, PathBuf, bool)>,
+) -> Batch {
+	let generation = generation(&ws);
+	let wanted: HashSet<_> = loads
+		.iter()
+		.map(|(subject, _, _)| subject.clone())
+		.collect();
+	let wanted = Arc::new(Mutex::new(wanted));
+	let current = Arc::clone(&wanted);
+	let (tx, rx) = std::sync::mpsc::sync_channel(LOADS_PER_FRAME);
+	let readers = CACHE_READERS.min(loads.len());
+	let loads = Arc::new(Mutex::new(VecDeque::from(loads)));
+	for _ in 0..readers {
+		let (tx, ctx, ws, loads, current) = (
+			tx.clone(),
+			ctx.clone(),
+			Arc::clone(&ws),
+			Arc::clone(&loads),
+			Arc::clone(&current),
+		);
+		std::thread::spawn(move || {
+			loop {
+				let Some((subject, file, ready)) =
+					loads.lock().expect("thumbnail batch").pop_front()
+				else {
+					break;
+				};
+				if !current
+					.lock()
+					.expect("thumbnail requests")
+					.contains(&subject)
+				{
+					continue;
+				}
+				let result = (|| {
+					let (_, files) = source(&ws, &subject).ok_or("not downloaded yet")??;
+					// Neither a cached thumbnail nor its list is read through a link.
+					let cached =
+						unlinked(&ws.root, &file) && unlinked(&ws.root, &drawn_from(&file));
+					if cached && is_fresh(&file, &files) {
+						if ready {
+							return Ok(Picture::Unchanged);
+						}
+						if let Some(image) = read_thumbnail(&file) {
+							return Ok(Picture::Cached(pixels(&image)));
+						}
+					}
+					Ok(Picture::Missing)
+				})();
+				if tx.send((subject, result)).is_err() {
+					break;
+				}
+				ctx.request_repaint();
+			}
+			// Dropping the sender first lets the UI see that the batch is done.
+			drop(tx);
+			ctx.request_repaint();
+		});
+	}
+	drop(tx);
+	Batch {
+		generation,
+		wanted,
+		rx,
+	}
+}
+
+/// Reads, draws and encodes one cache miss away from the UI thread.
 fn spawn(
 	ctx: &egui::Context,
-	ws: &Workspace,
-	source: Source,
-) -> Receiver<Result<Prepared, String>> {
+	ws: Arc<Workspace>,
+	subject: Subject,
+	renderer: Option<Arc<GpuRenderer>>,
+) -> Receiver<Result<Picture, String>> {
 	let (tx, rx) = std::sync::mpsc::channel();
 	let ctx = ctx.clone();
+	std::thread::spawn(move || {
+		let result = (|| {
+			let (source, files) = source(&ws, &subject).ok_or("not downloaded yet")??;
+			let renderer = renderer.ok_or("no GPU")?;
+			let read = versions(&files);
+			let image = draw(&renderer, read_source(&ctx, &ws, source)?)?;
+			let png = encode(&image);
+			Ok(Picture::Drawn {
+				image: pixels(&image),
+				png,
+				files,
+				read,
+			})
+		})();
+		let _ = tx.send(result);
+		ctx.request_repaint();
+	});
+	rx
+}
+
+fn read_source(ctx: &egui::Context, ws: &Workspace, source: Source) -> Result<Prepared, String> {
 	match source {
-		Source::Mesh { mesh, maps } => {
-			std::thread::spawn(move || {
-				let _ = tx.send(read_mesh(&ctx, &mesh, &maps));
-				ctx.request_repaint();
-			});
-		}
+		Source::Mesh { mesh, maps } => read_mesh(ctx, &mesh, &maps),
 		Source::Model(index) => {
 			// `source` found the index in this same workspace
 			let load = model_loader(ws, index).expect("the model is in the workspace");
-			std::thread::spawn(move || {
-				let _ = tx.send(load(&ctx).map(|m| Prepared::Model(Box::new(m))));
-				ctx.request_repaint();
-			});
+			load(ctx).map(|m| Prepared::Model(Box::new(m)))
 		}
 	}
-	rx
 }
 
 fn read_mesh(
@@ -634,6 +825,305 @@ mod tests {
 
 	fn done(path: &str) -> AssetState {
 		AssetState::Done { path: path.into() }
+	}
+
+	fn settle(thumbnails: &mut Thumbnails, ctx: &egui::Context, ws: &Workspace) {
+		let start = std::time::Instant::now();
+		let subjects: Vec<_> = thumbnails
+			.wanted
+			.iter()
+			.chain(thumbnails.states.keys())
+			.cloned()
+			.collect();
+		loop {
+			for subject in &subjects {
+				thumbnails.get(subject);
+			}
+			thumbnails.update(ctx, ws, None);
+			if thumbnails.job.is_none()
+				&& thumbnails.batch.is_none()
+				&& subjects.iter().all(|s| {
+					thumbnails
+						.states
+						.get(s)
+						.is_some_and(|e| thumbnails.checked(e))
+				}) {
+				return;
+			}
+			assert!(
+				start.elapsed() < Duration::from_secs(5),
+				"thumbnail worker timed out"
+			);
+			std::thread::sleep(Duration::from_millis(1));
+		}
+	}
+
+	#[test]
+	fn an_unrelated_download_keeps_a_finished_draw_and_ready_tiles() {
+		let (dir, mut ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		let ctx = egui::Context::default();
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let (tx, rx) = std::sync::mpsc::channel();
+		let files = vec![dir.join("A.mesh")];
+		touch(&files[0], SystemTime::now() - Duration::from_secs(60));
+		thumbnails.job = Some(Job {
+			subject: subject.clone(),
+			generation: generation(&ws),
+			rx,
+		});
+		let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+		tx.send(Ok(Picture::Drawn {
+			png: encode(&image),
+			image: pixels(&image),
+			read: versions(&files),
+			files,
+		}))
+		.unwrap();
+		ws.set_state(
+			"Images/7",
+			crate::workspace::AssetKind::Image,
+			done("Images/7.png"),
+		);
+		assert_ne!(generation(&ws), thumbnails.job.as_ref().unwrap().generation);
+		thumbnails.update(&ctx, &ws, None);
+		assert!(
+			thumbnails.get(&subject).is_some(),
+			"download discarded the draw"
+		);
+		ws.set_state(
+			"Images/7",
+			crate::workspace::AssetKind::Image,
+			AssetState::Pending,
+		);
+		thumbnails.update(&ctx, &ws, None);
+		assert!(thumbnails.get(&subject).is_some());
+		assert!(
+			thumbnails.wanted.is_empty(),
+			"download re-queued a Ready tile"
+		);
+	}
+
+	#[test]
+	fn a_busy_worker_does_not_queue_tiles_that_scrolled_away() {
+		let (_dir, ws) = workspace(
+			AssetState::Pending,
+			AssetState::Pending,
+			AssetState::Pending,
+		);
+		let ctx = egui::Context::default();
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let first = Subject::Item("A".into());
+		let next = Subject::Model("Workspace.M".into());
+		thumbnails.states.insert(
+			next.clone(),
+			Entry {
+				state: State::Uncached(None),
+				generation: generation(&ws),
+			},
+		);
+		let (tx, rx) = std::sync::mpsc::channel();
+		thumbnails.job = Some(Job {
+			subject: first.clone(),
+			generation: generation(&ws),
+			rx,
+		});
+		for _ in 0..10 {
+			thumbnails.get(&next);
+			thumbnails.update(&ctx, &ws, None);
+			assert_eq!(thumbnails.job.as_ref().unwrap().subject, first);
+			assert!(thumbnails.wanted.is_empty());
+		}
+		// Nothing is visible now. Finishing the first job starts no queued work.
+		tx.send(Err("not downloaded yet".into())).unwrap();
+		thumbnails.update(&ctx, &ws, None);
+		assert!(thumbnails.job.is_none());
+		assert!(matches!(thumbnails.states[&next].state, State::Uncached(_)));
+		// The new tile gets its turn only when it is asked for again.
+		thumbnails.get(&next);
+		thumbnails.update(&ctx, &ws, None);
+		assert_eq!(thumbnails.job.as_ref().unwrap().subject, next);
+		settle(&mut thumbnails, &ctx, &ws);
+	}
+
+	#[test]
+	fn a_stale_picture_stays_visible_while_its_replacement_is_drawn() {
+		let (_dir, mut ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		let ctx = egui::Context::default();
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let image = pixels(&image::RgbaImage::new(SIZE, SIZE));
+		let shown = texture(&ctx, &subject, image.clone());
+		thumbnails.states.insert(
+			subject.clone(),
+			Entry {
+				state: State::Ready(shown.clone()),
+				generation: generation(&ws),
+			},
+		);
+		ws.add([]);
+		thumbnails.generation = generation(&ws);
+		thumbnails.accept(&ctx, subject.clone(), generation(&ws), Ok(Picture::Missing));
+		assert_eq!(thumbnails.get(&subject).map(|t| t.id()), Some(shown.id()));
+		assert!(matches!(
+			thumbnails.states[&subject].state,
+			State::Uncached(_)
+		));
+		thumbnails.accept(
+			&ctx,
+			subject.clone(),
+			generation(&ws),
+			Ok(Picture::Cached(image)),
+		);
+		assert_ne!(thumbnails.get(&subject).map(|t| t.id()), Some(shown.id()));
+		assert!(matches!(thumbnails.states[&subject].state, State::Ready(_)));
+	}
+
+	#[test]
+	fn cached_pictures_arrive_together_while_a_draw_is_busy() {
+		let (dir, ws) = workspace(done("A.mesh"), AssetState::Pending, AssetState::Pending);
+		let ctx = egui::Context::default();
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		touch(
+			&dir.join("A.mesh"),
+			SystemTime::now() - Duration::from_secs(60),
+		);
+		let (_, files) = source(&ws, &subject).unwrap().unwrap();
+		let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+		keep(
+			&dir,
+			&thumbnails.dir,
+			&thumbnails.file(&subject),
+			&files,
+			Ok(image),
+		);
+		// The real reader decodes a screen batch without frame-by-frame handshakes.
+		let loads = (0..LOADS_PER_FRAME)
+			.map(|_| (subject.clone(), thumbnails.file(&subject), false))
+			.collect();
+		let batch = read_batch(&ctx, Arc::new(ws.clone()), loads);
+		let (tx, rx) = std::sync::mpsc::channel();
+		for i in 0..LOADS_PER_FRAME {
+			let (_, result) = batch.rx.recv_timeout(Duration::from_secs(5)).unwrap();
+			assert!(matches!(result, Ok(Picture::Cached(_))));
+			let subject = Subject::Item(format!("cached {i}"));
+			thumbnails.get(&subject);
+			tx.send((subject, result)).unwrap();
+		}
+		drop(tx);
+		thumbnails.batch = Some(Batch { rx, ..batch });
+		let (_draw_tx, draw_rx) = std::sync::mpsc::channel();
+		thumbnails.job = Some(Job {
+			subject: Subject::Model("busy".into()),
+			generation: generation(&ws),
+			rx: draw_rx,
+		});
+		thumbnails.update(&ctx, &ws, None);
+		assert_eq!(thumbnails.states.len(), LOADS_PER_FRAME);
+		assert!(
+			thumbnails
+				.states
+				.values()
+				.all(|e| matches!(e.state, State::Ready(_)))
+		);
+		assert!(thumbnails.job.is_some());
+	}
+
+	#[test]
+	fn scrolling_cancels_the_readers_remaining_batch() {
+		let (_dir, ws) = workspace(
+			AssetState::Pending,
+			AssetState::Pending,
+			AssetState::Pending,
+		);
+		let ctx = egui::Context::default();
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let loads = (0..100)
+			.map(|_| (subject.clone(), thumbnails.file(&subject), false))
+			.collect();
+		let batch = read_batch(&ctx, Arc::new(ws), loads);
+		batch.wanted.lock().unwrap().clear();
+		let mut completed = 0;
+		while batch.rx.recv_timeout(Duration::from_secs(5)).is_ok() {
+			completed += 1;
+		}
+		assert!(
+			completed <= LOADS_PER_FRAME + CACHE_READERS,
+			"{completed} off-screen reads"
+		);
+		thumbnails.batch = Some(batch);
+		thumbnails.finish_batch(&ctx);
+		assert!(thumbnails.batch.is_none());
+	}
+
+	#[test]
+	fn offscreen_cache_results_are_not_uploaded() {
+		let (_dir, ws) = workspace(
+			AssetState::Pending,
+			AssetState::Pending,
+			AssetState::Pending,
+		);
+		let ctx = egui::Context::default();
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		let subject = Subject::Item("A".into());
+		let (tx, rx) = std::sync::mpsc::channel();
+		tx.send((
+			subject,
+			Ok(Picture::Cached(pixels(&image::RgbaImage::new(SIZE, SIZE)))),
+		))
+		.unwrap();
+		drop(tx);
+		thumbnails.batch = Some(Batch {
+			generation: generation(&ws),
+			wanted: Arc::new(Mutex::new(HashSet::new())),
+			rx,
+		});
+		// Scrolling now asks for no tiles, including this buffered result.
+		thumbnails.update(&ctx, &ws, None);
+		assert!(thumbnails.states.is_empty());
+		assert!(thumbnails.batch.is_none());
+		assert!(thumbnails.job.is_none());
+	}
+
+	#[test]
+	fn a_download_refreshes_the_readers_snapshot_without_changing_selection_generation() {
+		let (dir, mut ws) = workspace(
+			AssetState::Pending,
+			AssetState::Pending,
+			AssetState::Pending,
+		);
+		let ctx = egui::Context::default();
+		let subject = Subject::Item("A".into());
+		let mut thumbnails = Thumbnails::new(&ws.root);
+		thumbnails.get(&subject);
+		settle(&mut thumbnails, &ctx, &ws);
+		assert!(thumbnails.get(&subject).is_none());
+		let before = ws.generation();
+		ws.set_state("A", crate::workspace::AssetKind::Mesh, done("A.mesh"));
+		assert_eq!(ws.generation(), before);
+		touch(
+			&dir.join("A.mesh"),
+			SystemTime::now() - Duration::from_secs(60),
+		);
+		let (_, files) = source(&ws, &subject).unwrap().unwrap();
+		let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+		keep(
+			&dir,
+			&thumbnails.dir,
+			&thumbnails.file(&subject),
+			&files,
+			Ok(image),
+		);
+		thumbnails.update(&ctx, &ws, None);
+		thumbnails.get(&subject);
+		settle(&mut thumbnails, &ctx, &ws);
+		assert!(thumbnails.get(&subject).is_some());
+		assert_eq!(
+			generation(thumbnails.snapshot.as_ref().unwrap()),
+			generation(&ws)
+		);
 	}
 
 	/// A model's thumbnail shows its meshes' maps and its decal images too,
@@ -865,14 +1355,14 @@ mod tests {
 		assert_eq!(read_thumbnail(&file), None);
 		let ctx = egui::Context::default();
 		thumbnails.get(&subject);
-		thumbnails.update(&ctx, &ws, None);
+		settle(&mut thumbnails, &ctx, &ws);
 		assert!(thumbnails.get(&subject).is_none());
 
 		keep(&dir, &thumbnails.dir, &file, &files, Ok(right.clone()));
 		assert_eq!(read_thumbnail(&file), Some(right));
 		let mut thumbnails = Thumbnails::new(&ws.root);
 		thumbnails.get(&subject);
-		thumbnails.update(&ctx, &ws, None);
+		settle(&mut thumbnails, &ctx, &ws);
 		assert!(thumbnails.get(&subject).is_some());
 	}
 
@@ -919,12 +1409,12 @@ mod tests {
 			Ok(picture),
 		);
 		assert!(thumbnails.get(&subject).is_none());
-		thumbnails.update(&ctx, &ws, None);
+		settle(&mut thumbnails, &ctx, &ws);
 		let shown = thumbnails.get(&subject).expect("read from the cache");
 		// a change that leaves its files as they were keeps it
 		ws.add([]);
 		assert!(thumbnails.get(&subject).is_some());
-		thumbnails.update(&ctx, &ws, None);
+		settle(&mut thumbnails, &ctx, &ws);
 		assert_eq!(thumbnails.get(&subject).map(|t| t.id()), Some(shown.id()));
 		// the colour map arrives
 		touch(
@@ -938,7 +1428,7 @@ mod tests {
 		ws.add([]);
 		// still shown until it has been checked
 		assert!(thumbnails.get(&subject).is_some());
-		thumbnails.update(&ctx, &ws, None);
+		settle(&mut thumbnails, &ctx, &ws);
 		assert!(thumbnails.get(&subject).is_none());
 	}
 
@@ -955,28 +1445,22 @@ mod tests {
 		let ctx = egui::Context::default();
 		let subject = Subject::Model("Workspace.M".into());
 		let picture = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
-		let prepared = || {
-			let geometry = geometry();
-			let groups = geometry.default_groups();
-			Ok(Prepared::Mesh {
-				geometry: Box::new(geometry),
-				groups,
-				material: Material::default(),
-			})
-		};
 		// a job started with the rig as it was, and the result it sends
 		let start = |thumbnails: &mut Thumbnails| {
 			let (tx, rx) = std::sync::mpsc::channel();
 			let files = vec![rig.clone()];
 			thumbnails.job = Some(Job {
 				subject: subject.clone(),
-				file: thumbnails.file(&subject),
-				read: versions(&files),
-				files,
-				generation: ws.generation(),
+				generation: generation(&ws),
 				rx,
 			});
-			tx
+			let result = Picture::Drawn {
+				image: pixels(&picture),
+				png: encode(&picture),
+				read: versions(&files),
+				files,
+			};
+			(tx, result)
 		};
 		std::fs::write(&rig, "rig A").unwrap();
 		std::fs::File::options()
@@ -987,7 +1471,7 @@ mod tests {
 			.unwrap();
 		let mut thumbnails = Thumbnails::new(&ws.root);
 		let file = thumbnails.file(&subject);
-		let tx = start(&mut thumbnails);
+		let (tx, result) = start(&mut thumbnails);
 		// re-imported (same path, a little later, still older than any new
 		// thumbnail) before the old result is taken
 		std::fs::write(&rig, "rig B, moved").unwrap();
@@ -997,16 +1481,16 @@ mod tests {
 			.unwrap()
 			.set_modified(now - Duration::from_secs(30))
 			.unwrap();
-		tx.send(prepared()).unwrap();
-		thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+		tx.send(Ok(result)).unwrap();
+		thumbnails.finish_job(&ctx);
 		assert!(thumbnails.job.is_none());
 		assert!(!is_fresh(&file, std::slice::from_ref(&rig)));
 		assert!(!file.exists() && !drawn_from(&file).exists());
 		assert!(thumbnails.get(&subject).is_none());
 		// a job read after the change is kept, and fresh
-		let tx = start(&mut thumbnails);
-		tx.send(prepared()).unwrap();
-		thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+		let (tx, result) = start(&mut thumbnails);
+		tx.send(Ok(result)).unwrap();
+		thumbnails.finish_job(&ctx);
 		assert!(thumbnails.get(&subject).is_some());
 		assert!(is_fresh(&file, std::slice::from_ref(&rig)));
 	}
@@ -1048,29 +1532,26 @@ mod tests {
 			let (_, files) = source(ws, &subject).unwrap().unwrap();
 			thumbnails.job = Some(Job {
 				subject: subject.clone(),
-				file: thumbnails.file(&subject),
-				read: versions(&files),
-				files,
-				generation: ws.generation(),
+				generation: generation(ws),
 				rx,
 			});
-			let geometry = geometry();
-			let groups = geometry.default_groups();
-			tx.send(Ok(Prepared::Mesh {
-				geometry: Box::new(geometry),
-				groups,
-				material: Material::default(),
+			let read = versions(&files);
+			tx.send(Ok(Picture::Drawn {
+				image: pixels(&picture),
+				png: encode(&picture),
+				files,
+				read: read.clone(),
 			}))
 			.unwrap();
+			read
 		};
 		// the result is taken as `update` takes it, after noting the generation
 		let finish = |thumbnails: &mut Thumbnails, ws: &Workspace| {
-			thumbnails.generation = ws.generation();
-			thumbnails.finish_job(&ctx, |_| Ok(picture.clone()));
+			thumbnails.generation = generation(ws);
+			thumbnails.finish_job(&ctx);
 			assert!(thumbnails.job.is_none());
 		};
-		start(&mut thumbnails, &ws);
-		let read = thumbnails.job.as_ref().unwrap().read.clone();
+		let read = start(&mut thumbnails, &ws);
 		let old = std::fs::read(&rig).unwrap();
 		// re-imported with the part's size changed, before the result is taken
 		ws.add_model(&rig_model([3.0, 2.0, 1.0]), &[], &Origin::default())
@@ -1211,7 +1692,7 @@ mod tests {
 		assert!(is_fresh(&file, &files), "the cache is not set up as fresh");
 		let ctx = egui::Context::default();
 		thumbnails.get(&subject);
-		thumbnails.update(&ctx, &ws, None);
+		settle(&mut thumbnails, &ctx, &ws);
 		assert!(
 			thumbnails.get(&subject).is_none(),
 			"the thumbnail behind the link was read"

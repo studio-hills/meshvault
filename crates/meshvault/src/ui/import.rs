@@ -282,13 +282,13 @@ impl ImportDialog {
 					.count();
 				let clips = m.animations.len();
 				let mut hover = format!(
-					"{}\n{} ? {}",
+					"{}\n{} · {}",
 					m.path,
 					plural(m.parts.len(), "part", "parts"),
 					plural(meshes, "mesh", "meshes")
 				);
 				if clips > 0 {
-					hover.push_str(" ? ");
+					hover.push_str(" · ");
 					hover.push_str(&if playable == clips {
 						plural(clips, "clip", "clips")
 					} else {
@@ -526,7 +526,7 @@ impl ImportDialog {
 						.cloned()
 						.collect();
 					if problems > 20 {
-						list.push(format!("? and {} more", problems - 20));
+						list.push(format!("… and {} more", problems - 20));
 					}
 					ui.label(list.join("\n"));
 				});
@@ -971,7 +971,7 @@ impl ImportDialog {
 			};
 			ui.label(widgets::caption(ui, caption))
 				.on_hover_text(if animated {
-					"Meshes it uses ? playable clips"
+					"Meshes it uses · playable clips"
 				} else {
 					"Meshes it uses"
 				});

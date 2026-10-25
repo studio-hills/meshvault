@@ -33,6 +33,7 @@ release. Every test fails when a variable it needs is not set.
 | `anim::real_export_tests::rigs_rest_pose_and_binding` | `MESHVAULT_EXPORT` (or `RBX_V1_EXPORT`/`RBX_EXPORT`): an export with models (schema 1 or 2) | an export from Studio, saved by Meshvault or the stand-in link |
 | `scene::model_view::tests::plays_real_export` | `MESHVAULT_EXPORT`, as above | as above |
 | `studio::export_file::tests::parses_real_export` | `MESHVAULT_EXPORT`, as above: an export without warnings or skipped entries | as above |
+| `ui::import::replay::tree_scroll_replay` | `MESHVAULT_EXPORT`, as above; optional `MESHVAULT_SCROLL_BUDGET=1` (fail when a frame's p95 is over 16.7 ms) and `MESHVAULT_SCROLL_SELECTION=1` (also scroll with everything selected) | as above, best a large one. It prints CPU frame times while scrolling the import dialog and the library list, fully and partly expanded. |
 | `export::gltf::tests::exports_workspace_models` | `MESHVAULT_WS`: a workspace; optional `MESHVAULT_GLB_OUT` (default: the temp folder) | any workspace, e.g. from `make_test_workspace.py` |
 | `export::tests::exports_workspace_models` | `MESHVAULT_WS`, as above | as above |
 | `anim::real_export_tests::matches_studio_samples` | `MESHVAULT_EXPORT` and `MESHVAULT_STUDIO_SAMPLES`; optional `MESHVAULT_DETAIL` (a joint, bone or part name, printed at every sample) | a developer diagnostic: export the test place's models through the stand-in link, then run `sample_animator.luau` against the same models. It prints differences rather than failing. |

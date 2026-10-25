@@ -1,8 +1,9 @@
 //! Open/closed state for folder trees, keyed by each folder's full path so
 //! folders can be expanded or collapsed from anywhere (e.g. "expand all"),
 //! not just from the widget that draws them. Also the folder hierarchy
-//! itself ([`FolderTree`]), its cached display rows ([`FlatTree`]), its display order ([`natural_cmp`]) and the
-//! expand/collapse controls the library and the import dialog share.
+//! itself ([`FolderTree`]), its rows in display order ([`FlatTree`]), that
+//! order ([`natural_cmp`]) and the expand/collapse controls the library and
+//! the import dialog share.
 
 use std::collections::BTreeMap;
 

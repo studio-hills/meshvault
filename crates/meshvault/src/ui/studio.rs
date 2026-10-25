@@ -43,6 +43,8 @@ const DIALOG_WIDTH: f32 = 560.0;
 const COPIED_FOR: Duration = Duration::from_secs(2);
 /// How often the dialog redraws while it says "Copied", to turn it back.
 const COPIED_REPAINT: Duration = Duration::from_millis(500);
+/// Services offered to leave out, a row of this many at a time.
+const SERVICE_COLUMNS: usize = 4;
 
 impl App {
 	pub(super) fn studio_dialog(&mut self, ctx: &egui::Context) {
@@ -232,33 +234,41 @@ fn leave_out(ui: &mut egui::Ui, leave_out: &mut link::LeaveOut, paths: &mut Stri
 	let mut changed = false;
 	ui.label(RichText::new("From the whole game, when nothing is selected:").color(p.text_weak));
 	ui.add_space(2.0);
-	ui.horizontal_wrapped(|ui| {
-		for service in link::SERVICES {
-			let mut on = leave_out.services.iter().any(|s| s == service);
-			if widgets::pointer(ui.checkbox(&mut on, service)).changed() {
-				// in the Explorer's order, then any not offered here
-				let kept = |name: &str| {
-					if name == service {
-						on
-					} else {
-						leave_out.services.iter().any(|s| s == name)
-					}
-				};
-				let others = leave_out
-					.services
-					.iter()
-					.filter(|s| !link::SERVICES.contains(&s.as_str()))
-					.cloned();
-				leave_out.services = link::SERVICES
-					.iter()
-					.filter(|s| kept(s))
-					.map(|s| s.to_string())
-					.chain(others)
-					.collect();
-				changed = true;
+	// in columns, each as wide as its longest name, so each sits under the
+	// one above
+	egui::Grid::new("leave_out_services")
+		.num_columns(SERVICE_COLUMNS)
+		.spacing([24.0, 4.0])
+		.show(ui, |ui| {
+			for (i, service) in link::SERVICES.into_iter().enumerate() {
+				if i > 0 && i % SERVICE_COLUMNS == 0 {
+					ui.end_row();
+				}
+				let mut on = leave_out.services.iter().any(|s| s == service);
+				if widgets::pointer(ui.checkbox(&mut on, service)).changed() {
+					// in the Explorer's order, then any not offered here
+					let kept = |name: &str| {
+						if name == service {
+							on
+						} else {
+							leave_out.services.iter().any(|s| s == name)
+						}
+					};
+					let others = leave_out
+						.services
+						.iter()
+						.filter(|s| !link::SERVICES.contains(&s.as_str()))
+						.cloned();
+					leave_out.services = link::SERVICES
+						.iter()
+						.filter(|s| kept(s))
+						.map(|s| s.to_string())
+						.chain(others)
+						.collect();
+					changed = true;
+				}
 			}
-		}
-	});
+		});
 	ui.add_space(8.0);
 	ui.label(
 		RichText::new("From every export, these and everything in them, one full name a line:")

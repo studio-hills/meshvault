@@ -141,7 +141,7 @@ pub enum CodeLayout {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct LeaveOut {
-	/// The services, by name, that an export of the whole game skips.
+	/// The services, by class name, that an export of the whole game skips.
 	pub services: Vec<String>,
 	/// Full names, as Studio's `GetFullName` writes them
 	/// (`Workspace.Map.Trees`), left out of every export with everything

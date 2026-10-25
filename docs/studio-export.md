@@ -78,7 +78,7 @@ loadstring(s)()({ roots = { workspace.MyRig }, exclude = {} })
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `roots` | The instances to export | The selection, or `{ game }` when nothing is selected |
-| `skip` | Names of services left out wherever the whole game (`game`) is exported | `{ "Workspace" }` when `roots`, `exclude` and `skip` are not given and nothing is selected, otherwise none (so `roots = { game }` includes Workspace unless you also pass `skip = { "Workspace" }`) |
+| `skip` | Class names of services (as `GetService` takes them, so a renamed service is still found) left out wherever the whole game (`game`) is exported | `{ "Workspace" }` when `roots`, `exclude` and `skip` are not given and nothing is selected, otherwise none (so `roots = { game }` includes Workspace unless you also pass `skip = { "Workspace" }`) |
 | `exclude` | Instances to leave out, with everything beneath them | none |
 | `excludePaths` | Full names (`"Workspace.Map.Trees"`) to leave out, with everything beneath them, in any export | none |
 | `send` | `false` keeps the export in Studio instead of sending it | sends |

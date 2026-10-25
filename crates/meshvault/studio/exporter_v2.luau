@@ -1,7 +1,7 @@
 -- Meshvault exporter (schema 2).
 -- Run in the Roblox Studio Command Bar in Edit mode.
 -- Exports mesh, material, rig, and animation metadata (not geometry or textures).
--- Options: roots (defaults to selection or game), skip (the names of services a
+-- Options: roots (defaults to selection or game), skip (the class names of services a
 -- whole-game export leaves out; defaults to { "Workspace" }), exclude (instances to leave
 -- out), excludePaths (full names to leave out, like "Workspace.Map.Trees"), send = false
 -- (return data without sending).
@@ -148,10 +148,11 @@ local function run(options)
 	local skip = options.skip
 		or ((options.roots or useSelection or options.exclude) and {} or { "Workspace" })
 	if table.find(roots, game) then
-		for _, name in ipairs(skip) do
-			for _, service in ipairs(game:GetChildren()) do
-				if service.Name == name then table.insert(excludedRoots, service) end
-			end
+		for _, class in ipairs(skip) do
+			-- by class, as GetService finds them: a place can rename its services. FindService
+			-- does not make a service the place lacks, and errors on a name that is no class
+			local ok, service = pcall(game.FindService, game, class)
+			if ok and service then table.insert(excludedRoots, service) end
 		end
 	end
 	-- each instance a full name ("Workspace.Map.Trees", as GetFullName writes it) names.

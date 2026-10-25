@@ -146,7 +146,7 @@ game = Instance.new("DataModel", "Place")
 game.PlaceId = 4242
 local workspaceService = Instance.new("Workspace", "Workspace", game)
 Instance.new("MeshPart", "Sentinel", workspaceService, { MeshId = "rbxassetid://999", TextureID = "" })
-local storage = Instance.new("Folder", "ReplicatedStorage", game)
+local storage = Instance.new("ReplicatedStorage", "ReplicatedStorage", game)
 part = Instance.new("MeshPart", "Rock", storage, {
 	MeshId = "rbxassetid://123", TextureID = "rbxassetid://456",
 })
@@ -172,6 +172,15 @@ local services = {
 	}),
 }
 function game:GetService(name) return (assert(services[name], name)) end
+-- the place's service of a class, whatever it is named, or nil; an error
+-- for a name that is no class, as Studio gives
+function game:FindService(class)
+	if class == "NotAClass" then error("'NotAClass' is not a valid Service name") end
+	for _, child in ipairs(self.children) do
+		if child.ClassName == class then return child end
+	end
+	return nil
+end
 
 Enum = { MeshType = { FileMesh = "FileMesh" } }
 -- what the exporter prints, a line each; warnings are not kept
@@ -1015,5 +1024,30 @@ fn what_is_picked_skips_no_services_but_leaves_out_paths() {
 	assert_eq!(
 		(export, kinds),
 		(Value::Nil, vec!["NothingToExport".to_string()])
+	);
+}
+
+// Services are skipped by class, as GetService finds them, so one a place
+// has renamed is still skipped; a name that is no class is passed over
+#[test]
+fn services_are_skipped_by_class_even_when_renamed() {
+	let studio = Studio::new(2);
+	studio
+		.lua
+		.load(r#"game:GetService("Workspace").Name = "World""#)
+		.exec()
+		.unwrap();
+	let none: Vec<String> = Vec::new();
+	assert_eq!(
+		kept(&studio, &LeaveOut::default()),
+		(vec![rock()], none.clone())
+	);
+	let world = ("Sentinel".to_string(), 999, "World".to_string());
+	assert_eq!(
+		kept(
+			&studio,
+			&leave_out(&["NotAClass", "ReplicatedStorage"], &[])
+		),
+		(vec![world], none)
 	);
 }

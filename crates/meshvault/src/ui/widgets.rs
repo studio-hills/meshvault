@@ -643,8 +643,141 @@ pub fn scroll_in_margin<R>(
 }
 
 #[cfg(test)]
+thread_local! {
+	pub(crate) static SCROLL_METRICS: std::cell::Cell<(usize, f32)> = const { std::cell::Cell::new((0, 0.0)) };
+}
+
+/// The margin scroll area with only its on-screen rows laid out.
+pub fn scroll_rows_in_margin<R>(
+	ui: &mut egui::Ui,
+	scroll: egui::ScrollArea,
+	height: f32,
+	rows: usize,
+	add_contents: impl FnOnce(&mut egui::Ui, std::ops::Range<usize>) -> R,
+) -> R {
+	let column = ui.available_rect_before_wrap();
+	let mut rect = column;
+	rect.max.x += SCROLL_GUTTER;
+	let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+	let output = scroll
+		.content_margin(Margin {
+			right: SCROLL_GUTTER as i8,
+			..Margin::ZERO
+		})
+		.show_rows(&mut child, height, rows, |ui, mut range| {
+			// One row before the viewport lets Shift+Tab reach the preceding
+			// row; show_rows already includes one after it for forward Tab.
+			let mut rect = ui.max_rect();
+			if range.start > 0 {
+				range.start -= 1;
+				rect.min.y -= height + ui.spacing().item_spacing.y;
+			}
+			#[cfg(test)]
+			SCROLL_METRICS.set((range.len(), 0.0));
+			ui.scope_builder(
+				egui::UiBuilder::new()
+					.scope_id(ui.make_persistent_id("tree_rows"))
+					.max_rect(rect),
+				|ui| {
+					let inner = add_contents(ui, range);
+					if let Some(id) = ui.memory(|memory| memory.focused())
+						&& let Some(response) = ui.ctx().read_response(id)
+						&& response.layer_id == ui.layer_id()
+						&& rect.contains_rect(response.rect)
+						&& response.gained_focus()
+					{
+						response.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
+					}
+					inner
+				},
+			)
+			.inner
+		});
+	#[cfg(test)]
+	SCROLL_METRICS.set((SCROLL_METRICS.get().0, output.state.clamped_offset().y));
+	let inner = output.inner;
+	let used = child.min_rect().height();
+	ui.allocate_rect(
+		egui::Rect::from_min_size(column.min, Vec2::new(column.width(), used)),
+		Sense::hover(),
+	);
+	inner
+}
+
+#[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn virtual_rows_keep_tab_order_across_the_viewport_in_both_directions() {
+		let ctx = egui::Context::default();
+		let mut known = std::collections::HashMap::new();
+		let mut checked = [false; 100];
+		let mut frame = |events| {
+			let mut output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(500.0, 180.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					ui.spacing_mut().interact_size.y = 24.0;
+					scroll_rows_in_margin(
+						ui,
+						egui::ScrollArea::vertical(),
+						24.0,
+						100,
+						|ui, range| {
+							for i in range {
+								ui.scope_builder(
+									egui::UiBuilder::new().scope_id(ui.make_persistent_id(i)),
+									|ui| {
+										let response =
+											ui.checkbox(&mut checked[i], format!("Row {i}"));
+										known.insert(response.id, i);
+									},
+								);
+							}
+						},
+					);
+				},
+			);
+			output.textures_delta.clear();
+			ctx.memory(|m| m.focused())
+				.and_then(|id| known.get(&id).copied())
+		};
+		frame(vec![]);
+		// The first Tab enters the first checkbox, then walks beyond the
+		// viewport. A release pass also applies deferred reverse focus.
+		let mut focused = None;
+		for shift in std::iter::repeat_n(false, 26).chain(std::iter::repeat_n(true, 20)) {
+			let modifiers = egui::Modifiers {
+				shift,
+				..Default::default()
+			};
+			frame(vec![
+				egui::Event::ModifiersChanged(modifiers),
+				egui::Event::Key {
+					key: egui::Key::Tab,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers,
+				},
+			]);
+			focused = frame(vec![egui::Event::Key {
+				key: egui::Key::Tab,
+				physical_key: None,
+				pressed: false,
+				repeat: false,
+				modifiers,
+			}]);
+		}
+		assert_eq!(focused, Some(5));
+	}
 
 	#[test]
 	fn properties_leave_the_callers_control_height_alone() {

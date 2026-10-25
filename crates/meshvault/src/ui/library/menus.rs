@@ -90,7 +90,7 @@ impl Browser {
 			)
 			.clicked()
 		{
-			actions.push(Action::Retry(failed));
+			actions.push(Action::Retry(failed.to_vec()));
 			ui.close();
 		}
 		let (items, models) = self.selected();
@@ -99,7 +99,7 @@ impl Browser {
 			.button(format!("{}  Clear selection", icons::X))
 			.clicked()
 		{
-			self.selection.borrow_mut().keys.clear();
+			self.selection.borrow_mut().clear();
 			ui.close();
 		}
 		ui.separator();

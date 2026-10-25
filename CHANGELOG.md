@@ -9,6 +9,9 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
 
 ### Library
 
+- Smooth scrolling through large folder trees in the library and import
+  dialog: only on-screen rows are laid out, with folder order, counts and
+  selection summaries kept between frames
 - Smooth scrolling in the grid view of large workspaces: only the rows on
   screen are laid out, and thumbnails are read from the cache and drawn in
   the background instead of while a frame is drawn. Downloads finishing no

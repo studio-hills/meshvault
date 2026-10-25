@@ -11,12 +11,28 @@ use crate::ui::theme::{CARD_RADIUS, CONTROL_XXS, palette};
 use crate::ui::{icons, widgets};
 use crate::workspace::Workspace;
 
+pub(super) struct Failures {
+	key: (std::path::PathBuf, u64, u64, u64),
+	items: Vec<usize>,
+}
+
 impl Selection {
+	pub(super) fn clear(&mut self) {
+		self.keys.clear();
+		self.revision = self.revision.wrapping_add(1);
+	}
+
+	pub(super) fn select(&mut self, keys: impl IntoIterator<Item = Row>) {
+		self.keys = keys.into_iter().collect();
+		self.revision = self.revision.wrapping_add(1);
+	}
+
 	/// A click on `key` with these modifiers; returns the row to open.
 	/// Shift selects the rows in `order` from the anchor (added to the
 	/// selection with Ctrl too) and leaves the anchor where it is; without
 	/// an anchor in `order`, it counts as a click without Shift.
 	fn click(&mut self, key: Row, shift: bool, command: bool) -> Option<Row> {
+		self.revision = self.revision.wrapping_add(1);
 		if shift
 			&& let Some(anchor) = self.anchor
 			&& let (Some(a), Some(b)) = (
@@ -61,11 +77,6 @@ impl Browser {
 		self.selection.borrow().keys.contains(&key)
 	}
 
-	/// Notes a row as drawn, for Shift-click ranges and Ctrl+A.
-	pub(super) fn drawn(&self, key: Row) {
-		self.selection.borrow_mut().drawn.push(key);
-	}
-
 	/// The selected meshes and models.
 	pub(super) fn selected(&self) -> (Vec<usize>, Vec<usize>) {
 		let s = self.selection.borrow();
@@ -90,20 +101,43 @@ impl Browser {
 
 	/// The failed downloads among the selection: its meshes, and the
 	/// meshes its models use.
-	pub(super) fn selected_failures(&self, ws: &Workspace) -> Vec<usize> {
-		let (items, models) = self.selected();
-		let mut failed: BTreeSet<usize> = items
-			.into_iter()
-			.filter(|&i| ws.items()[i].has_failure())
-			.collect();
-		for m in models {
-			failed.extend(
-				self.model_items(ws, &ws.models()[m])
-					.filter(|(_, item)| item.has_failure())
-					.map(|(i, _)| i),
-			);
+	pub(super) fn selected_failures(&self, ws: &Workspace) -> std::cell::Ref<'_, [usize]> {
+		let key = (
+			ws.root.clone(),
+			ws.generation(),
+			ws.asset_generation(),
+			self.selection.borrow().revision,
+		);
+		if self
+			.selection_failures
+			.borrow()
+			.as_ref()
+			.is_none_or(|cache| cache.key != key)
+		{
+			let (items, models) = self.selected();
+			let mut failed: BTreeSet<usize> = items
+				.into_iter()
+				.filter(|&i| ws.items()[i].has_failure())
+				.collect();
+			for m in models {
+				failed.extend(
+					self.model_items(ws, &ws.models()[m])
+						.filter(|(_, item)| item.has_failure())
+						.map(|(i, _)| i),
+				);
+			}
+			self.selection_failures.replace(Some(Failures {
+				key,
+				items: failed.into_iter().collect(),
+			}));
 		}
-		failed.into_iter().collect()
+		std::cell::Ref::map(self.selection_failures.borrow(), |cache| {
+			cache
+				.as_ref()
+				.expect("retry list just refreshed")
+				.items
+				.as_slice()
+		})
 	}
 
 	/// A right-click on a row in a selection of several acts on all of them.
@@ -137,7 +171,7 @@ impl Browser {
 					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 						ui.spacing_mut().item_spacing.x = 0.0;
 						if widgets::icon_button(ui, icons::X, "Clear selection (Esc)").clicked() {
-							self.selection.borrow_mut().keys.clear();
+							self.selection.borrow_mut().clear();
 						}
 						if widgets::danger_icon_button(ui, icons::TRASH, "Remove from workspace")
 							.clicked()
@@ -162,7 +196,7 @@ impl Browser {
 							})
 							.inner;
 						if retry.clicked() {
-							actions.push(Action::Retry(failed));
+							actions.push(Action::Retry(failed.to_vec()));
 						}
 					});
 				});
@@ -183,10 +217,11 @@ impl Browser {
 		});
 		let mut s = self.selection.borrow_mut();
 		if all {
-			s.keys = s.order.iter().copied().collect();
+			let order = s.order.clone();
+			s.select(order);
 		}
 		if clear {
-			s.keys.clear();
+			s.clear();
 		}
 	}
 }
@@ -205,6 +240,7 @@ mod tests {
 	fn selection(keys: &[Row], anchor: Option<Row>) -> Selection {
 		Selection {
 			keys: keys.iter().copied().collect(),
+			revision: 0,
 			anchor,
 			drawn: Vec::new(),
 			order: vec![M0, I0, I1, I2],
@@ -213,6 +249,49 @@ mod tests {
 
 	fn keys(s: &Selection) -> Vec<Row> {
 		s.keys.iter().copied().collect()
+	}
+
+	#[test]
+	fn retry_cache_follows_selection_and_download_changes() {
+		use super::super::{Browser, fixtures::item};
+		use crate::workspace::{AssetKind, AssetState, Workspace};
+		let dir = crate::test_support::TempDir::new("selection_failures");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		ws.set_contents(
+			vec![
+				item(
+					"A",
+					&[],
+					1,
+					AssetState::Failed {
+						error: "test".into(),
+					},
+				),
+				item("B", &[], 2, AssetState::Pending),
+			],
+			vec![],
+		);
+		let mut browser = Browser::default();
+		browser.rebuild_if_needed(&ws);
+		browser
+			.selection
+			.borrow_mut()
+			.select([Row::Mesh(0), Row::Mesh(1)]);
+		assert_eq!(&*browser.selected_failures(&ws), [0]);
+		let cached = browser.selected_failures(&ws).as_ptr();
+		assert_eq!(browser.selected_failures(&ws).as_ptr(), cached);
+		ws.set_state("A", AssetKind::Mesh, AssetState::Pending);
+		assert!(browser.selected_failures(&ws).is_empty());
+		ws.set_state(
+			"B",
+			AssetKind::Mesh,
+			AssetState::Failed {
+				error: "test".into(),
+			},
+		);
+		assert_eq!(&*browser.selected_failures(&ws), [1]);
+		browser.selection.borrow_mut().clear();
+		assert!(browser.selected_failures(&ws).is_empty());
 	}
 
 	#[test]

@@ -133,12 +133,26 @@ impl Browser {
 
 	/// The status chips: every mesh, then the done, pending and failed ones
 	/// (failed only while there are some, or while it is the filter).
-	pub(super) fn status_chips(&mut self, ui: &mut egui::Ui, items: &[Item]) {
+	pub(super) fn status_chips(&mut self, ui: &mut egui::Ui, ws: &Workspace) {
+		let items = ws.items();
 		let p = palette(ui.ctx());
-		let count = |f: fn(&Item) -> bool| items.iter().filter(|i| f(i)).count();
-		let done = count(Item::is_done);
-		let failed = count(Item::has_failure);
-		let pending = count(|i| i.has_pending() && !i.has_failure());
+		if self
+			.status_counts
+			.as_ref()
+			.map(|(generation, _)| *generation)
+			!= Some(ws.asset_generation())
+		{
+			let count = |f: fn(&Item) -> bool| items.iter().filter(|i| f(i)).count();
+			self.status_counts = Some((
+				ws.asset_generation(),
+				(
+					count(Item::is_done),
+					count(Item::has_failure),
+					count(|i| i.has_pending() && !i.has_failure()),
+				),
+			));
+		}
+		let (_, (done, failed, pending)) = self.status_counts.expect("counts just refreshed");
 		ui.horizontal_wrapped(|ui| {
 			ui.spacing_mut().item_spacing.x = 4.0;
 			ui.spacing_mut().interact_size.y = CONTROL_XXS;

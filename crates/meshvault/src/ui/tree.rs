@@ -1,7 +1,7 @@
 //! Open/closed state for folder trees, keyed by each folder's full path so
 //! folders can be expanded or collapsed from anywhere (e.g. "expand all"),
 //! not just from the widget that draws them. Also the folder hierarchy
-//! itself ([`FolderTree`]), its display order ([`natural_cmp`]) and the
+//! itself ([`FolderTree`]), its cached display rows ([`FlatTree`]), its display order ([`natural_cmp`]) and the
 //! expand/collapse controls the library and the import dialog share.
 
 use std::collections::BTreeMap;
@@ -42,6 +42,7 @@ impl FolderTree {
 	/// Every entry index in this folder and below, each folder's own before
 	/// its subfolders'. Walked with a list rather than recursion, like
 	/// everything else here, so a tree of any depth fits on the stack.
+	#[cfg(test)]
 	pub fn all_items(&self) -> Vec<usize> {
 		let mut out = Vec::new();
 		let mut stack = vec![self];
@@ -62,6 +63,228 @@ impl Drop for FolderTree {
 			stack.extend(std::mem::take(&mut node.folders).into_values());
 		}
 	}
+}
+
+/// A tree in display order, built once when its entries change. Folder
+/// ranges refer to `items`, so counts and selections need no subtree walks.
+#[derive(Default)]
+pub struct FlatTree {
+	pub rows: Vec<FlatRow>,
+	pub items: Vec<usize>,
+}
+
+pub struct FlatRow {
+	pub depth: usize,
+	pub parent: Option<usize>,
+	pub kind: FlatKind,
+}
+
+pub enum FlatKind {
+	Folder {
+		name: String,
+		id: Id,
+		/// First row after this folder's descendants.
+		end: usize,
+		items: std::ops::Range<usize>,
+	},
+	Item(usize),
+}
+
+impl FlatTree {
+	pub fn build(
+		root: &FolderTree,
+		scope: &str,
+		compare: impl Fn(usize, usize) -> std::cmp::Ordering,
+	) -> Self {
+		enum Visit<'a> {
+			Node(&'a FolderTree, usize, Option<usize>),
+			Folder(&'a str, &'a FolderTree, usize, Option<usize>),
+			Items(&'a FolderTree, usize, Option<usize>),
+			End(usize, usize),
+		}
+		let mut flat = Self::default();
+		let mut path = String::new();
+		let mut stack = vec![Visit::Node(root, 0, None)];
+		while let Some(visit) = stack.pop() {
+			match visit {
+				Visit::Node(node, depth, parent) => {
+					stack.push(Visit::Items(node, depth, parent));
+					for (name, child) in node.sorted_folders().into_iter().rev() {
+						stack.push(Visit::Folder(name, child, depth, parent));
+					}
+				}
+				Visit::Folder(name, child, depth, parent) => {
+					let prefix = path.len();
+					if !path.is_empty() {
+						path.push('/');
+					}
+					path.push_str(name);
+					let index = flat.rows.len();
+					flat.rows.push(FlatRow {
+						depth,
+						parent,
+						kind: FlatKind::Folder {
+							name: name.to_owned(),
+							id: folder_id(scope, &path),
+							end: 0,
+							items: flat.items.len()..flat.items.len(),
+						},
+					});
+					stack.push(Visit::End(index, prefix));
+					stack.push(Visit::Node(child, depth + 1, Some(index)));
+				}
+				Visit::Items(node, depth, parent) => {
+					let mut items = node.items.clone();
+					items.sort_by(|&a, &b| compare(a, b));
+					for index in items {
+						flat.items.push(index);
+						flat.rows.push(FlatRow {
+							depth,
+							parent,
+							kind: FlatKind::Item(index),
+						});
+					}
+				}
+				Visit::End(index, prefix) => {
+					let end = flat.rows.len();
+					if let FlatKind::Folder {
+						end: row_end,
+						items,
+						..
+					} = &mut flat.rows[index].kind
+					{
+						*row_end = end;
+						items.end = flat.items.len();
+					}
+					path.truncate(prefix);
+				}
+			}
+		}
+		flat
+	}
+
+	/// Prefix totals over the sorted entries, for constant-time folder counts.
+	pub fn totals(&self, value: impl Fn(usize) -> usize) -> Vec<usize> {
+		let mut totals = Vec::with_capacity(self.items.len() + 1);
+		totals.push(0);
+		for &i in &self.items {
+			totals.push(totals.last().copied().unwrap_or(0) + value(i));
+		}
+		totals
+	}
+
+	pub fn count(&self, row: usize, totals: &[usize]) -> usize {
+		match &self.rows[row].kind {
+			FlatKind::Folder { items, .. } => totals[items.end] - totals[items.start],
+			FlatKind::Item(_) => 0,
+		}
+	}
+
+	pub fn folder_items(&self, row: usize) -> &[usize] {
+		match &self.rows[row].kind {
+			FlatKind::Folder { items, .. } => &self.items[items.clone()],
+			FlatKind::Item(_) => &[],
+		}
+	}
+
+	/// Reconstruct a path only for a folder whose menu is actually open.
+	pub fn path(&self, mut row: usize) -> String {
+		let mut parts = Vec::new();
+		loop {
+			if let FlatKind::Folder { name, .. } = &self.rows[row].kind {
+				parts.push(name.as_str());
+			}
+			let Some(parent) = self.rows[row].parent else {
+				break;
+			};
+			row = parent;
+		}
+		parts.reverse();
+		parts.join("/")
+	}
+
+	/// Matching rows whose ancestors are open. Closed or empty subtrees
+	/// are skipped in one step, without recursion or per-frame sorting.
+	pub fn visible(
+		&self,
+		ctx: &egui::Context,
+		matches: &[bool],
+		totals: &[usize],
+		force_open: bool,
+	) -> Vec<usize> {
+		let mut out = Vec::new();
+		let mut i = 0;
+		while i < self.rows.len() {
+			match &self.rows[i].kind {
+				FlatKind::Folder { id, end, .. } => {
+					if self.count(i, totals) == 0 {
+						i = *end;
+						continue;
+					}
+					out.push(i);
+					if force_open {
+						set_open(ctx, *id, true);
+					}
+					if !is_open(ctx, *id, false) {
+						i = *end;
+						continue;
+					}
+				}
+				FlatKind::Item(index) => {
+					if matches[*index] {
+						out.push(i);
+					}
+				}
+			}
+			i += 1;
+		}
+		out
+	}
+}
+
+/// Changes to stored folder state invalidate visible rows, including changes
+/// made by expand/collapse controls and reveal commands outside the tree.
+pub fn revision(ctx: &egui::Context) -> u64 {
+	ctx.data_mut(|d| d.get_temp::<u64>(Id::unique("tree_revision")).unwrap_or(0))
+}
+
+fn changed(ctx: &egui::Context) {
+	let next = revision(ctx).wrapping_add(1);
+	ctx.data_mut(|d| d.insert_temp(Id::unique("tree_revision"), next));
+	ctx.request_repaint();
+}
+
+pub fn is_open(ctx: &egui::Context, id: Id, default: bool) -> bool {
+	egui::collapsing_header::CollapsingState::load(ctx, id).map_or(default, |s| s.is_open())
+}
+
+/// A normal egui disclosure button, storing the same folder id as a
+/// CollapsingHeader. Its body lives in the virtual list instead of a nested UI.
+pub fn header<R>(
+	ui: &mut egui::Ui,
+	id: Id,
+	default: bool,
+	contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+	let mut state =
+		egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default);
+	let was_open = state.is_open();
+	let inner = ui
+		.horizontal(|ui| {
+			let spacing = ui.spacing().item_spacing.x;
+			ui.spacing_mut().item_spacing.x = 0.0;
+			widgets::pointer(
+				state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon),
+			);
+			ui.spacing_mut().item_spacing.x = spacing;
+			contents(ui)
+		})
+		.inner;
+	state.store(ui.ctx());
+	if state.is_open() != was_open {
+		changed(ui.ctx());
+	}
+	inner
 }
 
 /// Case-insensitive comparison that orders runs of digits numerically.
@@ -118,8 +341,13 @@ pub fn child_path(prefix: &str, name: &str) -> String {
 
 /// Opens or closes the folder `id`, drawn or not.
 pub fn set_open(ctx: &egui::Context, id: Id, open: bool) {
-	let mut state =
-		egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, false);
+	let stored = egui::collapsing_header::CollapsingState::load(ctx, id);
+	if stored.as_ref().is_none_or(|state| state.is_open() != open) {
+		changed(ctx);
+	}
+	let mut state = stored.unwrap_or_else(|| {
+		egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, false)
+	});
 	state.set_open(open);
 	state.store(ctx);
 }
@@ -220,12 +448,118 @@ pub fn toggle(ui: &egui::Ui, id: Id) {
 	if let Some(mut state) = egui::collapsing_header::CollapsingState::load(ui.ctx(), id) {
 		state.toggle(ui);
 		state.store(ui.ctx());
+		changed(ui.ctx());
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn fixture() -> (FolderTree, FlatTree) {
+		let paths: Vec<Vec<String>> = ["Zone10", "zone2/Deep", "zone2", "", "zone2"]
+			.into_iter()
+			.map(|path| {
+				path.split('/')
+					.filter(|s| !s.is_empty())
+					.map(str::to_owned)
+					.collect()
+			})
+			.collect();
+		let tree = FolderTree::build(paths.iter().map(Vec::as_slice));
+		let flat = FlatTree::build(&tree, "flat", |a, b| b.cmp(&a));
+		(tree, flat)
+	}
+
+	#[test]
+	fn flat_tree_sorts_once_and_keeps_subtree_ranges() {
+		let (_, flat) = fixture();
+		assert_eq!(flat.items, [1, 4, 2, 0, 3]);
+		assert_eq!(flat.folder_items(0), [1, 4, 2]);
+		assert_eq!(flat.folder_items(1), [1]);
+		assert_eq!(flat.path(1), "zone2/Deep");
+		assert_eq!(flat.rows[2].depth, 2);
+		assert_eq!(flat.rows[2].parent, Some(1));
+		let totals = flat.totals(|i| (i == 1 || i == 4) as usize);
+		assert_eq!(flat.count(0, &totals), 2);
+		assert_eq!(flat.count(1, &totals), 1);
+	}
+
+	#[test]
+	fn flat_visibility_skips_closed_ancestors_and_empty_matches() {
+		let (tree, flat) = fixture();
+		let ctx = egui::Context::default();
+		let matches = [true; 5];
+		let totals = flat.totals(|_| 1);
+		assert_eq!(flat.visible(&ctx, &matches, &totals, false), [0, 5, 7]);
+		open_path(&ctx, "flat", &["zone2".into(), "Deep".into()]);
+		assert_eq!(
+			flat.visible(&ctx, &matches, &totals, false),
+			[0, 1, 2, 3, 4, 5, 7]
+		);
+		FolderCommand::Subtree("zone2".into(), false).apply(&ctx, "flat", &tree);
+		assert_eq!(flat.visible(&ctx, &matches, &totals, false), [0, 5, 7]);
+		let matches = [false, true, false, false, false];
+		let totals = flat.totals(|i| matches[i] as usize);
+		assert_eq!(flat.visible(&ctx, &matches, &totals, true), [0, 1, 2]);
+		assert!(is_open(&ctx, folder_id("flat", "zone2/Deep"), false));
+		assert!(
+			flat.visible(&ctx, &[false; 5], &flat.totals(|_| 0), true)
+				.is_empty()
+		);
+	}
+
+	#[test]
+	fn revision_tracks_external_commands_and_default_open_sections() {
+		let ctx = egui::Context::default();
+		let id = folder_id("flat", "section");
+		assert!(is_open(&ctx, id, true));
+		let before = revision(&ctx);
+		set_open(&ctx, id, false);
+		assert!(revision(&ctx) > before);
+		assert!(!is_open(&ctx, id, true));
+		let before = revision(&ctx);
+		set_open(&ctx, id, false);
+		assert_eq!(
+			revision(&ctx),
+			before,
+			"writing unchanged state does not invalidate caches"
+		);
+	}
+
+	#[test]
+	fn disclosure_buttons_keep_keyboard_activation_and_invalidate_visibility() {
+		let ctx = egui::Context::default();
+		let id = folder_id("keyboard", "A");
+		let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			header(ui, id, false, |ui| {
+				ui.label("A");
+			});
+		});
+		output.textures_delta.clear();
+		ctx.memory_mut(|m| m.request_focus(id));
+		let before = revision(&ctx);
+		let mut output = ctx.run_ui(
+			egui::RawInput {
+				events: vec![egui::Event::Key {
+					key: egui::Key::Space,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers: Default::default(),
+				}],
+				..Default::default()
+			},
+			|ui| {
+				header(ui, id, false, |ui| {
+					ui.label("A");
+				});
+			},
+		);
+		output.textures_delta.clear();
+		assert!(is_open(&ctx, id, false));
+		assert!(revision(&ctx) > before);
+	}
 
 	#[test]
 	fn natural_order() {
@@ -281,8 +615,17 @@ mod tests {
 			.spawn(move || {
 				let tree = FolderTree::build([deep.as_slice(), &deep[..2]]);
 				assert_eq!(tree.all_items(), [1, 0]);
+				let flat = FlatTree::build(&tree, "t", |a, b| a.cmp(&b));
+				assert_eq!(flat.rows.len(), 10_002);
+				assert_eq!(flat.rows.iter().map(|row| row.depth).max(), Some(10_000));
+				assert_eq!(flat.folder_items(0), [0, 1]);
 				let ctx = egui::Context::default();
 				FolderCommand::All(true).apply(&ctx, "t", &tree);
+				assert_eq!(
+					flat.visible(&ctx, &[true, true], &flat.totals(|_| 1), false)
+						.len(),
+					10_002
+				);
 				FolderCommand::Subtree("f0/f1".into(), false).apply(&ctx, "t", &tree);
 				drop(tree);
 			})

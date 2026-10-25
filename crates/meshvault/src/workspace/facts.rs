@@ -48,6 +48,10 @@ pub struct Facts {
 	/// Meshes the running scan still has to read.
 	left: usize,
 	dirty: bool,
+	/// Bumped when scan results arrive, so filtered lists can cache matches.
+	generation: u64,
+	/// An unchanged workspace needs no new scan for unread meshes.
+	scanned_for: Option<(u64, u64)>,
 }
 
 impl Facts {
@@ -66,6 +70,8 @@ impl Facts {
 			scan: None,
 			left: 0,
 			dirty: false,
+			generation: 0,
+			scanned_for: None,
 		}
 	}
 
@@ -82,7 +88,13 @@ impl Facts {
 		self.left
 	}
 
+	/// Changes to the known mesh facts while this workspace is open.
+	pub fn generation(&self) -> u64 {
+		self.generation
+	}
+
 	fn take(&mut self, (path, mesh_id, facts): Scanned) {
+		self.generation = self.generation.wrapping_add(1);
 		match facts {
 			Some(facts) => {
 				self.known.insert(path, Known { mesh_id, facts });
@@ -115,6 +127,11 @@ impl Facts {
 			}
 			return;
 		}
+		let generation = (ws.generation(), ws.asset_generation());
+		if self.scanned_for == Some(generation) {
+			return;
+		}
+		self.scanned_for = Some(generation);
 		let unread: Vec<(String, u64)> = ws
 			.items()
 			.iter()

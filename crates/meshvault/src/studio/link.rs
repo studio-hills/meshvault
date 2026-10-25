@@ -136,11 +136,104 @@ pub enum CodeLayout {
 	Formatted,
 }
 
+/// What an export leaves out, chosen in the export dialog and passed to the
+/// exporter (schema 2 and later).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LeaveOut {
+	/// The services, by class name, that an export of the whole game skips.
+	pub services: Vec<String>,
+	/// Full names, as Studio's `GetFullName` writes them
+	/// (`Workspace.Map.Trees`), left out of every export with everything
+	/// beneath them.
+	pub paths: Vec<String>,
+}
+
+impl Default for LeaveOut {
+	/// What the exporter leaves out when told nothing: Workspace, from an
+	/// export of the whole game.
+	fn default() -> Self {
+		Self {
+			services: vec!["Workspace".into()],
+			paths: Vec::new(),
+		}
+	}
+}
+
+/// The services offered in the export dialog, in the order Studio's
+/// Explorer lists them.
+pub const SERVICES: [&str; 8] = [
+	"Workspace",
+	"Lighting",
+	"ReplicatedFirst",
+	"ReplicatedStorage",
+	"ServerStorage",
+	"StarterGui",
+	"StarterPack",
+	"StarterPlayer",
+];
+
+/// The schemas whose exporter reads [`LeaveOut`]'s options.
+pub fn reads_leave_out(schema: u32) -> bool {
+	schema >= 2
+}
+
+/// `text` as a Luau string literal.
+fn luau_string(text: &str) -> String {
+	let mut out = String::from("\"");
+	for c in text.chars() {
+		match c {
+			'"' => out.push_str("\\\""),
+			'\\' => out.push_str("\\\\"),
+			c if c.is_control() => {
+				let mut bytes = [0; 4];
+				for b in c.encode_utf8(&mut bytes).bytes() {
+					out.push_str(&format!("\\{b:03}"));
+				}
+			}
+			c => out.push(c),
+		}
+	}
+	out.push('"');
+	out
+}
+
+/// The exporter's options, as `name = value` pairs of Luau: `send = false`
+/// to keep the export in Studio, and whatever `leave_out` changes from the
+/// exporter's own defaults.
+fn options(send: bool, leave_out: &LeaveOut, spaced: bool) -> Vec<(&'static str, String)> {
+	let list = |items: &[String]| {
+		let items: Vec<String> = items.iter().map(|s| luau_string(s)).collect();
+		match (items.is_empty(), spaced) {
+			(true, _) => "{}".to_string(),
+			(false, true) => format!("{{ {} }}", items.join(", ")),
+			(false, false) => format!("{{{}}}", items.join(",")),
+		}
+	};
+	let mut out = Vec::new();
+	if !send {
+		out.push(("send", "false".to_string()));
+	}
+	if leave_out.services != LeaveOut::default().services {
+		out.push(("skip", list(&leave_out.services)));
+	}
+	if !leave_out.paths.is_empty() {
+		out.push(("excludePaths", list(&leave_out.paths)));
+	}
+	out
+}
+
 /// The code to paste into Studio's Command Bar (or a plugin): it fetches the
-/// exporter for `schema` from Meshvault and runs it. `game:HttpGet` is not
+/// exporter for `schema` from Meshvault and runs it, leaving out what
+/// `leave_out` says when the exporter reads it. `game:HttpGet` is not
 /// available everywhere, so it uses HttpService with HttpEnabled switched on
 /// just for the fetch.
-pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
+pub fn studio_code(
+	schema: u32,
+	mode: CodeMode,
+	layout: CodeLayout,
+	leave_out: &LeaveOut,
+) -> String {
 	let query = if schema == LATEST_SCHEMA {
 		String::new()
 	} else {
@@ -148,6 +241,12 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 	};
 	let url = format!("http://localhost:{PORT}/export.luau{query}");
 	let [unreachable_start, unreachable_end] = UNREACHABLE;
+	let leave_out = if reads_leave_out(schema) {
+		leave_out.clone()
+	} else {
+		LeaveOut::default()
+	};
+	let send = mode == CodeMode::Send;
 	match layout {
 		CodeLayout::OneLine => {
 			let fetch = format!(
@@ -155,10 +254,19 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 				 local ok,s=pcall(h.GetAsync,h,\"{url}\") h.HttpEnabled=e \
 				 assert(ok,\"{unreachable_start}{unreachable_end}\"..tostring(s))"
 			);
+			let options: Vec<String> = options(send, &leave_out, false)
+				.into_iter()
+				.map(|(name, value)| format!("{name}={value}"))
+				.collect();
+			let options = if options.is_empty() {
+				String::new()
+			} else {
+				format!("{{{}}}", options.join(","))
+			};
 			match mode {
-				CodeMode::Send => format!("{fetch} loadstring(s)()()"),
+				CodeMode::Send => format!("{fetch} loadstring(s)()({options})"),
 				CodeMode::Edit => format!(
-					"{fetch} local issues,export,send=loadstring(s)()({{send=false}}) send(export)"
+					"{fetch} local issues,export,send=loadstring(s)()({options}) send(export)"
 				),
 			}
 		}
@@ -175,10 +283,28 @@ pub fn studio_code(schema: u32, mode: CodeMode, layout: CodeLayout) -> String {
 				 \t.. \"{unreachable_end}\" .. tostring(source))\n\
 				 \n"
 			);
+			let options = options(send, &leave_out, true);
+			// only `send = false` fits on the call's line; more get a table of their own
+			let (table, call) = match &options[..] {
+				[] => (String::new(), String::new()),
+				[(name, value)] if *name == "send" => {
+					(String::new(), format!("{{ {name} = {value} }}"))
+				}
+				_ => {
+					let fields: String = options
+						.iter()
+						.map(|(name, value)| format!("\t{name} = {value},\n"))
+						.collect();
+					(
+						format!("local options = {{\n{fields}}}\n"),
+						"options".to_string(),
+					)
+				}
+			};
 			match mode {
-				CodeMode::Send => format!("{fetch}loadstring(source)()()"),
+				CodeMode::Send => format!("{fetch}{table}loadstring(source)()({call})"),
 				CodeMode::Edit => format!(
-					"{fetch}local issues, export, send = loadstring(source)()({{ send = false }})\n\
+					"{fetch}{table}local issues, export, send = loadstring(source)()({call})\n\
 					 \n\
 					 -- change the export here, e.g. keep only the first model:\n\
 					 -- export.Models = {{ export.Models[1] }}\n\
@@ -963,11 +1089,79 @@ mod tests {
 		];
 		for (mode, layout, latest) in cases {
 			// the newest schema has no query; any other asks for its schema
-			assert_eq!(studio_code(LATEST_SCHEMA, mode, layout), latest);
+			let default = LeaveOut::default();
+			assert_eq!(studio_code(LATEST_SCHEMA, mode, layout, &default), latest);
 			let explicit = latest.replace("/export.luau\"", "/export.luau?schema=1\"");
 			assert_ne!(explicit, latest);
-			assert_eq!(studio_code(1, mode, layout), explicit);
+			assert_eq!(studio_code(1, mode, layout, &default), explicit);
+			// schema 1's exporter reads no leave-out options, so none are passed
+			let changed = LeaveOut {
+				services: Vec::new(),
+				paths: vec!["Workspace.Map".into()],
+			};
+			assert_eq!(studio_code(1, mode, layout, &changed), explicit);
 		}
+	}
+
+	// What is left out is passed to the exporter only where it differs from
+	// the exporter's own defaults, quoted as Luau strings
+	#[test]
+	fn studio_code_passes_what_is_left_out() {
+		let leave_out = LeaveOut {
+			services: vec!["Workspace".into(), "ServerStorage".into()],
+			paths: vec!["Workspace.Map.Trees".into(), r#"say "hi"\"#.into()],
+		};
+		let code = |mode, layout| studio_code(LATEST_SCHEMA, mode, layout, &leave_out);
+		let skip = r#"{"Workspace","ServerStorage"}"#;
+		let paths = r#"{"Workspace.Map.Trees","say \"hi\"\\"}"#;
+		assert_eq!(
+			code(CodeMode::Send, CodeLayout::OneLine),
+			SEND_ONE_LINE.replace(
+				"loadstring(s)()()",
+				&format!("loadstring(s)()({{skip={skip},excludePaths={paths}}})")
+			)
+		);
+		assert!(
+			code(CodeMode::Edit, CodeLayout::OneLine).ends_with(&format!(
+				"loadstring(s)()({{send=false,skip={skip},excludePaths={paths}}}) send(export)"
+			))
+		);
+		let formatted_options = concat!(
+			"local options = {\n",
+			"\tskip = { \"Workspace\", \"ServerStorage\" },\n",
+			"\texcludePaths = { \"Workspace.Map.Trees\", \"say \\\"hi\\\"\\\\\" },\n",
+			"}\n",
+		);
+		assert_eq!(
+			code(CodeMode::Send, CodeLayout::Formatted),
+			format!("{FORMATTED_FETCH}{formatted_options}loadstring(source)()(options)")
+		);
+		let edit = code(CodeMode::Edit, CodeLayout::Formatted);
+		assert!(
+			edit.contains("local options = {\n\tsend = false,\n\tskip = "),
+			"{edit}"
+		);
+		assert!(
+			edit.contains("send = loadstring(source)()(options)\n"),
+			"{edit}"
+		);
+		// leaving nothing out is passed as such
+		let nothing = LeaveOut {
+			services: Vec::new(),
+			paths: Vec::new(),
+		};
+		assert!(
+			studio_code(LATEST_SCHEMA, CodeMode::Send, CodeLayout::OneLine, &nothing)
+				.ends_with("loadstring(s)()({skip={}})")
+		);
+	}
+
+	#[test]
+	fn luau_strings_escape_quotes_backslashes_and_controls() {
+		assert_eq!(luau_string("plain"), r#""plain""#);
+		assert_eq!(luau_string(r#"a"b\c"#), r#""a\"b\\c""#);
+		assert_eq!(luau_string("tab\there\n"), r#""tab\009here\010""#);
+		assert_eq!(luau_string("Café.Tür"), r#""Café.Tür""#);
 	}
 
 	fn read(bytes: &[u8]) -> Result<Request, Reply> {

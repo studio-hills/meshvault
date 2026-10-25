@@ -30,6 +30,24 @@ and opens it for import, making a workspace first if none is open.
   Animation objects.
 - **With nothing selected**, the whole game except Workspace.
 
+### Choosing what to leave out
+
+The dialog's *Leave out* section changes what exports skip, and Meshvault
+remembers the choice:
+
+- **From the whole game, when nothing is selected:** ticked services are
+  skipped (Workspace, to begin with). Untick Workspace to export it too, or
+  tick ServerStorage, StarterGui and so on to skip them.
+- **From every export:** full names, one a line, as Studio's Explorer and
+  `GetFullName` write them (`Workspace.Map.Trees`). Each is left out with
+  everything in it, whether the whole game or a selection is exported. A
+  leading `game.` is allowed, and names holding dots are found. A name that
+  matches nothing is reported in the Output window, and the export goes on.
+
+The code in the dialog passes these to the exporter as the `skip` and
+`excludePaths` options below, so what it will leave out can be read in the
+code. Schema 1's exporter does not read them.
+
 When the exporter scans the whole game or a folder, it collects every file
 mesh and exports every Model holding parts or Animations, static or animated.
 Each is exported once, as its outermost Model below what is scanned: a Model
@@ -60,7 +78,9 @@ loadstring(s)()({ roots = { workspace.MyRig }, exclude = {} })
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `roots` | The instances to export | The selection, or `{ game }` when nothing is selected |
-| `exclude` | Instances to leave out, with everything beneath them | `{ Workspace }` when `roots` is not given and nothing is selected, otherwise none (so `roots = { game }` includes Workspace unless you also pass `exclude = { workspace }`) |
+| `skip` | Class names of services (as `GetService` takes them, so a renamed service is still found) left out wherever the whole game (`game`) is exported | `{ "Workspace" }` when `roots`, `exclude` and `skip` are not given and nothing is selected, otherwise none (so `roots = { game }` includes Workspace unless you also pass `skip = { "Workspace" }`) |
+| `exclude` | Instances to leave out, with everything beneath them | none |
+| `excludePaths` | Full names (`"Workspace.Map.Trees"`) to leave out, with everything beneath them, in any export | none |
 | `send` | `false` keeps the export in Studio instead of sending it | sends |
 
 The exporter writes the newest schema (2). Add `?schema=1` to the URL for the

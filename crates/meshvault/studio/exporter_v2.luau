@@ -1,8 +1,10 @@
 -- Meshvault exporter (schema 2).
 -- Run in the Roblox Studio Command Bar in Edit mode.
 -- Exports mesh, material, rig, and animation metadata (not geometry or textures).
--- Options: roots (defaults to selection or game), exclude (defaults to Workspace for
--- whole-game exports), send = false (return data without sending).
+-- Options: roots (defaults to selection or game), skip (the class names of services a
+-- whole-game export leaves out; defaults to { "Workspace" }), exclude (instances to leave
+-- out), excludePaths (full names to leave out, like "Workspace.Map.Trees"), send = false
+-- (return data without sending).
 -- Returns: issues, export, send(export).
 
 local SCHEMA = 2
@@ -140,8 +142,43 @@ local function run(options)
 			end
 		end
 	end
-	local excludedRoots = options.exclude
-		or ((options.roots or useSelection) and {} or { game:GetService("Workspace") })
+	local excludedRoots = table.clone(options.exclude or {})
+	-- the services left out wherever the whole game is exported: with nothing picked and
+	-- nothing said about what to leave out, Workspace
+	local skip = options.skip
+		or ((options.roots or useSelection or options.exclude) and {} or { "Workspace" })
+	if table.find(roots, game) then
+		for _, class in ipairs(skip) do
+			-- by class, as GetService finds them: a place can rename its services. FindService
+			-- does not make a service the place lacks, and errors on a name that is no class
+			local ok, service = pcall(game.FindService, game, class)
+			if ok and service then table.insert(excludedRoots, service) end
+		end
+	end
+	-- each instance a full name ("Workspace.Map.Trees", as GetFullName writes it) names.
+	-- A name can hold dots itself, so every way of splitting the path is tried
+	local function atPath(path)
+		local found = {}
+		local function under(parent, rest)
+			for _, child in ipairs(parent:GetChildren()) do
+				local name = child.Name
+				if rest == name then
+					table.insert(found, child)
+				elseif rest:sub(1, #name + 1) == name .. "." then
+					under(child, rest:sub(#name + 2))
+				end
+			end
+		end
+		under(game, (path:gsub("^game%.", "")))
+		return found
+	end
+	for _, path in ipairs(options.excludePaths or {}) do
+		local found = atPath(path)
+		if #found == 0 then
+			issue("ExcludeNotFound", ("nothing is at %s to leave out"):format(path), { Path = path })
+		end
+		for _, inst in ipairs(found) do table.insert(excludedRoots, inst) end
+	end
 	if game:GetService("RunService"):IsRunning() then
 		issue("PlayMode", "the game is running (Play mode): joints are exported in their current animated pose, "
 			.. "and Meshvault cannot be reached from a running game. Stop the test and run the line in Edit mode")
@@ -860,7 +897,7 @@ local function run(options)
 	log(("Exported %d models and %d meshes in %.1fs."):format(#models, #meshes, os.clock() - started))
 	if #meshes == 0 and #models == 0 then
 		issue("NothingToExport", "nothing to export: no meshes or models in "
-			.. ((options.roots or useSelection) and "what was picked" or "the game outside Workspace")
+			.. ((options.roots or useSelection) and "what was picked" or "the game outside what is left out")
 			.. ". Select a model (or anything inside one) in the Explorer and run the line again")
 		return
 	end

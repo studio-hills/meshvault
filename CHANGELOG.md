@@ -14,6 +14,14 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
   the background instead of while a frame is drawn. Downloads finishing no
   longer hold back thumbnails being drawn
 
+### Studio export
+
+- The export dialog's *Leave out* section chooses what exports skip: the
+  services a whole-game export leaves out (Workspace, to begin with), and
+  paths such as `Workspace.Map.Trees` left out of every export. Meshvault
+  remembers the choice, and the code it gives passes it to the exporter as
+  the new `skip` and `excludePaths` options
+
 ## [0.1.0] - 2026-10-24
 
 The first public release.

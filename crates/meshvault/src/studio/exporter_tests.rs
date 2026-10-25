@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use mlua::{Function, Lua, MultiValue, Table, Value};
 
-use super::{Event, Exports, MAX_EVENTS, PORT, SCHEMAS, egui, exporter, serve};
+use super::{Event, Exports, LeaveOut, MAX_EVENTS, PORT, SCHEMAS, egui, exporter, options, serve};
 use crate::studio::export_file;
 
 /// Just enough of Roblox for an export of loose meshes. Instances are tables
@@ -877,5 +877,143 @@ fn a_material_without_an_override_is_no_variant() {
 		model["Parts"][0].get("MaterialVariant").is_none(),
 		"{}",
 		model["Parts"][0]
+	);
+}
+
+/// The meshes schema 2's exporter keeps, as (name, id, folder), when called
+/// with what `leave_out` asks for as the export dialog passes it, and the
+/// kinds of problem it met.
+fn kept(studio: &Studio, leave_out: &LeaveOut) -> (Vec<(String, u64, String)>, Vec<String>) {
+	let fields: Vec<String> = options(false, leave_out, true)
+		.into_iter()
+		.map(|(name, value)| format!("{name} = {value}"))
+		.collect();
+	let (problems, export, _) = studio.export(&format!("{{ {} }}", fields.join(", ")));
+	let kinds = issues(&problems)
+		.into_iter()
+		.map(|(kind, _)| kind)
+		.collect();
+	if export == Value::Nil {
+		return (Vec::new(), kinds);
+	}
+	let mut meshes = meshes(&studio.document(&export), 2);
+	meshes.sort();
+	(meshes, kinds)
+}
+
+fn sentinel() -> (String, u64, String) {
+	("Sentinel".into(), 999, "Workspace".into())
+}
+
+fn leave_out(services: &[&str], paths: &[&str]) -> LeaveOut {
+	LeaveOut {
+		services: services.iter().map(|s| s.to_string()).collect(),
+		paths: paths.iter().map(|s| s.to_string()).collect(),
+	}
+}
+
+// The services chosen in the export dialog are what an export of the whole
+// game skips, in place of Workspace
+#[test]
+fn a_whole_game_export_skips_the_services_chosen() {
+	let studio = Studio::new(2);
+	let none: Vec<String> = Vec::new();
+	assert_eq!(
+		kept(&studio, &LeaveOut::default()),
+		(vec![rock()], none.clone())
+	);
+	assert_eq!(
+		kept(&studio, &leave_out(&[], &[])),
+		(vec![rock(), sentinel()], none.clone())
+	);
+	assert_eq!(
+		kept(&studio, &leave_out(&["ReplicatedStorage"], &[])),
+		(vec![sentinel()], none.clone())
+	);
+	// skipping everything leaves nothing, and says so
+	let (meshes, kinds) = kept(
+		&studio,
+		&leave_out(&["Workspace", "ReplicatedStorage"], &[]),
+	);
+	assert_eq!(
+		(meshes, kinds),
+		(vec![], vec!["NothingToExport".to_string()])
+	);
+}
+
+// Paths are left out of every export, with everything beneath them; a name
+// may hold dots, and a path to nothing is reported but does not stop the
+// export
+#[test]
+fn paths_chosen_are_left_out_of_every_export() {
+	let studio = Studio::new(2);
+	let none: Vec<String> = Vec::new();
+	assert_eq!(
+		kept(&studio, &leave_out(&[], &["ReplicatedStorage.Rock"])),
+		(vec![sentinel()], none.clone())
+	);
+	assert_eq!(
+		kept(&studio, &leave_out(&[], &["game.ReplicatedStorage"])),
+		(vec![sentinel()], none.clone())
+	);
+	studio
+		.lua
+		.load(
+			r#"
+			local dotted = newInstance("Folder", "Map.Old", game:GetService("Workspace"))
+			newInstance("MeshPart", "Tree", dotted, { MeshId = "rbxassetid://5", TextureID = "" })
+			"#,
+		)
+		.exec()
+		.unwrap();
+	let tree = ("Tree".to_string(), 5, "Workspace/Map.Old".to_string());
+	assert_eq!(
+		kept(&studio, &leave_out(&[], &["ReplicatedStorage"])),
+		(vec![sentinel(), tree], none.clone())
+	);
+	assert_eq!(
+		kept(
+			&studio,
+			&leave_out(&[], &["Workspace.Map.Old", "ReplicatedStorage"])
+		),
+		(vec![sentinel()], none.clone())
+	);
+	assert_eq!(
+		kept(
+			&studio,
+			&leave_out(&[], &["Workspace.Map.Old.Tree", "Workspace.Nowhere"])
+		),
+		(
+			vec![rock(), sentinel()],
+			vec!["ExcludeNotFound".to_string()]
+		)
+	);
+}
+
+// Exporting what was picked skips no services, but still leaves out the
+// paths chosen
+#[test]
+fn what_is_picked_skips_no_services_but_leaves_out_paths() {
+	let studio = Studio::new(2);
+	let picked = |leave_out: &LeaveOut| {
+		let fields: Vec<String> = options(false, leave_out, true)
+			.into_iter()
+			.map(|(name, value)| format!("{name} = {value}"))
+			.collect();
+		let options = format!(
+			"{{ roots = {{ game:GetService(\"Workspace\") }}, {} }}",
+			fields.join(", ")
+		);
+		let (problems, export, _) = studio.export(&options);
+		let kinds: Vec<String> = issues(&problems).into_iter().map(|(k, _)| k).collect();
+		(export, kinds)
+	};
+	let (export, kinds) = picked(&leave_out(&["Workspace"], &[]));
+	assert_eq!(kinds, Vec::<String>::new());
+	assert_eq!(meshes(&studio.document(&export), 2), [sentinel()]);
+	let (export, kinds) = picked(&leave_out(&[], &["Workspace.Sentinel"]));
+	assert_eq!(
+		(export, kinds),
+		(Value::Nil, vec!["NothingToExport".to_string()])
 	);
 }

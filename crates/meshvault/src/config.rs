@@ -31,6 +31,9 @@ pub struct Config {
 	pub lighting: crate::render::lighting::Lighting,
 	/// Whether to ask GitHub for a newer release at startup.
 	pub check_for_updates: bool,
+	/// What exports from Roblox Studio leave out, as chosen in the export
+	/// dialog.
+	pub leave_out: crate::studio::link::LeaveOut,
 	/// A settings file that could not be read nor moved aside when it was
 	/// loaded. No save replaces it until it has been moved aside.
 	#[serde(skip)]
@@ -46,6 +49,7 @@ impl Default for Config {
 			theme: ThemeMode::Dark,
 			lighting: Default::default(),
 			check_for_updates: true,
+			leave_out: Default::default(),
 			unreadable: None,
 		}
 	}

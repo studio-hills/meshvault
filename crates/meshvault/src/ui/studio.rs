@@ -16,6 +16,8 @@ pub struct StudioDialog {
 	mode: CodeMode,
 	layout: CodeLayout,
 	copied: Option<Instant>,
+	/// The paths to leave out as typed, one a line.
+	paths: String,
 }
 
 impl Default for StudioDialog {
@@ -25,6 +27,7 @@ impl Default for StudioDialog {
 			mode: CodeMode::Send,
 			layout: CodeLayout::OneLine,
 			copied: None,
+			paths: String::new(),
 		}
 	}
 }
@@ -48,6 +51,7 @@ impl App {
 		};
 		let p = palette(ctx);
 		let listening = self.studio_link.is_listening();
+		let mut leave_out_changed = false;
 		let modal = widgets::modal(ctx, "studio_export").show(ctx, |ui| {
 			ui.set_width(DIALOG_WIDTH);
 			widgets::dialog_title(ui, None, "Export from Roblox Studio");
@@ -83,15 +87,23 @@ impl App {
 				dialog.copied = None;
 			}
 			ui.add_space(8.0);
+			let reads_leave_out = link::reads_leave_out(dialog.schema);
 			let about = match dialog.mode {
 				CodeMode::Send => {
-					"Exports the selected model (with nothing selected, the whole game except \
-						 Workspace) and opens it here for import."
+					let services = if reads_leave_out {
+						self.config.leave_out.services.clone()
+					} else {
+						link::LeaveOut::default().services
+					};
+					format!(
+						"Exports the selected model (with nothing selected, the whole game{}) \
+						 and opens it here for import.",
+						except(&services)
+					)
 				}
-				CodeMode::Edit => {
-					"Gives you the export to change first. send(export) then sends it here, or \
-						 save it your own way."
-				}
+				CodeMode::Edit => "Gives you the export to change first. send(export) then sends \
+					it here, or save it your own way."
+					.to_string(),
 			};
 			ui.add(
 				egui::Label::new(
@@ -101,9 +113,34 @@ impl App {
 				)
 				.wrap(),
 			);
-			ui.add_space(12.0);
+			ui.add_space(10.0);
 
-			let source = link::studio_code(dialog.schema, dialog.mode, dialog.layout);
+			widgets::section(ui, "studio_leave_out", "Leave out", false, |ui| {
+				ui.add_enabled_ui(reads_leave_out, |ui| {
+					leave_out_changed =
+						leave_out(ui, &mut self.config.leave_out, &mut dialog.paths);
+				});
+				if !reads_leave_out {
+					ui.add_space(4.0);
+					ui.label(
+						RichText::new(
+							"Schema 1's exporter always leaves out Workspace, and nothing else.",
+						)
+						.color(p.text_weak),
+					);
+				}
+			});
+			if leave_out_changed {
+				dialog.copied = None;
+			}
+			ui.add_space(6.0);
+
+			let source = link::studio_code(
+				dialog.schema,
+				dialog.mode,
+				dialog.layout,
+				&self.config.leave_out,
+			);
 			if code_card(ui, &mut dialog.layout, &source, dialog.mode) {
 				dialog.copied = None;
 			}
@@ -152,14 +189,97 @@ impl App {
 			})
 			.inner
 		});
+		if leave_out_changed && let Err(e) = self.config.save() {
+			self.toasts.error(e);
+		}
 		if modal.inner || modal.should_close() {
 			self.studio_dialog = None;
 		}
 	}
 
 	pub fn show_studio_dialog(&mut self) {
-		self.studio_dialog = Some(StudioDialog::default());
+		self.studio_dialog = Some(StudioDialog {
+			paths: self.config.leave_out.paths.join("\n"),
+			..Default::default()
+		});
 	}
+}
+
+/// " except A, B and C" for the services a whole-game export skips, or
+/// nothing when it skips none.
+fn except(services: &[String]) -> String {
+	match services {
+		[] => String::new(),
+		[one] => format!(" except {one}"),
+		[rest @ .., last] => format!(" except {} and {last}", rest.join(", ")),
+	}
+}
+
+/// The paths typed, one a line: each trimmed, without blank lines.
+fn paths_from(text: &str) -> Vec<String> {
+	text.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.map(String::from)
+		.collect()
+}
+
+/// The choice of what exports leave out: the services a whole-game export
+/// skips, and paths left out of every export, typed into `paths`. Returns
+/// whether `leave_out` changed.
+fn leave_out(ui: &mut egui::Ui, leave_out: &mut link::LeaveOut, paths: &mut String) -> bool {
+	let p = palette(ui.ctx());
+	let mut changed = false;
+	ui.label(RichText::new("From the whole game, when nothing is selected:").color(p.text_weak));
+	ui.add_space(2.0);
+	ui.horizontal_wrapped(|ui| {
+		for service in link::SERVICES {
+			let mut on = leave_out.services.iter().any(|s| s == service);
+			if widgets::pointer(ui.checkbox(&mut on, service)).changed() {
+				// in the Explorer's order, then any not offered here
+				let kept = |name: &str| {
+					if name == service {
+						on
+					} else {
+						leave_out.services.iter().any(|s| s == name)
+					}
+				};
+				let others = leave_out
+					.services
+					.iter()
+					.filter(|s| !link::SERVICES.contains(&s.as_str()))
+					.cloned();
+				leave_out.services = link::SERVICES
+					.iter()
+					.filter(|s| kept(s))
+					.map(|s| s.to_string())
+					.chain(others)
+					.collect();
+				changed = true;
+			}
+		}
+	});
+	ui.add_space(8.0);
+	ui.label(
+		RichText::new("From every export, these and everything in them, one full name a line:")
+			.color(p.text_weak),
+	);
+	ui.add_space(2.0);
+	let edit = ui.add(
+		egui::TextEdit::multiline(paths)
+			.hint_text("Workspace.Map.Trees")
+			.font(egui::FontId::monospace(12.0))
+			.desired_rows(3)
+			.desired_width(f32::INFINITY),
+	);
+	if edit.changed() {
+		let typed = paths_from(paths);
+		if typed != leave_out.paths {
+			leave_out.paths = typed;
+			changed = true;
+		}
+	}
+	changed
 }
 
 /// The code, in a card with a bar along its top: the language, a choice of
@@ -240,4 +360,29 @@ fn code_card(ui: &mut egui::Ui, layout: &mut CodeLayout, source: &str, mode: Cod
 			});
 		});
 	changed
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn except_lists_the_services_skipped() {
+		let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+		assert_eq!(except(&names(&[])), "");
+		assert_eq!(except(&names(&["Workspace"])), " except Workspace");
+		assert_eq!(
+			except(&names(&["Workspace", "Lighting", "ServerStorage"])),
+			" except Workspace, Lighting and ServerStorage"
+		);
+	}
+
+	#[test]
+	fn paths_are_one_a_line_trimmed() {
+		assert_eq!(
+			paths_from("  Workspace.Map \n\n\tServerStorage.Old\r\n"),
+			["Workspace.Map", "ServerStorage.Old"]
+		);
+		assert!(paths_from(" \n").is_empty());
+	}
 }

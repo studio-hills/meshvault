@@ -13,8 +13,11 @@ two rows.
 The window is frameless, with Meshvault's own title bar: drag its empty space
 to move the window, double-click it to maximize, and use the buttons at its
 right end. The edges resize it, and Windows 11 keeps its corners rounded.
-The sun or moon button in the top bar switches between the light and dark
-themes.
+The sun or moon button in the top bar switches between light and dark. The
+palette button beside it chooses a colour theme (Meshvault, Ocean, Forest,
+Ember, Rose or Grape), each with a light and a dark look, and has the same
+switch. Done, pending and failed keep their green, amber and red in every
+theme.
 
 ## Updates
 

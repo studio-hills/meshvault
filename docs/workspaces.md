@@ -155,7 +155,7 @@ Meshvault draws them (192 by 192 pixels); any other is drawn again.
 
 ## Settings
 
-Settings (theme, lighting, recent workspaces, credential type, parallel
+Settings (theme and colour theme, lighting, recent workspaces, credential type, parallel
 downloads, the update check) are in `%APPDATA%\meshvault\config.json`. Meshvault writes
 them when they change and when a workspace is opened. Deleting the file resets
 them; it holds no credentials.

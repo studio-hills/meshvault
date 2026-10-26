@@ -115,7 +115,7 @@ impl App {
 	pub fn new(ctx: egui::Context, gpu: Option<Arc<GpuRenderer>>, adapter: Option<String>) -> Self {
 		let (config, config_problems) = Config::load();
 		theme::install_fonts(&ctx);
-		theme::apply(&ctx, config.theme);
+		theme::apply(&ctx, config.theme, config.colours);
 		let studio_link = StudioLink::start(&ctx);
 		let mut app = Self {
 			ctx,
@@ -180,12 +180,23 @@ impl App {
 		app
 	}
 
+	/// Shows the colour theme in dark or light, and remembers it.
 	pub fn set_theme(&mut self, mode: theme::ThemeMode) {
 		self.config.theme = mode;
+		self.apply_theme();
+	}
+
+	/// Changes the colour theme, and remembers it.
+	pub fn set_colours(&mut self, colours: theme::ColourTheme) {
+		self.config.colours = colours;
+		self.apply_theme();
+	}
+
+	fn apply_theme(&mut self) {
 		if let Err(e) = self.config.save() {
 			self.toasts.error(e);
 		}
-		theme::apply(&self.ctx, mode);
+		theme::apply(&self.ctx, self.config.theme, self.config.colours);
 	}
 
 	/// Takes in what background work finished since the last frame. Runs

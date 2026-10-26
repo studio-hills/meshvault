@@ -177,7 +177,7 @@ fn tree_scroll_replay() {
 		let label = if expanded { "expanded" } else { "typical" };
 		let ctx = egui::Context::default();
 		crate::ui::theme::install_fonts(&ctx);
-		crate::ui::theme::apply(&ctx, Default::default());
+		crate::ui::theme::apply(&ctx, Default::default(), Default::default());
 		folders(&ctx, SCOPE, &dialog.tree, expanded);
 		measure(&format!("import/{label}"), &ctx, |ui| {
 			std::hint::black_box(dialog.show(ui.ctx()));

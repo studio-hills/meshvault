@@ -476,7 +476,11 @@ mod tests {
 	fn shortcuts_rect(size: Vec2) -> egui::Rect {
 		let ctx = egui::Context::default();
 		super::super::theme::install_fonts(&ctx);
-		super::super::theme::apply(&ctx, super::super::theme::ThemeMode::Dark);
+		super::super::theme::apply(
+			&ctx,
+			super::super::theme::ThemeMode::Dark,
+			Default::default(),
+		);
 		let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
 		// a few frames, for the layout to settle
 		for _ in 0..3 {

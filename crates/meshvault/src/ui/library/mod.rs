@@ -19,12 +19,11 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, RichText, Stroke};
 
 pub(super) use self::filter::{folder_matches, mesh_name_or_id_matches};
-use self::list::nothing_matches;
 use crate::export::Format;
 use crate::render::gpu::GpuRenderer;
 use crate::render::thumbnails::Thumbnails;
 use crate::scene::maps::MapKind;
-use crate::ui::theme::{Palette, ROW, palette};
+use crate::ui::theme::{Palette, palette};
 use crate::ui::tree::{self, FolderCommand, FolderTree};
 use crate::ui::{icons, widgets};
 use crate::workspace::facts::Facts;
@@ -103,12 +102,14 @@ enum Row {
 #[derive(Default)]
 struct Selection {
 	keys: BTreeSet<Row>,
+	/// Changes to the selected keys, for the cached retry list.
+	revision: u64,
 	/// The row a Shift-click selects from.
 	anchor: Option<Row>,
 	/// Rows in the order they are drawn, gathered during this frame.
 	drawn: Vec<Row>,
-	/// Rows in the order the previous frame drew them; clicks, handled
-	/// while this frame draws, select ranges from this complete list.
+	/// Complete visible order, including off-screen rows. The list caches
+	/// it; the grid collects it during the previous frame.
 	order: Vec<Row>,
 }
 
@@ -121,6 +122,8 @@ pub struct Browser {
 	filters: Filters,
 	view: View,
 	tree: FolderTree,
+	list: list::ListCache,
+	status_counts: Option<(u64, (usize, usize, usize))>,
 	/// Item index by stem.
 	stems: HashMap<String, usize>,
 	/// Workspace and generation the tree was built from.
@@ -132,6 +135,7 @@ pub struct Browser {
 	reveal: bool,
 	scroll_to_open: std::cell::Cell<bool>,
 	selection: RefCell<Selection>,
+	selection_failures: RefCell<Option<selection::Failures>>,
 	thumbnails: Option<Thumbnails>,
 	facts: Option<Facts>,
 }
@@ -286,6 +290,9 @@ impl Browser {
 		let key = (ws.root.clone(), ws.generation());
 		if self.built_for.as_ref() != Some(&key) {
 			self.tree = FolderTree::build(ws.items().iter().map(|i| i.folder.as_slice()));
+			self.list = list::ListCache::default();
+			self.list.flat = tree::FlatTree::build(&self.tree, SCOPE, |a, b| a.cmp(&b));
+			self.status_counts = None;
 			self.stems = ws
 				.items()
 				.iter()
@@ -338,7 +345,7 @@ impl Browser {
 		let p = palette(ui.ctx());
 		let mut actions = Vec::new();
 		let items = ws.items();
-		{
+		if self.view == View::Grid {
 			let mut s = self.selection.borrow_mut();
 			s.order = std::mem::take(&mut s.drawn);
 		}
@@ -366,34 +373,26 @@ impl Browser {
 		self.search_row(ui);
 		self.update_needle();
 		ui.add_space(2.0);
-		self.status_chips(ui, items);
+		self.status_chips(ui, ws);
 		ui.add_space(4.0);
+		if self.view == View::List {
+			self.refresh_list(ui.ctx(), ws);
+		}
 		self.selection_bar(ui, ws, &mut actions);
 		self.selection_keys(ui);
 
-		let view = self.view;
-		widgets::scroll_in_margin(
-			ui,
-			egui::ScrollArea::vertical().auto_shrink([false, false]),
-			|ui| match view {
-				View::List => {
-					ui.spacing_mut().interact_size.y = ROW;
-					let any = (0..ws.models().len())
-						.any(|i| self.model_matches(ws, &ws.models()[i]))
-						|| ws.items().iter().any(|item| self.matches(item));
-					if !any {
-						nothing_matches(ui);
-					}
-					for kind in ModelKind::ALL {
-						self.models(ui, ws, kind, opened.model, &mut actions);
-					}
-					let tree = std::mem::take(&mut self.tree);
-					self.folder(ui, ws, &tree, "", opened.stem, &mut actions);
-					self.tree = tree;
-				}
-				View::Grid => self.grid(ui, ws, opened, &mut actions),
-			},
-		);
+		match self.view {
+			View::List => self.list(ui, ws, opened, &mut actions),
+			View::Grid => {
+				// Switching back to the list must restore its complete selection order.
+				self.list.invalidate_visibility();
+				widgets::scroll_list_in_margin(
+					ui,
+					egui::ScrollArea::vertical().auto_shrink([false, false]),
+					|ui| self.grid(ui, ws, opened, &mut actions),
+				);
+			}
+		}
 
 		// meshes are read for the skinned filter once it is first used
 		if let Some(facts) = &mut self.facts

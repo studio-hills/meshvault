@@ -2,6 +2,7 @@
 //! icons this app uses are listed; add more from <https://phosphoricons.com>.
 
 pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+pub const ARROW_UP: &str = "\u{E08E}";
 pub const ARROWS_CLOCKWISE: &str = "\u{E094}";
 pub const ARROWS_IN_LINE_VERTICAL: &str = "\u{E532}";
 pub const ARROWS_OUT_LINE_VERTICAL: &str = "\u{E536}";

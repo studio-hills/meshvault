@@ -18,7 +18,7 @@ use crate::ui::format::plural;
 use crate::ui::icons;
 use crate::ui::library::{folder_matches, mesh_name_or_id_matches};
 use crate::ui::theme::{ROW, palette};
-use crate::ui::tree::{self, FolderCommand, FolderTree};
+use crate::ui::tree::{self, FlatKind, FlatTree, FolderCommand, FolderTree};
 use crate::ui::widgets;
 use crate::workspace::{Workspace, model_folder};
 
@@ -51,6 +51,43 @@ fn and_list(parts: &[String]) -> String {
 	}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TreeLine {
+	Row(usize),
+	Mesh {
+		entry: usize,
+		depth: usize,
+		model: usize,
+	},
+	Note {
+		model: usize,
+		depth: usize,
+	},
+}
+
+#[derive(Default)]
+struct TreeCache {
+	filter: Option<(String, KindFilter)>,
+	revision: Option<u64>,
+	matches: Vec<bool>,
+	totals: Vec<usize>,
+	selected: Vec<usize>,
+	visible: Vec<TreeLine>,
+}
+
+struct ModelInfo {
+	missing: usize,
+	playable: usize,
+	hover: String,
+}
+
+struct ImportSelection {
+	entries: Vec<usize>,
+	models: Vec<usize>,
+	summary: String,
+	already: usize,
+}
+
 pub struct ImportDialog {
 	source: PathBuf,
 	entries: Vec<Entry>,
@@ -67,6 +104,12 @@ pub struct ImportDialog {
 	selected: Vec<bool>,
 	/// The tree over `rows`.
 	tree: FolderTree,
+	flat: FlatTree,
+	cache: TreeCache,
+	counts: (usize, usize, usize),
+	map_counts: BTreeMap<MapKind, usize>,
+	model_info: Vec<ModelInfo>,
+	selection_cache: Option<ImportSelection>,
 	/// Which kinds of map to download.
 	kinds: BTreeMap<MapKind, bool>,
 	show: KindFilter,
@@ -84,6 +127,10 @@ pub struct ImportDialog {
 
 /// Folder state namespace for the import tree.
 const SCOPE: &str = "import";
+
+fn model_id(i: usize) -> egui::Id {
+	egui::Id::unique(("import_model", i))
+}
 
 /// Height kept below the list for the summary, note and buttons.
 const FOOTER_HEIGHT: f32 = 92.0;
@@ -157,11 +204,17 @@ impl ImportDialog {
 			}
 		}
 		let tree = FolderTree::build(folders.iter().map(Vec::as_slice));
-		Self {
+		let mut dialog = Self {
 			source,
 			selected: vec![false; rows.len()],
 			rows,
 			tree,
+			flat: FlatTree::default(),
+			cache: TreeCache::default(),
+			counts: (0, 0, 0),
+			map_counts: BTreeMap::new(),
+			model_info: Vec::new(),
+			selection_cache: None,
 			kinds: MapKind::ALL.iter().map(|&k| (k, true)).collect(),
 			show: KindFilter::All,
 			existing,
@@ -177,7 +230,79 @@ impl ImportDialog {
 			download_now: true,
 			pending: None,
 			first_frame: true,
+		};
+		dialog.flat = FlatTree::build(&dialog.tree, SCOPE, |a, b| {
+			let mesh = |r: usize| matches!(dialog.rows[r], Row::Mesh(_));
+			mesh(a).cmp(&mesh(b)).then_with(|| {
+				tree::natural_cmp(
+					dialog.row_name(dialog.rows[a]),
+					dialog.row_name(dialog.rows[b]),
+				)
+			})
+		});
+		for &row in &dialog.rows {
+			match dialog.kind(row) {
+				KindFilter::Animated => dialog.counts.0 += 1,
+				KindFilter::Static => dialog.counts.1 += 1,
+				KindFilter::Meshes => dialog.counts.2 += 1,
+				KindFilter::All => unreachable!(),
+			}
 		}
+		dialog.map_counts = MapKind::ALL
+			.into_iter()
+			.map(|k| {
+				(
+					k,
+					dialog
+						.entries
+						.iter()
+						.filter(|e| e.maps.contains_key(&k))
+						.count(),
+				)
+			})
+			.collect();
+		dialog.model_info = dialog
+			.models
+			.iter()
+			.enumerate()
+			.map(|(i, m)| {
+				let meshes = dialog.model_meshes[i].len();
+				let missing = m
+					.parts
+					.iter()
+					.filter(|p| p.mesh_ref != 0)
+					.map(|p| p.mesh_ref)
+					.collect::<HashSet<_>>()
+					.len()
+					.saturating_sub(meshes);
+				let playable = m
+					.animations
+					.iter()
+					.filter(|a| a.status.is_playable())
+					.count();
+				let clips = m.animations.len();
+				let mut hover = format!(
+					"{}\n{} · {}",
+					m.path,
+					plural(m.parts.len(), "part", "parts"),
+					plural(meshes, "mesh", "meshes")
+				);
+				if clips > 0 {
+					hover.push_str(" · ");
+					hover.push_str(&if playable == clips {
+						plural(clips, "clip", "clips")
+					} else {
+						format!("{playable} of {clips} clips playable")
+					});
+				}
+				ModelInfo {
+					missing,
+					playable,
+					hover,
+				}
+			})
+			.collect();
+		dialog
 	}
 
 	/// Whether model `i` has clips; the rest are static.
@@ -197,12 +322,7 @@ impl ImportDialog {
 	/// How many rows there are of each kind: animated models, static
 	/// models, meshes no model uses.
 	fn counts(&self) -> (usize, usize, usize) {
-		let of = |kind| self.rows.iter().filter(|&&r| self.kind(r) == kind).count();
-		(
-			of(KindFilter::Animated),
-			of(KindFilter::Static),
-			of(KindFilter::Meshes),
-		)
+		self.counts
 	}
 
 	/// The line above the list: what the export holds.
@@ -262,8 +382,62 @@ impl ImportDialog {
 		}
 	}
 
-	fn visible(&self, rows: Vec<usize>) -> Vec<usize> {
-		rows.into_iter().filter(|&r| self.matches(r)).collect()
+	/// Rebuild matching and visible rows only after a filter or stored open
+	/// state changes. Selection totals are separate: checking a row does
+	/// not change the shape of the tree.
+	fn refresh_tree(&mut self, ctx: &egui::Context) {
+		let filter = (self.needle.clone(), self.show);
+		if self.cache.filter.as_ref() != Some(&filter) {
+			self.cache.matches = (0..self.rows.len()).map(|r| self.matches(r)).collect();
+			self.cache.totals = self.flat.totals(|r| self.cache.matches[r] as usize);
+			self.cache.selected.clear();
+			self.cache.filter = Some(filter);
+			self.cache.revision = None;
+		}
+		self.refresh_selection();
+		if self.cache.revision != Some(tree::revision(ctx)) {
+			let visible = self.flat.visible(
+				ctx,
+				&self.cache.matches,
+				&self.cache.totals,
+				!self.search.is_empty(),
+			);
+			self.cache.visible.clear();
+			for row in visible {
+				self.cache.visible.push(TreeLine::Row(row));
+				let flat = &self.flat.rows[row];
+				if let FlatKind::Item(r) = flat.kind
+					&& let Row::Model(i) = self.rows[r]
+					&& tree::is_open(ctx, model_id(i), false)
+				{
+					let depth = flat.depth + 1;
+					self.cache
+						.visible
+						.extend(self.model_meshes[i].iter().map(|&entry| TreeLine::Mesh {
+							entry,
+							depth,
+							model: i,
+						}));
+					if self.model_info[i].missing > 0 || self.model_meshes[i].is_empty() {
+						self.cache.visible.push(TreeLine::Note { model: i, depth });
+					}
+				}
+			}
+			self.cache.revision = Some(tree::revision(ctx));
+		}
+	}
+
+	fn refresh_selection(&mut self) {
+		if self.cache.selected.is_empty() {
+			self.cache.selected = self
+				.flat
+				.totals(|r| (self.cache.matches[r] && self.selected[r]) as usize);
+		}
+	}
+
+	fn selection_changed(&mut self) {
+		self.cache.selected.clear();
+		self.selection_cache = None;
 	}
 
 	/// The maps that will be downloaded for an entry.
@@ -333,22 +507,29 @@ impl ImportDialog {
 		let text = self.summary_text();
 		ui.horizontal_wrapped(|ui| {
 			ui.label(RichText::new(text).color(p.text_weak));
-			let problems: Vec<&String> = self.skipped.iter().chain(&self.warnings).collect();
-			if !problems.is_empty() {
-				let mut list: Vec<String> =
-					problems.iter().take(20).map(|s| s.to_string()).collect();
-				if problems.len() > 20 {
-					list.push(format!("… and {} more", problems.len() - 20));
-				}
+			let problems = self.skipped.len() + self.warnings.len();
+			if problems > 0 {
 				ui.label(
 					RichText::new(format!(
 						"{}  {} ignored",
 						icons::WARNING,
-						plural(problems.len(), "entry", "entries")
+						plural(problems, "entry", "entries")
 					))
 					.color(p.warning),
 				)
-				.on_hover_text(list.join("\n"));
+				.on_hover_ui(|ui| {
+					let mut list: Vec<_> = self
+						.skipped
+						.iter()
+						.chain(&self.warnings)
+						.take(20)
+						.cloned()
+						.collect();
+					if problems > 20 {
+						list.push(format!("… and {} more", problems - 20));
+					}
+					ui.label(list.join("\n"));
+				});
 			}
 		});
 	}
@@ -410,17 +591,40 @@ impl ImportDialog {
 		ui.add_space(4.0);
 
 		// summary and buttons below the list
-		widgets::scroll_in_margin(
+		self.refresh_tree(ui.ctx());
+		ui.spacing_mut().interact_size.y = ROW;
+		widgets::scroll_rows_in_margin(
 			ui,
 			egui::ScrollArea::vertical()
 				.auto_shrink([false, false])
 				.max_height(ui.available_height() - FOOTER_HEIGHT),
-			|ui| {
-				ui.spacing_mut().interact_size.y = ROW;
-				self.select_all_row(ui);
-				let tree = std::mem::take(&mut self.tree);
-				self.folder_contents(ui, &tree, "");
-				self.tree = tree;
+			ROW,
+			self.cache.visible.len() + 1,
+			|ui, range| {
+				ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+				for index in range {
+					if index == 0 {
+						self.select_all_row(ui);
+						continue;
+					}
+					let line = self.cache.visible[index - 1];
+					let depth = match line {
+						TreeLine::Row(row) => self.flat.rows[row].depth,
+						TreeLine::Mesh { depth, .. } | TreeLine::Note { depth, .. } => depth,
+					};
+					ui.scope_builder(
+						egui::UiBuilder::new().scope_id(ui.make_persistent_id(line)),
+						|ui| {
+							ui.horizontal(|ui| {
+								ui.set_min_height(ROW);
+								if depth > 0 {
+									ui.add_space(depth as f32 * ui.spacing().indent);
+								}
+								self.tree_line(ui, line);
+							});
+						},
+					);
+				}
 			},
 		);
 		ui.separator();
@@ -429,43 +633,48 @@ impl ImportDialog {
 
 	/// A tri-state checkbox over everything shown.
 	fn select_all_row(&mut self, ui: &mut egui::Ui) {
-		let visible = self.visible((0..self.rows.len()).collect());
-		if visible.is_empty() {
+		let total = *self.cache.totals.last().unwrap_or(&0);
+		if total == 0 {
 			ui.label(
 				RichText::new("Nothing matches the search.").color(palette(ui.ctx()).text_weak),
 			);
 			return;
 		}
-		let selected = visible.iter().filter(|&&r| self.selected[r]).count();
-		let mut all = selected == visible.len();
+		self.refresh_selection();
+		let selected = *self.cache.selected.last().unwrap_or(&0);
+		let mut all = selected == total;
 		let label = if self.search.is_empty() && self.show == KindFilter::All {
 			"Select all".to_string()
 		} else {
-			format!("Select all {} shown", visible.len())
+			format!("Select all {total} shown")
 		};
-		let response = widgets::pointer(
-			ui.add(
-				egui::Checkbox::new(&mut all, label)
-					.indeterminate(selected > 0 && selected < visible.len()),
-			),
-		);
+		let response = widgets::pointer(ui.add(
+			egui::Checkbox::new(&mut all, label).indeterminate(selected > 0 && selected < total),
+		));
 		if response.changed() {
-			for &r in &visible {
-				self.selected[r] = all;
+			for (r, &visible) in self.cache.matches.iter().enumerate() {
+				if visible {
+					self.selected[r] = all;
+				}
 			}
+			self.selection_changed();
 		}
 	}
 
-	fn footer(&mut self, ui: &mut egui::Ui) -> Option<Outcome> {
+	fn build_selection(&self) -> ImportSelection {
 		let (entries, models) = self.selection();
-		let chosen: Vec<BTreeMap<MapKind, u64>> =
-			entries.iter().map(|&e| self.chosen_maps(e)).collect();
 		let downloads: HashSet<u64> = entries
 			.iter()
-			.zip(&chosen)
-			.filter(|(e, _)| !self.existing[**e])
-			.flat_map(|(&e, maps)| {
-				std::iter::once(self.entries[e].mesh_id).chain(maps.values().copied())
+			.copied()
+			.filter(|&e| !self.existing[e])
+			.flat_map(|e| {
+				std::iter::once(self.entries[e].mesh_id).chain(
+					self.entries[e]
+						.maps
+						.iter()
+						.filter(|(k, _)| self.kinds[k])
+						.map(|(_, &id)| id),
+				)
 			})
 			.collect();
 		let animated = models.iter().filter(|&&m| self.is_animated(m)).count();
@@ -483,15 +692,36 @@ impl ImportDialog {
 			and_list(&parts),
 			plural(downloads.len(), "file", "files")
 		);
+		let already = entries.iter().filter(|&&e| self.existing[e]).count()
+			+ models.iter().filter(|&&m| self.model_existing[m]).count();
+		ImportSelection {
+			entries,
+			models,
+			summary,
+			already,
+		}
+	}
+
+	fn footer(&mut self, ui: &mut egui::Ui) -> Option<Outcome> {
+		let kinds = self.kinds.clone();
+		let cache = self
+			.selection_cache
+			.take()
+			.unwrap_or_else(|| self.build_selection());
+		let ImportSelection {
+			entries,
+			models,
+			summary,
+			already,
+		} = &cache;
 		ui.horizontal(|ui| {
-			ui.label(summary);
+			ui.label(summary.as_str());
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
 				self.maps_menu(ui)
 			});
 		});
-		let already = entries.iter().filter(|&&e| self.existing[e]).count()
-			+ models.iter().filter(|&&m| self.model_existing[m]).count();
-		if already > 0 {
+
+		if *already > 0 {
 			ui.label(widgets::caption(
 				ui,
 				format!(
@@ -531,8 +761,8 @@ impl ImportDialog {
 						origin: self.origin.clone(),
 						entries: entries
 							.iter()
-							.zip(chosen)
-							.map(|(&e, maps)| Entry {
+							.map(|&e| (e, self.chosen_maps(e)))
+							.map(|(e, maps)| Entry {
 								maps,
 								..self.entries[e].clone()
 							})
@@ -546,23 +776,15 @@ impl ImportDialog {
 				}
 			});
 		});
+		if self.kinds == kinds {
+			self.selection_cache = Some(cache);
+		}
 		outcome
 	}
 
 	/// One dropdown choosing which kinds of map to download.
 	fn maps_menu(&mut self, ui: &mut egui::Ui) {
-		let counts: BTreeMap<MapKind, usize> = MapKind::ALL
-			.iter()
-			.map(|&k| {
-				(
-					k,
-					self.entries
-						.iter()
-						.filter(|e| e.maps.contains_key(&k))
-						.count(),
-				)
-			})
-			.collect();
+		let counts = &self.map_counts;
 		let offered: Vec<MapKind> = MapKind::ALL.into_iter().filter(|k| counts[k] > 0).collect();
 		if offered.is_empty() {
 			return;
@@ -592,88 +814,102 @@ impl ImportDialog {
 		.on_hover_text("Choose which maps to download");
 	}
 
-	fn folder_contents(&mut self, ui: &mut egui::Ui, node: &FolderTree, id_path: &str) {
-		for (name, child) in node.sorted_folders() {
-			let rows = self.visible(child.all_items());
-			if rows.is_empty() {
-				continue;
-			}
-			let selected = rows.iter().filter(|&&r| self.selected[r]).count();
-			let path = tree::child_path(id_path, name);
-			let id = tree::folder_id(SCOPE, &path);
-			let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-				ui.ctx(),
-				id,
-				false,
-			);
-			// searching expands everything so matches are visible
-			if !self.search.is_empty() {
-				state.set_open(true);
-			}
-			let (arrow, _, _) = state
-				.show_header(ui, |ui| {
-					let mut all = selected == rows.len();
+	fn tree_line(&mut self, ui: &mut egui::Ui, line: TreeLine) {
+		match line {
+			TreeLine::Row(row) => match &self.flat.rows[row].kind {
+				FlatKind::Folder { name, id, .. } => {
+					let id = *id;
 					let label = format!("{}  {name}", icons::FOLDER_SIMPLE);
-					let response = widgets::pointer(
-						ui.add(
-							egui::Checkbox::new(&mut all, label)
-								.indeterminate(selected > 0 && selected < rows.len()),
-						),
-					);
-					if response.changed() {
-						for &r in &rows {
-							self.selected[r] = all;
+					self.refresh_selection();
+					let selected = self.flat.count(row, &self.cache.selected);
+					let total = self.flat.count(row, &self.cache.totals);
+					tree::header(ui, id, false, |ui| {
+						let mut all = selected == total;
+						let response = widgets::pointer(
+							ui.add(
+								egui::Checkbox::new(&mut all, label)
+									.indeterminate(selected > 0 && selected < total),
+							),
+						);
+						if response.changed() {
+							for &r in self.flat.folder_items(row) {
+								if self.cache.matches[r] {
+									self.selected[r] = all;
+								}
+							}
+							self.selection_changed();
 						}
-					}
-					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-						ui.label(widgets::caption(ui, format!("{selected}/{}", rows.len())));
-					});
-					response.context_menu(|ui| {
-						widgets::menu_style(ui);
-						if let Some(command) = tree::subtree_menu_items(ui, &path) {
-							self.pending = Some(command);
-						}
-					});
-				})
-				.body(|ui| self.folder_contents(ui, child, &path));
-			widgets::pointer(arrow);
-		}
-		// models first, then meshes, each by name
-		let mut rows: Vec<usize> = node
-			.items
-			.iter()
-			.copied()
-			.filter(|&r| self.matches(r))
-			.collect();
-		rows.sort_by(|&a, &b| {
-			let kind = |r: usize| matches!(self.rows[r], Row::Mesh(_));
-			kind(a).cmp(&kind(b)).then_with(|| {
-				tree::natural_cmp(self.row_name(self.rows[a]), self.row_name(self.rows[b]))
-			})
-		});
-		for r in rows {
-			match self.rows[r] {
-				Row::Model(i) => self.model_row(ui, r, i),
-				Row::Mesh(i) => {
-					ui.horizontal(|ui| {
-						let label = format!("{}  {}", icons::CUBE, self.entries[i].name);
-						self.checkbox_row(ui, r, label, self.existing[i]);
-						self.mesh_hint(ui, i);
+						ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+							ui.label(widgets::caption(ui, format!("{selected}/{total}")));
+						});
+						response
+							.on_hover_ui(|ui| {
+								ui.label(self.flat.path(row));
+							})
+							.context_menu(|ui| {
+								widgets::menu_style(ui);
+								if let Some(command) =
+									tree::subtree_menu_items(ui, &self.flat.path(row))
+								{
+									self.pending = Some(command);
+								}
+							});
 					});
 				}
+				FlatKind::Item(r) => {
+					let r = *r;
+					match self.rows[r] {
+						Row::Model(i) => self.model_row(ui, r, i),
+						Row::Mesh(i) => {
+							self.checkbox_row(
+								ui,
+								r,
+								format!("{}  {}", icons::CUBE, self.entries[i].name),
+								self.existing[i],
+							);
+							self.mesh_hint(ui, i);
+						}
+					}
+				}
+			},
+			TreeLine::Mesh { entry, .. } => {
+				ui.add_space(CHECKBOX_INDENT);
+				ui.label(format!("{}  {}", icons::CUBE, self.entries[entry].name));
+				self.mesh_hint(ui, entry);
+			}
+			TreeLine::Note { model, .. } => {
+				ui.add_space(CHECKBOX_INDENT);
+				let missing = self.model_info[model].missing;
+				let p = palette(ui.ctx());
+				let text = if missing > 0 {
+					RichText::new(format!(
+						"{} not in this export",
+						plural(missing, "mesh", "meshes")
+					))
+					.color(p.warning)
+				} else {
+					RichText::new("No meshes: its parts are drawn as boxes").color(p.text_weak)
+				};
+				ui.label(text);
 			}
 		}
 	}
 
 	fn checkbox_row(&mut self, ui: &mut egui::Ui, r: usize, label: String, existing: bool) {
-		let mut text = RichText::new(label);
+		let mut text = RichText::new(label.clone());
 		if existing {
 			text = text.color(ui.visuals().weak_text_color());
 		}
 		let response = widgets::pointer(ui.checkbox(&mut self.selected[r], text));
-		if existing {
-			response.on_hover_text("Already in this workspace");
+		if response.changed() {
+			self.selection_changed();
 		}
+		response.on_hover_ui(|ui| {
+			ui.label(label);
+			if existing {
+				ui.label("Already in this workspace");
+			}
+		});
 	}
 
 	/// Map count after a mesh's name, with the ids on hover.
@@ -702,109 +938,47 @@ impl ImportDialog {
 	/// A model: a checkbox, with the meshes it brings along listed
 	/// underneath when expanded. A static model has no clips to count.
 	fn model_row(&mut self, ui: &mut egui::Ui, r: usize, i: usize) {
-		let p = palette(ui.ctx());
-		let id = egui::Id::unique(("import_model", i));
-		let state =
-			egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-		let meshes = self.model_meshes[i].clone();
-		let m = &self.models[i];
-		let missing = m
-			.parts
-			.iter()
-			.filter(|part| part.mesh_ref != 0)
-			.map(|part| part.mesh_ref)
-			.collect::<HashSet<_>>()
-			.len()
-			.saturating_sub(meshes.len());
-		let playable = m
-			.animations
-			.iter()
-			.filter(|a| a.status.is_playable())
-			.count();
-		let clips = m.animations.len();
-		let animated = clips > 0;
-		let mut hover = format!(
-			"{}\n{} · {}",
-			m.path,
-			plural(m.parts.len(), "part", "parts"),
-			plural(meshes.len(), "mesh", "meshes"),
-		);
-		if animated {
-			hover.push_str(" · ");
-			hover.push_str(&if playable == clips {
-				plural(clips, "clip", "clips")
+		tree::header(ui, model_id(i), false, |ui| {
+			let animated = self.is_animated(i);
+			let icon = if animated {
+				icons::PERSON_SIMPLE_RUN
 			} else {
-				format!("{playable} of {clips} clips playable")
+				icons::PACKAGE
+			};
+			let text = RichText::new(format!("{icon}  {}", self.models[i].name));
+			let text = if self.model_existing[i] {
+				text.color(ui.visuals().weak_text_color())
+			} else {
+				text
+			};
+			let response = widgets::pointer(ui.checkbox(&mut self.selected[r], text));
+			if response.changed() {
+				self.selection_changed();
+			}
+			response.on_hover_ui(|ui| {
+				ui.label(&self.model_info[i].hover);
 			});
-		}
-		let name = m.name.clone();
-		let existing = self.model_existing[i];
-		let (arrow, _, _) = state
-			.show_header(ui, |ui| {
-				let icon = if animated {
-					icons::PERSON_SIMPLE_RUN
+			let meshes = self.model_meshes[i].len();
+			let caption = if animated {
+				format!(
+					"{}  {meshes}   {}  {}",
+					icons::CUBE,
+					icons::FILM_STRIP,
+					self.model_info[i].playable
+				)
+			} else {
+				format!("{}  {meshes}", icons::CUBE)
+			};
+			ui.label(widgets::caption(ui, caption))
+				.on_hover_text(if animated {
+					"Meshes it uses · playable clips"
 				} else {
-					icons::PACKAGE
-				};
-				let label = format!("{icon}  {name}");
-				let mut text = RichText::new(label);
-				if existing {
-					text = text.color(ui.visuals().weak_text_color());
-				}
-				widgets::pointer(ui.checkbox(&mut self.selected[r], text)).on_hover_text(hover);
-				if animated {
-					ui.label(widgets::caption(
-						ui,
-						format!(
-							"{}  {}   {}  {playable}",
-							icons::CUBE,
-							meshes.len(),
-							icons::FILM_STRIP
-						),
-					))
-					.on_hover_text("Meshes it uses · playable clips");
-				} else {
-					ui.label(widgets::caption(
-						ui,
-						format!("{}  {}", icons::CUBE, meshes.len()),
-					))
-					.on_hover_text("Meshes it uses");
-				}
-				if existing {
-					ui.label(widgets::caption(ui, "in workspace"));
-				}
-			})
-			.body(|ui| {
-				for &e in &meshes {
-					ui.horizontal(|ui| {
-						ui.add_space(CHECKBOX_INDENT);
-						ui.label(format!("{}  {}", icons::CUBE, self.entries[e].name));
-						self.mesh_hint(ui, e);
-					});
-				}
-				if missing > 0 {
-					ui.horizontal(|ui| {
-						ui.add_space(CHECKBOX_INDENT);
-						ui.label(
-							RichText::new(format!(
-								"{} not in this export",
-								plural(missing, "mesh", "meshes")
-							))
-							.color(p.warning),
-						);
-					});
-				}
-				if meshes.is_empty() && missing == 0 {
-					ui.horizontal(|ui| {
-						ui.add_space(CHECKBOX_INDENT);
-						ui.label(
-							RichText::new("No meshes: its parts are drawn as boxes")
-								.color(p.text_weak),
-						);
-					});
-				}
-			});
-		widgets::pointer(arrow);
+					"Meshes it uses"
+				});
+			if self.model_existing[i] {
+				ui.label(widgets::caption(ui, "in workspace"));
+			}
+		});
 	}
 }
 
@@ -893,6 +1067,64 @@ mod tests {
 	}
 
 	#[test]
+	fn cached_import_tracks_filters_selection_and_model_children() {
+		let export = crate::studio::export_file::parse(r#"{"SchemaVersion":1,"Meshes":[
+			{"Id":1,"Name":"Body","MeshId":"rbxassetid://10","TextureId":"rbxassetid://11","Folder":"RS/Animal"},
+			{"Id":2,"Name":"Rock","MeshId":"rbxassetid://20","Folder":"RS/Props"}],
+			"Models":[{"Name":"Animal","Path":"RS/Animal","Parts":[
+				{"MeshRef":1},{"MeshRef":999}],"Animations":[]}] }"#).unwrap();
+		let dir = TempDir::new("virtual_import");
+		let ws = Workspace::create(&dir, "Test").unwrap();
+		let mut dialog = ImportDialog::new("test.json".into(), export, &ws);
+		let ctx = egui::Context::default();
+		FolderCommand::All(true).apply(&ctx, SCOPE, &dialog.tree);
+		dialog.refresh_tree(&ctx);
+		assert_eq!(dialog.cache.matches, [true, true]);
+		let rows = dialog.cache.visible.as_ptr();
+		dialog.refresh_tree(&ctx);
+		assert_eq!(dialog.cache.visible.as_ptr(), rows);
+		let before = dialog.cache.visible.len();
+		tree::set_open(&ctx, model_id(0), true);
+		dialog.refresh_tree(&ctx);
+		assert_eq!(dialog.cache.visible.len(), before + 2);
+		assert!(dialog.cache.visible.contains(&TreeLine::Mesh {
+			entry: 0,
+			depth: 2,
+			model: 0
+		}));
+		assert!(
+			dialog
+				.cache
+				.visible
+				.contains(&TreeLine::Note { model: 0, depth: 2 })
+		);
+		assert_eq!(dialog.model_info[0].missing, 1);
+		dialog.search = "body".into();
+		dialog.needle = dialog.search.clone();
+		dialog.refresh_tree(&ctx);
+		assert_eq!(dialog.cache.matches, [true, false]);
+		dialog.selected[0] = true;
+		dialog.selection_changed();
+		dialog.refresh_tree(&ctx);
+		assert_eq!(dialog.cache.selected.last(), Some(&1));
+		let selected = dialog.build_selection();
+		assert_eq!(selected.entries, [0]);
+		assert_eq!(selected.models, [0]);
+		assert!(selected.summary.contains("2 files to download"));
+		dialog.kinds.insert(MapKind::Texture, false);
+		assert!(
+			dialog
+				.build_selection()
+				.summary
+				.contains("1 file to download")
+		);
+		dialog.show = KindFilter::Meshes;
+		dialog.refresh_tree(&ctx);
+		assert!(dialog.cache.visible.is_empty());
+		assert_eq!(dialog.cache.selected.last(), Some(&0));
+	}
+
+	#[test]
 	fn lists_read_as_english() {
 		let list =
 			|parts: &[&str]| and_list(&parts.iter().map(|s| s.to_string()).collect::<Vec<_>>());
@@ -902,3 +1134,6 @@ mod tests {
 		assert_eq!(list(&["a", "b", "c"]), "a, b and c");
 	}
 }
+
+#[cfg(test)]
+mod replay;

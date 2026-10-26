@@ -1,5 +1,6 @@
-//! The app's look: Cal Sans for text and titles, Phosphor for icons, and a
-//! dark and a light palette with consistent spacing, rounding and elevation.
+//! The app's look: Cal Sans for text and titles, Phosphor for icons, and
+//! colour themes (each a dark and a light palette) with consistent spacing,
+//! rounding and elevation.
 
 use std::sync::Arc;
 
@@ -59,7 +60,68 @@ pub struct Palette {
 	pub grid: Color32,
 }
 
-const DARK: Palette = Palette {
+/// A colour theme: a dark and a light palette sharing one accent and tint.
+/// [`ThemeMode`] picks which of the two is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColourTheme {
+	/// Indigo on neutral greys: the original look.
+	#[default]
+	Meshvault,
+	Ocean,
+	Forest,
+	Ember,
+	Rose,
+	Grape,
+}
+
+impl ColourTheme {
+	pub const ALL: [ColourTheme; 6] = [
+		ColourTheme::Meshvault,
+		ColourTheme::Ocean,
+		ColourTheme::Forest,
+		ColourTheme::Ember,
+		ColourTheme::Rose,
+		ColourTheme::Grape,
+	];
+
+	pub fn name(self) -> &'static str {
+		match self {
+			ColourTheme::Meshvault => "Meshvault",
+			ColourTheme::Ocean => "Ocean",
+			ColourTheme::Forest => "Forest",
+			ColourTheme::Ember => "Ember",
+			ColourTheme::Rose => "Rose",
+			ColourTheme::Grape => "Grape",
+		}
+	}
+
+	/// The theme's palette in `mode`.
+	pub fn palette(self, mode: ThemeMode) -> Palette {
+		let (dark, light) = match self {
+			ColourTheme::Meshvault => (MESHVAULT_DARK, MESHVAULT_LIGHT),
+			ColourTheme::Ocean => (OCEAN_DARK, OCEAN_LIGHT),
+			ColourTheme::Forest => (FOREST_DARK, FOREST_LIGHT),
+			ColourTheme::Ember => (EMBER_DARK, EMBER_LIGHT),
+			ColourTheme::Rose => (ROSE_DARK, ROSE_LIGHT),
+			ColourTheme::Grape => (GRAPE_DARK, GRAPE_LIGHT),
+		};
+		match mode {
+			ThemeMode::Dark => dark,
+			ThemeMode::Light => light,
+		}
+	}
+}
+
+// Status colours shared by every theme, so green, amber and red keep
+// meaning done, pending and failed whatever the accent.
+const SUCCESS_DARK: Color32 = hex(0x4CC38A);
+const WARNING_DARK: Color32 = hex(0xE5B454);
+const DANGER_DARK: Color32 = hex(0xF0716A);
+const SUCCESS_LIGHT: Color32 = hex(0x1F9D63);
+const WARNING_LIGHT: Color32 = hex(0xB7811A);
+const DANGER_LIGHT: Color32 = hex(0xD64541);
+
+const MESHVAULT_DARK: Palette = Palette {
 	bg: hex(0x111214),
 	panel: hex(0x17181B),
 	raised: hex(0x202227),
@@ -71,15 +133,15 @@ const DARK: Palette = Palette {
 	on_accent: hex(0x0E1020),
 	accent_soft: hex(0x23284A),
 	faint: hex(0x1B1C20),
-	success: hex(0x4CC38A),
-	warning: hex(0xE5B454),
-	danger: hex(0xF0716A),
+	success: SUCCESS_DARK,
+	warning: WARNING_DARK,
+	danger: DANGER_DARK,
 	viewport_top: hex(0x24272E),
 	viewport_bottom: hex(0x15161A),
 	grid: Color32::from_rgba_premultiplied(0x30, 0x34, 0x3C, 0xA0),
 };
 
-const LIGHT: Palette = Palette {
+const MESHVAULT_LIGHT: Palette = Palette {
 	bg: hex(0xEEF0F3),
 	panel: hex(0xF8F9FB),
 	raised: hex(0xFFFFFF),
@@ -91,21 +153,232 @@ const LIGHT: Palette = Palette {
 	on_accent: hex(0xFFFFFF),
 	accent_soft: hex(0xE3E6FD),
 	faint: hex(0xF2F3F6),
-	success: hex(0x1F9D63),
-	warning: hex(0xB7811A),
-	danger: hex(0xD64541),
+	success: SUCCESS_LIGHT,
+	warning: WARNING_LIGHT,
+	danger: DANGER_LIGHT,
 	viewport_top: hex(0xE9ECF1),
 	viewport_bottom: hex(0xC9CED7),
 	grid: Color32::from_rgba_premultiplied(0x9A, 0xA1, 0xAE, 0x90),
 };
 
+const OCEAN_DARK: Palette = Palette {
+	bg: hex(0x0E1316),
+	panel: hex(0x131A1E),
+	raised: hex(0x1B2429),
+	raised_hover: hex(0x232F35),
+	border: hex(0x26333A),
+	text: hex(0xE4EEF1),
+	text_weak: hex(0x86989F),
+	accent: hex(0x3CC6D4),
+	on_accent: hex(0x04181B),
+	accent_soft: hex(0x123A40),
+	faint: hex(0x161E22),
+	success: SUCCESS_DARK,
+	warning: WARNING_DARK,
+	danger: DANGER_DARK,
+	viewport_top: hex(0x1E2A30),
+	viewport_bottom: hex(0x10171A),
+	grid: Color32::from_rgba_premultiplied(0x2A, 0x3A, 0x40, 0xA0),
+};
+
+const OCEAN_LIGHT: Palette = Palette {
+	bg: hex(0xE9F0F2),
+	panel: hex(0xF6FAFB),
+	raised: hex(0xFFFFFF),
+	raised_hover: hex(0xEDF4F6),
+	border: hex(0xD3E0E4),
+	text: hex(0x15252A),
+	text_weak: hex(0x5E737A),
+	accent: hex(0x0B7A86),
+	on_accent: hex(0xFFFFFF),
+	accent_soft: hex(0xD4F0F3),
+	faint: hex(0xEFF5F7),
+	success: SUCCESS_LIGHT,
+	warning: WARNING_LIGHT,
+	danger: DANGER_LIGHT,
+	viewport_top: hex(0xE4EEF1),
+	viewport_bottom: hex(0xC1D2D8),
+	grid: Color32::from_rgba_premultiplied(0x8F, 0xA8, 0xB0, 0x90),
+};
+
+const FOREST_DARK: Palette = Palette {
+	bg: hex(0x0F1311),
+	panel: hex(0x151A17),
+	raised: hex(0x1D2420),
+	raised_hover: hex(0x262E29),
+	border: hex(0x29322D),
+	text: hex(0xE5ECE7),
+	text_weak: hex(0x8A978F),
+	accent: hex(0x5FCB86),
+	on_accent: hex(0x08170E),
+	accent_soft: hex(0x173826),
+	faint: hex(0x181E1A),
+	success: SUCCESS_DARK,
+	warning: WARNING_DARK,
+	danger: DANGER_DARK,
+	viewport_top: hex(0x212A25),
+	viewport_bottom: hex(0x111613),
+	grid: Color32::from_rgba_premultiplied(0x2E, 0x3A, 0x33, 0xA0),
+};
+
+const FOREST_LIGHT: Palette = Palette {
+	bg: hex(0xECF1EC),
+	panel: hex(0xF7FAF7),
+	raised: hex(0xFFFFFF),
+	raised_hover: hex(0xEEF3EF),
+	border: hex(0xD7E1D9),
+	text: hex(0x18231C),
+	text_weak: hex(0x627268),
+	accent: hex(0x23824B),
+	on_accent: hex(0xFFFFFF),
+	accent_soft: hex(0xD8EEDF),
+	faint: hex(0xF0F5F1),
+	success: SUCCESS_LIGHT,
+	warning: WARNING_LIGHT,
+	danger: DANGER_LIGHT,
+	viewport_top: hex(0xE6EEE7),
+	viewport_bottom: hex(0xC5D3C8),
+	grid: Color32::from_rgba_premultiplied(0x95, 0xA8, 0x9A, 0x90),
+};
+
+const EMBER_DARK: Palette = Palette {
+	bg: hex(0x141110),
+	panel: hex(0x1A1615),
+	raised: hex(0x241F1D),
+	raised_hover: hex(0x2E2826),
+	border: hex(0x342C29),
+	text: hex(0xEFE8E4),
+	text_weak: hex(0x9C918B),
+	accent: hex(0xFF8A4C),
+	on_accent: hex(0x1E0D04),
+	accent_soft: hex(0x4A2716),
+	faint: hex(0x1E1918),
+	success: SUCCESS_DARK,
+	warning: WARNING_DARK,
+	danger: DANGER_DARK,
+	viewport_top: hex(0x2B2421),
+	viewport_bottom: hex(0x171312),
+	grid: Color32::from_rgba_premultiplied(0x3C, 0x33, 0x2F, 0xA0),
+};
+
+const EMBER_LIGHT: Palette = Palette {
+	bg: hex(0xF4EFEC),
+	panel: hex(0xFBF8F6),
+	raised: hex(0xFFFFFF),
+	raised_hover: hex(0xF5EFEB),
+	border: hex(0xE6DCD6),
+	text: hex(0x2A1F1A),
+	text_weak: hex(0x7A6A62),
+	accent: hex(0xC4521F),
+	on_accent: hex(0xFFFFFF),
+	accent_soft: hex(0xFBE3D6),
+	faint: hex(0xF6F1EE),
+	success: SUCCESS_LIGHT,
+	warning: WARNING_LIGHT,
+	danger: DANGER_LIGHT,
+	viewport_top: hex(0xF1E9E4),
+	viewport_bottom: hex(0xD8CAC2),
+	grid: Color32::from_rgba_premultiplied(0xAE, 0xA0, 0x98, 0x90),
+};
+
+const ROSE_DARK: Palette = Palette {
+	bg: hex(0x141012),
+	panel: hex(0x1A1518),
+	raised: hex(0x241D21),
+	raised_hover: hex(0x2E252A),
+	border: hex(0x352B31),
+	text: hex(0xF0E6EB),
+	text_weak: hex(0x9D8F96),
+	accent: hex(0xF472B6),
+	on_accent: hex(0x22071A),
+	accent_soft: hex(0x4A1D36),
+	faint: hex(0x1E181B),
+	success: SUCCESS_DARK,
+	warning: WARNING_DARK,
+	danger: DANGER_DARK,
+	viewport_top: hex(0x2B2228),
+	viewport_bottom: hex(0x171215),
+	grid: Color32::from_rgba_premultiplied(0x3D, 0x31, 0x38, 0xA0),
+};
+
+const ROSE_LIGHT: Palette = Palette {
+	bg: hex(0xF5EEF1),
+	panel: hex(0xFCF8FA),
+	raised: hex(0xFFFFFF),
+	raised_hover: hex(0xF7EEF2),
+	border: hex(0xE8D9E0),
+	text: hex(0x2A1A22),
+	text_weak: hex(0x7D6872),
+	accent: hex(0xC2256F),
+	on_accent: hex(0xFFFFFF),
+	accent_soft: hex(0xFADCEB),
+	faint: hex(0xF8F1F4),
+	success: SUCCESS_LIGHT,
+	warning: WARNING_LIGHT,
+	danger: DANGER_LIGHT,
+	viewport_top: hex(0xF3E8ED),
+	viewport_bottom: hex(0xDBC8D1),
+	grid: Color32::from_rgba_premultiplied(0xB0, 0x9C, 0xA6, 0x90),
+};
+
+const GRAPE_DARK: Palette = Palette {
+	bg: hex(0x120F17),
+	panel: hex(0x18141E),
+	raised: hex(0x211C29),
+	raised_hover: hex(0x2A2434),
+	border: hex(0x302940),
+	text: hex(0xEBE6F2),
+	text_weak: hex(0x958DA3),
+	accent: hex(0xB18CFF),
+	on_accent: hex(0x150A2A),
+	accent_soft: hex(0x352555),
+	faint: hex(0x1B1722),
+	success: SUCCESS_DARK,
+	warning: WARNING_DARK,
+	danger: DANGER_DARK,
+	viewport_top: hex(0x272033),
+	viewport_bottom: hex(0x14111A),
+	grid: Color32::from_rgba_premultiplied(0x37, 0x30, 0x45, 0xA0),
+};
+
+const GRAPE_LIGHT: Palette = Palette {
+	bg: hex(0xF1EEF6),
+	panel: hex(0xFAF8FC),
+	raised: hex(0xFFFFFF),
+	raised_hover: hex(0xF2EEF8),
+	border: hex(0xE0D9EA),
+	text: hex(0x221B2E),
+	text_weak: hex(0x6F6680),
+	accent: hex(0x7C4DDB),
+	on_accent: hex(0xFFFFFF),
+	accent_soft: hex(0xEAE0FC),
+	faint: hex(0xF5F2F9),
+	success: SUCCESS_LIGHT,
+	warning: WARNING_LIGHT,
+	danger: DANGER_LIGHT,
+	viewport_top: hex(0xEEE9F5),
+	viewport_bottom: hex(0xD0C7DF),
+	grid: Color32::from_rgba_premultiplied(0xA4, 0x9B, 0xB4, 0x90),
+};
+
+/// Where [`apply`] keeps the chosen colour theme for [`palette`].
+fn theme_id() -> egui::Id {
+	egui::Id::unique("colour_theme")
+}
+
+/// The colour theme [`apply`] last chose for this context.
+pub fn colour_theme(ctx: &egui::Context) -> ColourTheme {
+	ctx.data(|d| d.get_temp(theme_id())).unwrap_or_default()
+}
+
 /// The palette matching the context's current theme.
 pub fn palette(ctx: &egui::Context) -> Palette {
-	if ctx.global_style().visuals.dark_mode {
-		DARK
+	let mode = if ctx.global_style().visuals.dark_mode {
+		ThemeMode::Dark
 	} else {
-		LIGHT
-	}
+		ThemeMode::Light
+	};
+	colour_theme(ctx).palette(mode)
 }
 
 /// Font family for semibold interface text (labels that need weight).
@@ -353,8 +626,88 @@ fn style_for(p: &Palette, dark: bool) -> egui::Style {
 	style
 }
 
-pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
-	ctx.set_style_of(Theme::Dark, style_for(&DARK, true));
-	ctx.set_style_of(Theme::Light, style_for(&LIGHT, false));
+/// Styles the context in `colours`, showing its `mode` palette.
+pub fn apply(ctx: &egui::Context, mode: ThemeMode, colours: ColourTheme) {
+	ctx.data_mut(|d| d.insert_temp(theme_id(), colours));
+	let dark = colours.palette(ThemeMode::Dark);
+	let light = colours.palette(ThemeMode::Light);
+	ctx.set_style_of(Theme::Dark, style_for(&dark, true));
+	ctx.set_style_of(Theme::Light, style_for(&light, false));
 	ctx.set_theme(mode.egui());
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// WCAG contrast ratio between two opaque colours.
+	fn contrast(a: Color32, b: Color32) -> f32 {
+		let luminance = |c: Color32| {
+			let channel = |v: u8| {
+				let v = v as f32 / 255.0;
+				if v <= 0.04045 {
+					v / 12.92
+				} else {
+					((v + 0.055) / 1.055).powf(2.4)
+				}
+			};
+			0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+		};
+		let (a, b) = (luminance(a), luminance(b));
+		(a.max(b) + 0.05) / (a.min(b) + 0.05)
+	}
+
+	#[test]
+	fn every_theme_keeps_its_text_readable() {
+		for colours in ColourTheme::ALL {
+			for mode in [ThemeMode::Dark, ThemeMode::Light] {
+				let p = colours.palette(mode);
+				let name = format!("{} {mode:?}", colours.name());
+				for (what, fg, bg, least) in [
+					("text on panels", p.text, p.panel, 7.0),
+					("text on raised", p.text, p.raised, 7.0),
+					("weak text on panels", p.text_weak, p.panel, 4.5),
+					("accent buttons", p.on_accent, p.accent, 4.5),
+					("accent text", p.accent, p.panel, 3.0),
+					("selected options", p.accent, p.accent_soft, 3.0),
+				] {
+					let ratio = contrast(fg, bg);
+					assert!(ratio >= least, "{name}: {what} {ratio:.2} < {least}");
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn themes_differ_and_the_first_is_the_original() {
+		let accents: std::collections::HashSet<_> = ColourTheme::ALL
+			.iter()
+			.map(|c| c.palette(ThemeMode::Dark).accent)
+			.collect();
+		assert_eq!(accents.len(), ColourTheme::ALL.len());
+		assert_eq!(ColourTheme::default(), ColourTheme::ALL[0]);
+		assert_eq!(
+			ColourTheme::Meshvault.palette(ThemeMode::Dark).accent,
+			hex(0x7C8CFF)
+		);
+	}
+
+	#[test]
+	fn the_palette_follows_the_applied_theme() {
+		let ctx = egui::Context::default();
+		apply(&ctx, ThemeMode::Light, ColourTheme::Forest);
+		ctx.run_ui(egui::RawInput::default(), |_| {})
+			.textures_delta
+			.clear();
+		assert_eq!(colour_theme(&ctx), ColourTheme::Forest);
+		assert_eq!(
+			palette(&ctx).accent,
+			ColourTheme::Forest.palette(ThemeMode::Light).accent
+		);
+		apply(&ctx, ThemeMode::Dark, ColourTheme::Ember);
+		ctx.run_ui(egui::RawInput::default(), |_| {})
+			.textures_delta
+			.clear();
+		assert_eq!(palette(&ctx).panel, EMBER_DARK.panel);
+	}
 }

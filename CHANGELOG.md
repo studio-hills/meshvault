@@ -7,6 +7,14 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Themes
+
+- Six colour themes, each in dark and light: Meshvault (the original
+  indigo), Ocean, Forest, Ember, Rose and Grape. The palette button in the
+  top bar shows a card for each, beside the dark and light switch, and
+  Meshvault remembers the choice. A theme colours the panels, the accent
+  and the 3D view's background; done, pending and failed keep their colours
+
 ### Library
 
 - Smooth scrolling through large folder trees in the library and import

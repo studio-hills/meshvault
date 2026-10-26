@@ -2,10 +2,12 @@
 //! switcher, the file buttons, the panel toggles and the More menu, whose
 //! export items the viewport toolbar shows too.
 
-use eframe::egui::{self, Align, Layout, RichText, Vec2};
+use eframe::egui::{self, Align, CornerRadius, Layout, RichText, Stroke, Vec2};
 
 use super::layout::TOP_BAR_MARGIN;
-use super::theme::{CAPTION, CONTROL, ThemeMode, display, medium, palette};
+use super::theme::{
+	CAPTION, CARD_RADIUS, CONTROL, ColourTheme, ThemeMode, display, medium, palette,
+};
 use super::{icons, widgets};
 use crate::app::App;
 use crate::scene::maps::Slot;
@@ -146,6 +148,14 @@ impl App {
 				if widgets::icon_button(ui, icon, tip).clicked() {
 					self.set_theme(next);
 				}
+				ui.scope(|ui| {
+					ui.spacing_mut().button_padding.x = 10.0;
+					ui.menu_button(RichText::new(icons::PALETTE).size(16.0), |ui| {
+						self.theme_menu(ui)
+					})
+					.response
+					.on_hover_text("Theme");
+				});
 			});
 		});
 	}
@@ -226,6 +236,43 @@ impl App {
 				}
 			}
 		});
+	}
+
+	/// Dark or light, and a card for each colour theme showing it.
+	fn theme_menu(&mut self, ui: &mut egui::Ui) {
+		widgets::menu_style(ui);
+		ui.horizontal(|ui| {
+			ui.label(widgets::overline("Theme").weak());
+			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				let mut mode = self.config.theme;
+				if widgets::text_segmented(
+					ui,
+					&mut mode,
+					&[(ThemeMode::Dark, "Dark"), (ThemeMode::Light, "Light")],
+				) {
+					self.set_theme(mode);
+				}
+			});
+		});
+		ui.add_space(4.0);
+		let mut chosen = None;
+		egui::Grid::new("theme_cards")
+			.num_columns(THEME_COLUMNS)
+			.spacing([8.0, 8.0])
+			.show(ui, |ui| {
+				for (i, colours) in ColourTheme::ALL.into_iter().enumerate() {
+					let selected = self.config.colours == colours;
+					if theme_card(ui, colours, self.config.theme, selected).clicked() {
+						chosen = Some(colours);
+					}
+					if (i + 1) % THEME_COLUMNS == 0 {
+						ui.end_row();
+					}
+				}
+			});
+		if let Some(colours) = chosen {
+			self.set_colours(colours);
+		}
 	}
 
 	fn more_menu(&mut self, ui: &mut egui::Ui) {
@@ -379,6 +426,65 @@ fn shorten(name: &str, chars: usize) -> String {
 	}
 	let cut: String = name.chars().take(chars.saturating_sub(1)).collect();
 	format!("{}…", cut.trim_end())
+}
+
+/// Theme cards in a row of the theme menu.
+const THEME_COLUMNS: usize = 3;
+/// A theme card's size.
+const THEME_CARD: Vec2 = Vec2::new(112.0, 76.0);
+
+/// A small picture of `colours` in `mode`: its panel, with a viewport of
+/// its gradient holding an accent button, and its name in its text colour.
+/// The chosen theme is ringed in the current accent.
+fn theme_card(
+	ui: &mut egui::Ui,
+	colours: ColourTheme,
+	mode: ThemeMode,
+	selected: bool,
+) -> egui::Response {
+	let (rect, response) = ui.allocate_exact_size(THEME_CARD, egui::Sense::click());
+	let response = widgets::pointer(response).on_hover_text(colours.name());
+	let current = palette(ui.ctx());
+	let t = colours.palette(mode);
+	let painter = ui.painter();
+	let radius = CornerRadius::same(CARD_RADIUS);
+	painter.rect_filled(rect, radius, t.panel);
+	// the viewport: the theme's gradient, inset like a panel's content
+	let view = egui::Rect::from_min_max(
+		rect.min + Vec2::splat(6.0),
+		egui::pos2(rect.max.x - 6.0, rect.min.y + 46.0),
+	);
+	widgets::vertical_gradient(painter, view, t.viewport_top, t.viewport_bottom);
+	painter.rect_stroke(
+		view,
+		CornerRadius::ZERO,
+		Stroke::new(1.0, t.border),
+		egui::StrokeKind::Inside,
+	);
+	// a raised chip and an accent button, as in a toolbar
+	let chip = egui::Rect::from_min_size(view.min + Vec2::new(6.0, 6.0), Vec2::new(30.0, 10.0));
+	painter.rect_filled(chip, CornerRadius::same(3), t.raised);
+	let button = egui::Rect::from_min_size(
+		egui::pos2(view.max.x - 32.0, view.max.y - 14.0),
+		Vec2::new(26.0, 8.0),
+	);
+	painter.rect_filled(button, CornerRadius::same(4), t.accent);
+	painter.text(
+		egui::pos2(rect.min.x + 8.0, rect.max.y - 8.0),
+		egui::Align2::LEFT_BOTTOM,
+		colours.name(),
+		egui::FontId::new(CAPTION, medium()),
+		t.text,
+	);
+	let ring = if selected {
+		Stroke::new(2.0, current.accent)
+	} else if response.hovered() {
+		Stroke::new(1.0, current.text_weak)
+	} else {
+		Stroke::new(1.0, current.border)
+	};
+	painter.rect_stroke(rect, radius, ring, egui::StrokeKind::Inside);
+	response
 }
 
 #[cfg(test)]

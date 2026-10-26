@@ -613,7 +613,7 @@ mod tests {
 		);
 		let ctx = egui::Context::default();
 		crate::ui::theme::install_fonts(&ctx);
-		crate::ui::theme::apply(&ctx, Default::default());
+		crate::ui::theme::apply(&ctx, Default::default(), Default::default());
 		let mut browser = Browser {
 			reveal: true,
 			..Default::default()

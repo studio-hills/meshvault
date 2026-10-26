@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ui::theme::ThemeMode;
+use crate::ui::theme::{ColourTheme, ThemeMode};
 use crate::workspace::download::{AuthMethod, DEFAULT_CONCURRENCY};
 
 /// Name used for the config folder and the credential store.
@@ -27,6 +27,8 @@ pub struct Config {
 	pub auth_method: AuthMethod,
 	pub concurrency: usize,
 	pub theme: ThemeMode,
+	/// The colour theme, shown in `theme`'s dark or light palette.
+	pub colours: ColourTheme,
 	/// How the 3D view is lit.
 	pub lighting: crate::render::lighting::Lighting,
 	/// Whether to ask GitHub for a newer release at startup.
@@ -47,6 +49,7 @@ impl Default for Config {
 			auth_method: AuthMethod::ApiKey,
 			concurrency: DEFAULT_CONCURRENCY,
 			theme: ThemeMode::Dark,
+			colours: ColourTheme::default(),
 			lighting: Default::default(),
 			check_for_updates: true,
 			leave_out: Default::default(),

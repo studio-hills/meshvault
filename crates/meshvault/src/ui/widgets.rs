@@ -569,6 +569,36 @@ pub fn truncated(
 	painter.layout_job(job)
 }
 
+/// `text` on one line at most `width` wide, starting with "…" when it is
+/// cut short, so the end of a path (the file's name) stays in view.
+/// Returns the galley and whether it was cut.
+pub fn truncated_start(
+	painter: &egui::Painter,
+	text: &str,
+	font: FontId,
+	colour: Color32,
+	width: f32,
+) -> (std::sync::Arc<egui::Galley>, bool) {
+	let layout = |s: String| painter.layout_no_wrap(s, font.clone(), colour);
+	let full = layout(text.to_owned());
+	if full.size().x <= width {
+		return (full, false);
+	}
+	// the most of the end of `text` that fits after the "…"
+	let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+	let (mut lo, mut hi) = (0, starts.len());
+	while lo < hi {
+		let mid = (lo + hi) / 2;
+		if layout(format!("…{}", &text[starts[mid]..])).size().x <= width {
+			hi = mid;
+		} else {
+			lo = mid + 1;
+		}
+	}
+	let rest = starts.get(lo).map_or("", |&i| &text[i..]);
+	(layout(format!("…{rest}")), true)
+}
+
 /// A dashed outline along exactly `rect`, with square corners, used as a
 /// drop target. `dash` is the length of a dash and of the gap after it.
 pub fn dashed_rect(
@@ -784,6 +814,34 @@ pub fn scroll_rows_in_margin<R>(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn long_paths_lose_their_start_and_keep_their_name() {
+		let ctx = egui::Context::default();
+		let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			let font = FontId::proportional(CAPTION);
+			let path = r"C:\Users\me\Meshvault\Models\Égg\Controllers\CutsceneFX.mesh";
+			let full = ui
+				.painter()
+				.layout_no_wrap(path.into(), font.clone(), Color32::WHITE);
+			let (galley, cut) =
+				truncated_start(ui.painter(), path, font.clone(), Color32::WHITE, 1000.0);
+			assert!(!cut);
+			assert_eq!(galley.text(), path);
+			let width = full.size().x / 2.0;
+			let (galley, cut) =
+				truncated_start(ui.painter(), path, font.clone(), Color32::WHITE, width);
+			assert!(cut);
+			assert!(galley.size().x <= width);
+			assert!(galley.text().starts_with('…'));
+			assert!(galley.text().ends_with(r"\CutsceneFX.mesh"));
+			// no room at all leaves just the "…"
+			let (galley, cut) = truncated_start(ui.painter(), path, font, Color32::WHITE, 0.0);
+			assert!(cut);
+			assert_eq!(galley.text(), "…");
+		});
+		output.textures_delta.clear();
+	}
 
 	#[test]
 	fn back_to_top_shows_when_scrolled_far_and_scrolls_up() {

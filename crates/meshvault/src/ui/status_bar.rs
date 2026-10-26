@@ -10,122 +10,150 @@ use crate::studio::link::{self, Status};
 
 impl App {
 	pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
-		let p = palette(ui.ctx());
 		ui.horizontal(|ui| {
 			ui.spacing_mut().item_spacing.x = 10.0;
 			ui.spacing_mut().interact_size.y = 22.0;
-			let small =
-				|text: String, colour: Color32| RichText::new(text).size(CAPTION).color(colour);
-			match &self.adapter {
-				Some(name) if self.gpu.is_some() => {
-					ui.label(small(format!("{}  GPU", icons::CIRCLE), p.success))
-						.on_hover_text(format!("Rendering on {name}"));
-				}
-				_ => {
-					ui.label(small(format!("{}  CPU renderer", icons::CIRCLE), p.warning))
-						.on_hover_text(
-							"No GPU renderer: normal, roughness and metalness maps are not shown",
-						);
-				}
-			}
-			// an export that stops arriving is forgotten after a while
-			let receiving = self
-				.studio_progress
-				.as_ref()
-				.filter(|(_, _, _, at)| at.elapsed().as_secs() < 60);
-			let (text, colour, hover) = match (&self.studio_link.status, receiving) {
-				(Status::Listening, Some((_, done, count, _))) => (
-					format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
-					p.accent,
-					"An export is arriving from Roblox Studio".to_owned(),
-				),
-				(Status::Listening, None) => (
-					format!("{}  Studio link", icons::CIRCLE),
-					p.success,
-					format!(
-						"Listening on localhost:{} for exports from Roblox Studio. Click for the Command Bar line.",
-						link::PORT
-					),
-				),
-				(Status::Unavailable(why), _) => (
-					format!("{}  Studio link unavailable", icons::CIRCLE),
-					p.warning,
-					unavailable_text(why),
-				),
-			};
-			let studio = ui
-				.add(egui::Label::new(small(text, colour)).sense(Sense::click()))
-				.on_hover_text(hover);
-			if widgets::pointer(studio).clicked() {
-				self.show_studio_dialog();
-			}
-			let path = match (&self.doc, &self.model) {
-				(Some(doc), _) => doc.path.display().to_string(),
-				(None, Some(model)) => model.path.clone(),
-				(None, None) => "No model open".into(),
-			};
-			ui.add(egui::Label::new(small(path, p.text_weak)).truncate());
-
+			// the right side first, so the path gets only the room left over
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				if let Some(release) = &self.update {
-					let notice = ui
-						.add(
-							egui::Label::new(small(
-								format!("{}  Update {}", icons::CLOUD_ARROW_DOWN, release.version),
-								p.accent,
-							))
-							.sense(Sense::click()),
-						)
-						.on_hover_text(format!(
-							"Meshvault {} is available (this is {}). Click to open its release page.",
-							release.version,
-							crate::update::CURRENT
-						));
-					if widgets::pointer(notice).clicked() {
-						ui.ctx().open_url(egui::OpenUrl::new_tab(&release.url));
-					}
-				}
-				if self.downloader.is_running() {
-					if widgets::icon_button(ui, icons::STOP, "Cancel downloads").clicked() {
-						self.downloader.cancel();
-					}
-					let d = &self.downloader;
-					let progress = d.completed as f32 / d.total.max(1) as f32;
-					let bar = ui.add(
-						egui::ProgressBar::new(progress)
-							.desired_width(160.0)
-							.desired_height(14.0)
-							.fill(p.accent),
-					);
-					// the count's digits keep their width as it climbs
-					widgets::paint_tabular(
-						ui.painter(),
-						bar.rect.center(),
-						Align2::CENTER_CENTER,
-						&format!("{}/{}", d.completed, d.total),
-						&egui::FontId::proportional(CAPTION),
-						p.text,
-					);
-					let mut text = format!("{}  Downloading", icons::CLOUD_ARROW_DOWN);
-					if d.failed > 0 {
-						text.push_str(&format!(" · {} failed", d.failed));
-					}
-					ui.label(small(text, p.text_weak));
-				} else if let Some(ws) = &self.workspace {
-					let items = ws.items();
-					let done = items.iter().filter(|i| i.is_done()).count();
-					let mut text = format!("{} meshes · {done} downloaded", items.len());
-					let animated = ws.models().iter().filter(|m| m.is_animated()).count();
-					let still = ws.models().len() - animated;
-					if still > 0 {
-						text = format!("{still} static · {text}");
-					}
-					if animated > 0 {
-						text = format!("{animated} animated · {text}");
-					}
-					ui.label(small(text, p.text_weak));
-				}
+				self.status_right(ui);
+				ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+					self.status_left(ui);
+				});
 			});
 		});
 	}
+
+	/// The renderer, the Studio link and the open model's path.
+	fn status_left(&mut self, ui: &mut egui::Ui) {
+		let p = palette(ui.ctx());
+		match &self.adapter {
+			Some(name) if self.gpu.is_some() => {
+				ui.label(small(format!("{}  GPU", icons::CIRCLE), p.success))
+					.on_hover_text(format!("Rendering on {name}"));
+			}
+			_ => {
+				ui.label(small(format!("{}  CPU renderer", icons::CIRCLE), p.warning))
+					.on_hover_text(
+						"No GPU renderer: normal, roughness and metalness maps are not shown",
+					);
+			}
+		}
+		// an export that stops arriving is forgotten after a while
+		let receiving = self
+			.studio_progress
+			.as_ref()
+			.filter(|(_, _, _, at)| at.elapsed().as_secs() < 60);
+		let (text, colour, hover) = match (&self.studio_link.status, receiving) {
+			(Status::Listening, Some((_, done, count, _))) => (
+				format!("{}  Receiving from Studio {done}/{count}", icons::CIRCLE),
+				p.accent,
+				"An export is arriving from Roblox Studio".to_owned(),
+			),
+			(Status::Listening, None) => (
+				format!("{}  Studio link", icons::CIRCLE),
+				p.success,
+				format!(
+					"Listening on localhost:{} for exports from Roblox Studio. Click for the Command Bar line.",
+					link::PORT
+				),
+			),
+			(Status::Unavailable(why), _) => (
+				format!("{}  Studio link unavailable", icons::CIRCLE),
+				p.warning,
+				unavailable_text(why),
+			),
+		};
+		let studio = ui
+			.add(egui::Label::new(small(text, colour)).sense(Sense::click()))
+			.on_hover_text(hover);
+		if widgets::pointer(studio).clicked() {
+			self.show_studio_dialog();
+		}
+		let path = match (&self.doc, &self.model) {
+			(Some(doc), _) => doc.path.display().to_string(),
+			(None, Some(model)) => model.path.clone(),
+			(None, None) => "No model open".into(),
+		};
+		// a long path loses its start, keeping the file's name in view
+		let (galley, cut) = widgets::truncated_start(
+			ui.painter(),
+			&path,
+			egui::FontId::proportional(CAPTION),
+			p.text_weak,
+			ui.available_width(),
+		);
+		let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+		ui.painter().galley(rect.min, galley, p.text_weak);
+		if cut {
+			response.on_hover_text(path);
+		}
+	}
+
+	/// Download progress, or what the workspace holds, and any update.
+	fn status_right(&mut self, ui: &mut egui::Ui) {
+		let p = palette(ui.ctx());
+		if let Some(release) = &self.update {
+			let notice = ui
+				.add(
+					egui::Label::new(small(
+						format!("{}  Update {}", icons::CLOUD_ARROW_DOWN, release.version),
+						p.accent,
+					))
+					.sense(Sense::click()),
+				)
+				.on_hover_text(format!(
+					"Meshvault {} is available (this is {}). Click to open its release page.",
+					release.version,
+					crate::update::CURRENT
+				));
+			if widgets::pointer(notice).clicked() {
+				ui.ctx().open_url(egui::OpenUrl::new_tab(&release.url));
+			}
+		}
+		if self.downloader.is_running() {
+			if widgets::icon_button(ui, icons::STOP, "Cancel downloads").clicked() {
+				self.downloader.cancel();
+			}
+			let d = &self.downloader;
+			let progress = d.completed as f32 / d.total.max(1) as f32;
+			let bar = ui.add(
+				egui::ProgressBar::new(progress)
+					.desired_width(160.0)
+					.desired_height(14.0)
+					.fill(p.accent),
+			);
+			// the count's digits keep their width as it climbs
+			widgets::paint_tabular(
+				ui.painter(),
+				bar.rect.center(),
+				Align2::CENTER_CENTER,
+				&format!("{}/{}", d.completed, d.total),
+				&egui::FontId::proportional(CAPTION),
+				p.text,
+			);
+			let mut text = format!("{}  Downloading", icons::CLOUD_ARROW_DOWN);
+			if d.failed > 0 {
+				text.push_str(&format!(" · {} failed", d.failed));
+			}
+			ui.label(small(text, p.text_weak));
+		} else if let Some(ws) = &self.workspace {
+			let items = ws.items();
+			let done = items.iter().filter(|i| i.is_done()).count();
+			let mut text = format!("{} meshes · {done} downloaded", items.len());
+			let animated = ws.models().iter().filter(|m| m.is_animated()).count();
+			let still = ws.models().len() - animated;
+			if still > 0 {
+				text = format!("{still} static · {text}");
+			}
+			if animated > 0 {
+				text = format!("{animated} animated · {text}");
+			}
+			ui.label(small(text, p.text_weak));
+		}
+	}
+}
+
+/// Status bar text: small, in one colour.
+fn small(text: String, colour: Color32) -> RichText {
+	RichText::new(text).size(CAPTION).color(colour)
 }

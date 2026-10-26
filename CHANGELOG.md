@@ -27,6 +27,12 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
   remembers the choice, and the code it gives passes it to the exporter as
   the new `skip` and `excludePaths` options
 
+### App
+
+- The status bar no longer draws a long path over the counts on its right:
+  the path loses its start instead, keeping the file's name in view, with
+  the whole path on hover
+
 ## [0.1.0] - 2026-10-24
 
 The first public release.

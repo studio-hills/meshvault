@@ -127,7 +127,9 @@ pub struct Workspace {
 	dirty: bool,
 	/// Bumped whenever items are added or removed, so views can cache.
 	generation: u64,
-	/// Download state changes also invalidate background readers' snapshots.
+	/// Bumped whenever a download state changes (including retries and maps
+	/// added on re-import), so views caching statuses and counts refresh;
+	/// it also invalidates background readers' snapshots.
 	asset_generation: u64,
 	/// Each item's index by its stem, built when first wanted after a
 	/// change (see [`Self::changed`]).
@@ -406,6 +408,8 @@ impl Workspace {
 				if let std::collections::btree_map::Entry::Vacant(slot) = item.maps.entry(kind) {
 					slot.insert(map);
 					self.dirty = true;
+					// a new map to download changes the item's status
+					self.asset_generation += 1;
 				}
 			}
 			return (item.stem.clone(), false);
@@ -739,6 +743,7 @@ impl Workspace {
 				if matches!(state, AssetState::Failed { .. }) {
 					*state = AssetState::Pending;
 					self.dirty = true;
+					self.asset_generation += 1;
 				}
 			}
 		}
@@ -781,6 +786,9 @@ impl Workspace {
 				changed |= retry(&mut map.state);
 			}
 			self.dirty |= changed;
+			if changed {
+				self.asset_generation += 1;
+			}
 		}
 	}
 
@@ -975,6 +983,49 @@ mod tests {
 		let (_, new) = ws.add_entry(&entry("Pet Sim/RS/Wolf", "Body", 1, &[]), &pets);
 		assert!(!new);
 		assert_eq!(ws.items().len(), 2);
+	}
+
+	/// Views cache statuses by `asset_generation`, so every change to what
+	/// is downloaded moves it on: a retry, and new maps on a re-import.
+	#[test]
+	fn retries_and_new_maps_change_the_asset_generation() {
+		let dir = TempDir::new("ws_asset_generation");
+		let mut ws = Workspace::create(&dir, "Test").unwrap();
+		let (stem, _) = ws.add_entry(&entry("RS", "Body", 1, &[]), &Origin::default());
+		ws.set_state(
+			&stem,
+			AssetKind::Mesh,
+			AssetState::Done {
+				path: "Models/RS/Body.mesh".into(),
+			},
+		);
+		let generation = ws.asset_generation();
+		ws.add_entry(
+			&entry("RS", "Body", 1, &[(MapKind::Color, 5)]),
+			&Origin::default(),
+		);
+		assert!(ws.items()[0].has_pending());
+		assert!(ws.asset_generation() > generation, "a new map to download");
+		let generation = ws.asset_generation();
+		ws.add_entry(
+			&entry("RS", "Body", 1, &[(MapKind::Color, 5)]),
+			&Origin::default(),
+		);
+		assert_eq!(ws.asset_generation(), generation, "nothing new");
+		ws.set_state(
+			&stem,
+			AssetKind::Mesh,
+			AssetState::Failed {
+				error: "gone".into(),
+			},
+		);
+		let generation = ws.asset_generation();
+		ws.retry([0]);
+		assert_eq!(ws.items()[0].mesh, AssetState::Pending);
+		assert!(ws.asset_generation() > generation, "a retry");
+		let generation = ws.asset_generation();
+		ws.retry([0]);
+		assert_eq!(ws.asset_generation(), generation, "nothing failed");
 	}
 
 	/// Items imported before exports named their game are the same items
@@ -1291,8 +1342,10 @@ mod tests {
 		);
 		assert!(ws.models().iter().all(|m| m.images[&77] == done));
 		assert_eq!(ws.image_counts(), (0, 1));
+		let generation = ws.asset_generation();
 		ws.retry_images();
 		assert_eq!(ws.image_counts(), (1, 0));
+		assert!(ws.asset_generation() > generation, "views see the retry");
 		// importing again keeps what was downloaded
 		ws.add_model(&model("A"), &[], &Origin::default()).unwrap();
 		assert_eq!(ws.models()[0].images[&77], done);

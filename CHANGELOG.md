@@ -7,6 +7,8 @@ own changelog in [`crates/rbx_mesh`](crates/rbx_mesh/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-25
+
 ### Themes
 
 - Six colour themes, each in dark and light: Meshvault (the original
@@ -121,5 +123,6 @@ The first public release.
 - Models must be re-exported from Studio to gain what newer exporters add
   (attachments, pivots, effects, materials).
 
-[Unreleased]: https://github.com/studio-hills/meshvault/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/studio-hills/meshvault/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/studio-hills/meshvault/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/studio-hills/meshvault/releases/tag/v0.1.0

@@ -621,25 +621,98 @@ pub fn scroll_in_margin<R>(
 	scroll: egui::ScrollArea,
 	add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> R {
+	margin_scroll(ui, scroll, false, add_contents)
+}
+
+/// [`scroll_in_margin`] for a long list: once it is scrolled well down, a
+/// "Back to top" button floats over its bottom edge.
+pub fn scroll_list_in_margin<R>(
+	ui: &mut Ui,
+	scroll: egui::ScrollArea,
+	add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+	margin_scroll(ui, scroll, true, add_contents)
+}
+
+fn margin_scroll<R>(
+	ui: &mut Ui,
+	scroll: egui::ScrollArea,
+	to_top: bool,
+	add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
 	let column = ui.available_rect_before_wrap();
 	let mut rect = column;
 	rect.max.x += SCROLL_GUTTER;
 	// a child, so the wider rect is not claimed from the parent (panels
 	// would grow to fit it)
 	let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
-	let inner = scroll
+	let key = child.scope_id().with("back_to_top");
+	let output = scroll
 		.content_margin(Margin {
 			right: SCROLL_GUTTER as i8,
 			..Margin::ZERO
 		})
-		.show(&mut child, add_contents)
-		.inner;
+		.show(&mut child, |ui| {
+			scroll_up_if_asked(ui, key);
+			add_contents(ui)
+		});
+	if to_top {
+		back_to_top(&mut child, key, &output);
+	}
 	let used = child.min_rect().height();
 	ui.allocate_rect(
 		egui::Rect::from_min_size(column.min, Vec2::new(column.width(), used)),
 		Sense::hover(),
 	);
-	inner
+	output.inner
+}
+
+/// How many screens down a list is scrolled before "Back to top" shows.
+const BACK_TO_TOP_SCREENS: f32 = 2.0;
+
+/// The "Back to top" button, faded in over the bottom of a scroll area
+/// scrolled more than [`BACK_TO_TOP_SCREENS`] down. A click asks the area
+/// to scroll up on the next frame (see [`scroll_up_if_asked`]).
+fn back_to_top<R>(ui: &mut Ui, key: egui::Id, output: &egui::scroll_area::ScrollAreaOutput<R>) {
+	let offset = output.state.clamped_offset().y;
+	let area = output.inner_rect;
+	let show = offset > BACK_TO_TOP_SCREENS * area.height();
+	let shown = ui.ctx().animate_bool_with_time(key, show, 0.15);
+	if shown == 0.0 {
+		return;
+	}
+	let p = palette(ui.ctx());
+	let rect = area.shrink(12.0);
+	ui.scope_builder(
+		egui::UiBuilder::new()
+			.max_rect(rect)
+			.layout(egui::Layout::bottom_up(egui::Align::Center)),
+		|ui| {
+			ui.multiply_opacity(shown);
+			let button = egui::Button::new(
+				RichText::new(format!("{}  Back to top", icons::ARROW_UP))
+					.color(p.text)
+					.family(medium()),
+			)
+			.fill(p.raised)
+			.stroke(Stroke::new(1.0, p.border))
+			.corner_radius(PILL_RADIUS)
+			.min_size(Vec2::new(0.0, CONTROL_XS));
+			let response = pointer(ui.add_enabled(show, button));
+			if response.clicked() {
+				ui.ctx().data_mut(|d| d.insert_temp(key, offset));
+				ui.ctx().request_repaint();
+			}
+		},
+	);
+}
+
+/// Scrolls the area `ui` is in back to the top, if its "Back to top"
+/// button was clicked last frame.
+fn scroll_up_if_asked(ui: &Ui, key: egui::Id) {
+	if let Some(offset) = ui.ctx().data_mut(|d| d.remove_temp::<f32>(key)) {
+		ui.scroll_with_delta(Vec2::new(0.0, offset));
+	}
 }
 
 #[cfg(test)]
@@ -647,7 +720,8 @@ thread_local! {
 	pub(crate) static SCROLL_METRICS: std::cell::Cell<(usize, f32)> = const { std::cell::Cell::new((0, 0.0)) };
 }
 
-/// The margin scroll area with only its on-screen rows laid out.
+/// The margin scroll area with only its on-screen rows laid out, and
+/// "Back to top" once it is scrolled well down, like [`scroll_list_in_margin`].
 pub fn scroll_rows_in_margin<R>(
 	ui: &mut egui::Ui,
 	scroll: egui::ScrollArea,
@@ -659,12 +733,14 @@ pub fn scroll_rows_in_margin<R>(
 	let mut rect = column;
 	rect.max.x += SCROLL_GUTTER;
 	let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+	let key = child.scope_id().with("back_to_top");
 	let output = scroll
 		.content_margin(Margin {
 			right: SCROLL_GUTTER as i8,
 			..Margin::ZERO
 		})
 		.show_rows(&mut child, height, rows, |ui, mut range| {
+			scroll_up_if_asked(ui, key);
 			// One row before the viewport lets Shift+Tab reach the preceding
 			// row; show_rows already includes one after it for forward Tab.
 			let mut rect = ui.max_rect();
@@ -695,6 +771,7 @@ pub fn scroll_rows_in_margin<R>(
 		});
 	#[cfg(test)]
 	SCROLL_METRICS.set((SCROLL_METRICS.get().0, output.state.clamped_offset().y));
+	back_to_top(&mut child, key, &output);
 	let inner = output.inner;
 	let used = child.min_rect().height();
 	ui.allocate_rect(
@@ -707,6 +784,86 @@ pub fn scroll_rows_in_margin<R>(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn back_to_top_shows_when_scrolled_far_and_scrolls_up() {
+		let ctx = egui::Context::default();
+		let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 200.0));
+		let mut time = 0.0;
+		let mut frame = |events: Vec<egui::Event>| {
+			time += 1.0 / 60.0;
+			let mut shown = false;
+			let mut output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(screen),
+					time: Some(time),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					scroll_rows_in_margin(
+						ui,
+						egui::ScrollArea::vertical().auto_shrink(false),
+						24.0,
+						200,
+						|ui, range| {
+							for i in range {
+								ui.label(format!("Row {i}"));
+							}
+						},
+					);
+				},
+			);
+			output.textures_delta.clear();
+			for shape in &output.shapes {
+				if let egui::Shape::Text(text) = &shape.shape
+					&& text.galley.text().contains("Back to top")
+				{
+					shown = true;
+				}
+			}
+			(SCROLL_METRICS.get().1, shown)
+		};
+		let wheel = |dy| {
+			vec![
+				egui::Event::PointerMoved(egui::pos2(250.0, 100.0)),
+				egui::Event::MouseWheel {
+					source: egui::MouseWheelSource::Wheel,
+					phase: egui::TouchPhase::Move,
+					unit: egui::MouseWheelUnit::Point,
+					delta: egui::vec2(0.0, dy),
+					modifiers: Default::default(),
+				},
+			]
+		};
+		let (_, shown) = frame(wheel(-200.0));
+		assert!(!shown, "not shown near the top");
+		let mut offset = 0.0;
+		for _ in 0..10 {
+			frame(wheel(-200.0));
+		}
+		let mut shown = false;
+		for _ in 0..60 {
+			(offset, shown) = frame(vec![]);
+		}
+		assert!(offset > 400.0, "scrolled down: {offset}");
+		assert!(shown, "shown two screens down");
+		// the button sits centred over the bottom edge
+		let at = egui::pos2(250.0, 200.0 - 12.0 - CONTROL_XS / 2.0);
+		let click = |pressed| egui::Event::PointerButton {
+			pos: at,
+			button: egui::PointerButton::Primary,
+			pressed,
+			modifiers: Default::default(),
+		};
+		frame(vec![egui::Event::PointerMoved(at)]);
+		frame(vec![click(true)]);
+		frame(vec![click(false)]);
+		for _ in 0..120 {
+			(offset, _) = frame(vec![]);
+		}
+		assert_eq!(offset, 0.0);
+	}
 
 	#[test]
 	fn virtual_rows_keep_tab_order_across_the_viewport_in_both_directions() {

@@ -386,7 +386,7 @@ impl Browser {
 			View::Grid => {
 				// Switching back to the list must restore its complete selection order.
 				self.list.invalidate_visibility();
-				widgets::scroll_in_margin(
+				widgets::scroll_list_in_margin(
 					ui,
 					egui::ScrollArea::vertical().auto_shrink([false, false]),
 					|ui| self.grid(ui, ws, opened, &mut actions),
